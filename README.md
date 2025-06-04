@@ -1,79 +1,241 @@
-# MARBLE: Music Audio Representation Benchmark for Universal Evaluation
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="marble/utils/assets/marble-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="marble/utils/assets/marble-logo-light.svg">
+    <!-- 这里的 img 用来做默认回退，路径可以指向 light 模式的那张图 -->
+    <img src="marble/utils/assets/marble-logo-light.svg" alt="Marble Logo">
+  </picture>
+  <br/>
+  <br/>
+</p>
 
-Currently support:
-- Linear probing pretrained features.
-- Various MIR datasets:
-  - `MTT`: magnatagatune, multilabel cls
-  - `MTG`: MTG-jamendo, multilabel cls
-  - `GTZAN`: GTZAN, multiclass cls
-  - `GS`: giantsteps, multiclass cls 
-  - `EMO`: emomusic, regression
-  - `VocalSet`: VocalSet, multiclass cls
 
-TODOs:
-- Support `GTZANBT`: GTZAN Beat Tracking, will be updated soon.
-- Support `MUSDB18`: MUSDB18, source separation, will be updated soon.
-- Support traditional handcrafted features.
-- Support `MAESTRO`: maestro, piano transcription
-- Support lyrics transcription.
-- Support few-shot inference.
+<h3 align="center">
+    <p>State-of-the-art pretrained music models for training, evaluation, inference </p>
+</h3>
 
-## Getting Start
-Please first make sure you are already at the ${PROJECT_ROOT} and have activated your virtual environment.
-```bash
-export PROJECT_ROOT=/path/to/this/project
-cd ${PROJECT_ROOT}
-conda activate ${YOUR_ENV}
+Marble is a modular, configuration-driven suite for training, evaluating, and performing inference on state-of-the-art pretrained music models. It leverages LightningCLI to provide easy extensibility and reproducibility.
+
+## News and Updates
+* 📌 Join Us on MIREX Discord! [<img alt="join discord" src="https://img.shields.io/discord/1379757597984296980?color=%237289da&logo=discord"/>](https://discord.gg/YxP7VkNxjk)
+
+
+## Key Features
+1. **Modularity**: Each component—encoders, tasks, transforms, decoders—is isolated behind a common interface. You can mix and match without touching core logic.
+2. **Configurability**: All experiments are driven by YAML configs. No code changes are needed to switch datasets, encoders, or training settings.
+3. **Reusability**: Common routines (data loading, training loop, metrics) are implemented once in `BaseTask`, `LightningDataModule`, and shared modules.
+4. **Extensibility**: Adding new encoders or tasks requires implementing a small subclass and registering it via a config.
+
+```text
+┌──────────────────┐
+│ DataModule       │  yields (waveform, label, path), optional audio transforms
+└─▲────────────────┘
+  │
+  │ waveform                     Encoded →   hidden_states[B, L, T, H]
+  ▼
+┌─┴───────────────┐   embedding transforms (optional)
+│ Encoder         │ ────────────────────────────────────────────────────┐
+└─────────────────┘                                                     │
+                                                                        ▼
+                                                         (LayerSelector, TimeAvgPool…)
+                                                                        │
+                                                                        ▼
+                                      ┌─────────────────────────────────┴──┐
+                                      │ Decoder(s)                         │
+                                      └────────────────────────────────────┘
+                                                                  │ logits
+                                                                  ▼
+                                                   Loss ↔ Metrics ↔ Callbacks
 ```
 
-## Download & Preprocess
-First run the following script to create data dir.
+
+## Getting Started
+
+1. **Install dependencies**:
+    ```bash
+    # 1. create a new conda env
+    conda create -n marble python=3.10 -y
+    conda activate marble
+
+    # 2. install ffmpeg
+    conda install -c conda-forge ffmpeg -y
+
+    # 3. now install other dependencies
+    pip install -e .
+
+    # 4. [Optional] downgrade pip to 24.0 if you are using fairseq modules
+    # pip install pip==24.0
+    # pip install fairseq
+    ```
+
+2. **Prepare data**: `python download.py all`.
+
+3. **Configure**: Copy an existing YAML from `configs/` and edit paths, encoder settings, transforms, and task parameters.
+
+4. **Run**:
+
+   ```bash
+   python cli.py fit --config configs/probe.MERT-v1-95M.GTZANGenre.yaml
+   python cli.py test --config configs/probe.MERT-v1-95M.GTZANGenre.yaml
+   ```
+
+5. **Results**: Checkpoints and logs will be saved under `output/` and logged in Weights & Biases.
+
+
+
+
+
+
+
+## Project Structure
 ```bash
-cd ${PROJECT_ROOT}
-mkdir data
-mkdir ./data/wandb # wandb log dir, you should create one if you don't have WANDB_LOG_DIR
-mkdir ./data/hubert_data # huggingface hubert checkpoints
-```
-Then download the datasets and preprocess them. Note that you should have `wget` installed. Not all datasets need preprocessing.
-```bash
-bash exp_scripts/download/download_emo.sh
-bash exp_scripts/preprocess/preprocess_emo.sh # You may skip this step for some datasets.
-```
-
-
-## Extract Features 
-Simply do the following
-```bash
-python . extract -c configs/mert/MERT-v1-95M/EMO.yaml
-```
-If you want to change the settings, run below to see help.
-```bash
-python . extract -h
+.
+├── marble/                   # Core code package
+│   ├── core/                 # Base classes (BaseTask, BaseEncoder, BaseTransform)
+│   ├── encoders/             # Wrapper classes for various SSL encoders
+│   ├── modules/              # Shared transforms, callbacks, losses, decoders
+│   ├── tasks/                # Downstream tasks (probe, few-shot, datamodules)
+│   └── utils/                # IO utilities, instantiation helpers
+├── cli.py                    # Entry-point for launching experiments
+├── configs/                  # Experiment configs (YAML)
+├── data/                     # Datasets and metadata files
+├── scripts/                  # Run scripts & utilities
+├── tests/                    # Unit tests for transforms & datasets
+├── pyproject.toml            # Python project metadata
+└── README.md                 # This file
 ```
 
-## Linear Probing
-You should do `wandb login` first. Then do
-```bash
-python . probe -c configs/mert/MERT-v1-95M/EMO.yaml
-```
-If you want to change the settings, run below to see help.
-```bash
-python . probe -h
-```
 
-## Development Workflow
 
-### Branching Strategy
-- **`main` branch**: This branch contains the stable version of the project. All new features and fixes should be developed on separate branches and merged into `main` once they are tested and reviewed.
-  
-- **`dev` branch**: This is the primary development branch where all the features and bug fixes are merged. When the `dev` branch is stable and ready for a new version, it will be merged into the `main` branch.
+## 🚀 Adding a New Encoder
 
-- **Feature Branches**: For each new feature or improvement, create a new branch from `dev`. The naming convention is `feature/descriptive-name`, e.g., `feature/add-GTZANBT-support`.
+Marble supports two flexible extension modes for encoders:
 
-- **Bugfix Branches**: If there's a bug to fix, create a branch from `dev`. Name it `bugfix/descriptive-name`, e.g., `bugfix/fix-data-loading-issue`.
+### Mode 1: **Internal Extension**
+1. **Implement your encoder** under `marble/encoders/`:
+   ```python
+   # marble/encoders/my_encoder.py
+   from marble.core.base_encoder import BaseAudioEncoder
 
-## Paper:
-```code
+   class MyEncoder(BaseAudioEncoder):
+      def __init__(self, arg1, arg2):
+         super().__init__()
+         # initialize your model
+
+      def forward(self, waveforms):
+         # return List[Tensor] of shape (batch, layer, seq_len, hidden_size)
+         # or return a dict of representations
+   ```
+2. **Reference it in your YAML**:
+
+   ```yaml
+   model:
+     encoder:
+       class_path: marble.encoders.my_encoder.MyEncoder
+       init_args:
+         arg1: 123
+         arg2: 456
+   ```
+
+### Mode 2: **External Extension**
+
+1. Place `my_encoder.py` anywhere in your project (e.g. `./my_project/my_encoder.py`).
+2. Use the full import path in your YAML:
+
+   ```yaml
+   model:
+     encoder:
+       class_path: my_project.my_encoder.MyEncoder
+       init_args:
+         arg1: 123
+   ```
+
+> **Optional:**
+>
+> * If your encoder needs embedding-level transforms, implement a `BaseEmbTransform` subclass and register under `emb_transforms`.
+> * If you need custom audio preprocessing, subclass `BaseAudioTransform` and register under `audio_transforms`.
+
+  ```yaml
+  emb_transforms:
+    - class_path: marble.modules.transforms.MyEmbTransform
+      init_args:
+        param: value
+
+  audio_transforms:
+    train:
+      - class_path: marble.modules.transforms.MyAudioTransform
+        init_args:
+          param: value
+  ```
+
+
+## 🚀 Adding a New Task
+
+Marble supports two extension modes for tasks as well:
+
+### Mode 1: **Internal Extension**
+
+1. **Create a new task package** under `marble/tasks/YourTask/`:
+
+   ```
+   marble/tasks/YourTask/
+   ├── __init__.py
+   ├── datamodule.py    # Your LightningDataModule subclass
+   └── probe.py          # Your BaseTask subclass, e.g. probe, finetune, fewshot
+   ```
+
+2. **Implement your classes**:
+
+   ```python
+   # datamodule.py
+   import pytorch_lightning as pl
+
+   class YourDataModule(pl.LightningDataModule):
+       def setup(self, stage=None):
+           ...
+       def train_dataloader(self):
+           ...
+       # val_dataloader, test_dataloader, etc.
+
+   # probe.py
+   from marble.core.base_task import BaseTask
+
+   class YourTask(BaseTask):
+       def __init__(self, encoder, emb_transforms, decoders, losses, metrics, sample_rate, use_ema):
+           super().__init__(...)
+           # custom behavior here
+   ```
+
+3. **Point your YAML** to these classes:
+
+   ```yaml
+   task:
+     class_path: marble.tasks.YourTask.probe.YourTask
+     init_args:
+       sample_rate: 22050
+       use_ema: false
+
+   data:
+     class_path: marble.tasks.YourTask.datamodule.YourDataModule
+   ```
+
+### Mode 2: **External Extension**
+
+1. Place your task code anywhere in your project (e.g. `./my_project/probe.py`, `./my_project/datamodule.py`).
+2. Reference via full import path:
+
+   ```yaml
+   model:
+     class_path: my_project.probe.CustomTask
+
+   data:
+     class_path: my_project.datamodule.CustomDataModule
+   ```
+
+
+# Paper
+Link to MARBLE-v1: https://github.com/a43992899/MARBLE-Benchmark. Will be merged to v1 soon.
+```text
 @article{yuan2023marble,
   title={MARBLE: Music Audio Representation Benchmark for Universal Evaluation},
   author={Yuan, Ruibin and Ma, Yinghao and Li, Yizhi and Zhang, Ge and Chen, Xingran and Yin, Hanzhi and Zhuo, Le and Liu, Yiqi and Huang, Jiawen and Tian, Zeyue and others},

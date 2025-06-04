@@ -1,0 +1,1 @@
+# Borrow from https://github.com/chrisdonahue/sheetsage/tree/main/sheetsage/theory to parse hooktheory db

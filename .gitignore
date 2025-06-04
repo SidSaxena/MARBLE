@@ -402,13 +402,18 @@ pyground.ipynb
 mtg-jamendo-dataset
 
 # jukebox pretrain model
-benchmark/models/jukebox/downloads
+models/jukebox/downloads
 # mule pretrain model
-benchmark/models/mule/supporting_data
+models/mule/supporting_data
 # musicnn pretrain model
-benchmark/models/musicnn/MSD_musicnn_big
+models/musicnn/MSD_musicnn_big
 # clmr pretrain model
-benchmark/models/clmr/downloads
+models/clmr/downloads
+marble_benchmark.egg-info
+output
+tests/*.wav
+.vscode
+marble/tasks/GTZANBeatTracking/madmom/hmm.c
 
 ########
 ## Ending custom gitignore rules.

@@ -1,0 +1,45 @@
+# 安装 FFmpeg（用于音频解码/编码）
+# conda install ffmpeg
+
+[build-system]
+requires = [
+  "setuptools>=42",
+  "wheel",
+  "cython>=0.29",
+  "numpy>=1.19",
+  "scipy>=1.5"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marble"
+version = "0.2.0"
+dynamic = ["description", "requires-python"]
+authors = [
+  { name = "Ruibin Yuan"},
+]
+# 运行时依赖
+dependencies = [
+    "lightning==2.5.1",
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+    "jsonargparse[signatures]>=4.27.7",
+    "albumentations==1.4.4",
+    "transformers==4.52.3",
+    "datasets==3.6.0",
+    "peft==0.15.2",
+    "einops",
+    "requests",
+    "librosa",
+    "omegaconf",
+    "wandb",
+    "mir_eval",
+    "pretty_midi",
+    # 安装 Fairseq 前请确保将 pip 降级到 24.0：
+    # pip install pip==24.0
+    # "fairseq",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["marble", "marble.*"]
