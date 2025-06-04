@@ -14,10 +14,11 @@
     <p>State-of-the-art pretrained music models for training, evaluation, inference </p>
 </h3>
 
-Marble is a modular, configuration-driven suite for training, evaluating, and performing inference on state-of-the-art pretrained music (understanding / MIR) models. It leverages LightningCLI to provide easy extensibility and reproducibility.
+Marble is a modular, configuration-driven suite for training, evaluating, and performing inference on state-of-the-art pretrained music models. It leverages LightningCLI to provide easy extensibility and reproducibility.
 
 ## News and Updates
 * 📌 Join Us on MIREX Discord! [<img alt="join discord" src="https://img.shields.io/discord/1379757597984296980?color=%237289da&logo=discord"/>](https://discord.gg/YxP7VkNxjk)
+* 2025-06-04 Now MARBLE v2 is available!
 
 
 ## Key Features
@@ -233,13 +234,14 @@ Marble supports two extension modes for tasks as well:
    ```
 
 
-# Paper
-Link to MARBLE-v1: https://github.com/a43992899/MARBLE-Benchmark. Will be merged to v1 soon.
+# Citation
 ```text
 @article{yuan2023marble,
-  title={MARBLE: Music Audio Representation Benchmark for Universal Evaluation},
-  author={Yuan, Ruibin and Ma, Yinghao and Li, Yizhi and Zhang, Ge and Chen, Xingran and Yin, Hanzhi and Zhuo, Le and Liu, Yiqi and Huang, Jiawen and Tian, Zeyue and others},
-  journal={arXiv preprint arXiv:2306.10548},
+  title={Marble: Music audio representation benchmark for universal evaluation},
+  author={Yuan, Ruibin and Ma, Yinghao and Li, Yizhi and Zhang, Ge and Chen, Xingran and Yin, Hanzhi and Liu, Yiqi and Huang, Jiawen and Tian, Zeyue and Deng, Binyue and others},
+  journal={Advances in Neural Information Processing Systems},
+  volume={36},
+  pages={39626--39647},
   year={2023}
 }
 ```
