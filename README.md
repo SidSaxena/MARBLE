@@ -2,7 +2,6 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="marble/utils/assets/marble-logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="marble/utils/assets/marble-logo-light.svg">
-    <!-- 这里的 img 用来做默认回退，路径可以指向 light 模式的那张图 -->
     <img src="marble/utils/assets/marble-logo-light.svg" alt="Marble Logo">
   </picture>
   <br/>
@@ -18,7 +17,7 @@ Marble is a modular, configuration-driven suite for training, evaluating, and pe
 
 ## News and Updates
 * 📌 Join Us on MIREX Discord! [<img alt="join discord" src="https://img.shields.io/discord/1379757597984296980?color=%237289da&logo=discord"/>](https://discord.gg/YxP7VkNxjk)
-* 2025-06-04 Now MARBLE v2 is available!
+* **2025-06-04** Now MARBLE v2 is published on main branch! You cound find the old version in `main-v1-archived` branch. 
 
 
 ## Key Features
