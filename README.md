@@ -14,7 +14,7 @@
     <p>State-of-the-art pretrained music models for training, evaluation, inference </p>
 </h3>
 
-Marble is a modular, configuration-driven suite for training, evaluating, and performing inference on state-of-the-art pretrained music models. It leverages LightningCLI to provide easy extensibility and reproducibility.
+Marble is a modular, configuration-driven suite for training, evaluating, and performing inference on state-of-the-art pretrained music (understanding / MIR) models. It leverages LightningCLI to provide easy extensibility and reproducibility.
 
 ## News and Updates
 * 📌 Join Us on MIREX Discord! [<img alt="join discord" src="https://img.shields.io/discord/1379757597984296980?color=%237289da&logo=discord"/>](https://discord.gg/YxP7VkNxjk)
