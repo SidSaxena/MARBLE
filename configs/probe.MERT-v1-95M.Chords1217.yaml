@@ -6,7 +6,7 @@ trainer:
   accelerator: gpu
   # strategy: ddp # or ddp_find_unused_parameters
   devices: [0]
-  accumulate_grad_batches: 8
+  accumulate_grad_batches: 1
   num_nodes: 1
   precision: bf16 # or 32, or 16
   max_epochs: 50
@@ -17,7 +17,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.HookTheoryKey.MERT-v1-95M/checkpoints/" # Please specify your own path
+        dirpath: "./output/probe.Chords1217.MERT-v1-95M/checkpoints/" # Please specify your own path
         filename: "best"
         save_top_k: 1 # -1 to save all checkpoints
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
@@ -26,19 +26,19 @@ trainer:
         logging_interval: step
     - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
       init_args:
-        monitor: "val/weighted_score"               # 要监控的 metric 名称
+        monitor: "val/acc"               # 要监控的 metric 名称
         patience: 10                       # 在多少次验证后无改进就停止
         mode: "max"                       # “val_loss” 下降时才算改进
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.HookTheoryKey.MERT-v1-95M"
-      save_dir: "./output/probe.HookTheoryKey.MERT-v1-95M/"
+      name: "probe.Chords1217.MERT-v1-95M"
+      save_dir: "./output/probe.Chords1217.MERT-v1-95M/"
 
 
 model:
-  class_path: marble.tasks.HookTheoryKey.probe.ProbeAudioTask
+  class_path: marble.tasks.Chords1217.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
     use_ema: false
@@ -52,56 +52,55 @@ model:
         preprocess_in_forward: false
       
     emb_transforms:
-      - class_path: marble.modules.transforms.LayerSelector
+      # - class_path: marble.modules.transforms.LayerSelector
+      #   init_args:
+      #     layers: [7]  # something like [1, 3, "10..72"]
+      - class_path: marble.modules.transforms.MLPReduce
         init_args:
-          layers: [8]  # something like [1, 3, "10..72"]
-      - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
+          num_layers: 13
+          hidden_size: 768
     
     decoders:
-      - class_path: marble.modules.decoders.MLPDecoder
+      - class_path: marble.modules.decoders.MLPDecoderKeepTime
         init_args:
           in_dim: 768
-          out_dim: 24 # 24 KEYS
+          out_dim: 25 # 10 genres
           hidden_layers: [512]
           activation_fn: 
             class_path: torch.nn.ReLU
           dropout: 0.2
 
     losses:
-      - class_path: torch.nn.CrossEntropyLoss
+      - class_path: marble.tasks.Chords1217.probe.ChordCrossEntropyLoss 
         init_args:
-          reduction: mean
+          time_dim_mismatch_tol: 5
 
     metrics:
       train:
         acc:
-          class_path: torchmetrics.Accuracy
+          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
           init_args:
-            num_classes: 24
-            task: multiclass
-        weighted_score:
-          class_path: marble.tasks.HookTheoryKey.probe.KeyWeightedScore
+            time_dim_mismatch_tol: 5
+            ignore_index: -1 # ignore the non maj min chords
+
       val:
         acc:
-          class_path: torchmetrics.Accuracy
+          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
           init_args:
-            num_classes: 24
-            task: multiclass
-        weighted_score:
-          class_path: marble.tasks.HookTheoryKey.probe.KeyWeightedScore
+            time_dim_mismatch_tol: 5
+            ignore_index: -1 # ignore the non maj min chords
+
       test:
         acc:
-          class_path: torchmetrics.Accuracy
+          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
           init_args:
-            num_classes: 24
-            task: multiclass
-        weighted_score:
-          class_path: marble.tasks.HookTheoryKey.probe.KeyWeightedScore
+            time_dim_mismatch_tol: 5
+            ignore_index: -1 # ignore the non maj min chords
     
 data:
-  class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyDataModule
+  class_path: marble.tasks.Chords1217.datamodule.Chords1217DataModule
   init_args:
-    batch_size: 8
+    batch_size: 64
     num_workers: 16
 
     audio_transforms:
@@ -122,35 +121,38 @@ data:
             squeeze: true
 
     train:
-      class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioTrain
+      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioTrain
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
         min_clip_ratio: 0.8 # at least 80% of the clip length
         channel_mode: random # first, random, mix
-        jsonl: data/HookTheory/HookTheoryKey.train.jsonl
-        maj_minor_only: true # only use major and minor keys
+        jsonl: data/Chords1217/Chords1217.train.jsonl
+        label_freq: 75
+        backend: "soundfile" # speed up random read flac
     val:
-      class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioVal
+      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioVal
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
         min_clip_ratio: 0.8
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryKey.val.jsonl
-        maj_minor_only: true # only use major and minor keys
+        jsonl: data/Chords1217/Chords1217.val.jsonl
+        label_freq: 75
+        backend: "soundfile" # speed up random read flac
     test:
-      class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioTest
+      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioTest
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
         min_clip_ratio: 0.8
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryKey.test.jsonl
-        maj_minor_only: true # only use major and minor keys
+        jsonl: data/Chords1217/Chords1217.test.jsonl
+        label_freq: 75
+        backend: "soundfile" # speed up random read flac
 
 optimizer:
   class_path: torch.optim.Adam
@@ -161,6 +163,6 @@ lr_scheduler:
   class_path: lightning.pytorch.cli.ReduceLROnPlateau
   init_args:
     mode: "max"
-    factor: 0.1
+    factor: 0.5
     patience: 5
-    monitor: "val/weighted_score"
+    monitor: "val/acc"
