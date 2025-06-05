@@ -61,9 +61,9 @@ class _Chords1217AudioBase(BaseAudioDataset):
                 {"start_time": 106.45425100000001, "end_time": 114.15805800000001, "chord_str": "E:maj"}, 
                 {"start_time": 114.15805800000001, "end_time": 118.987755, "chord_str": "N"}
             ], 
-        "duration": 119.01387755102041, 
-        "sample_rate": 44100, 
-        "num_samples": 5248512, 
+        "duration": 119.013875, 
+        "sample_rate": 24000, 
+        "num_samples": 2856333, 
         "bit_depth": 0, 
         "channels": 1
         }
