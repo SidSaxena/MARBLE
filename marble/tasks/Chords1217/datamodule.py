@@ -24,7 +24,7 @@ class _Chords1217AudioBase(BaseAudioDataset):
             - "chord": 1D LongTensor of length label_len (frame-level chord indices, 0–24)
     """
     EXAMPLE_JSONL = {
-        "audio_path": "data/Chords1217/audio/TRWTQYM149E35B4C40.mp3", 
+        "audio_path": "data/Chords1217/audio/TRWTQYM149E35B4C40.flac", 
         "label": 
             [
                 {"start_time": 0.0, "end_time": 0.42124700000000004, "chord_str": "N"}, 
@@ -70,7 +70,7 @@ class _Chords1217AudioBase(BaseAudioDataset):
 
     def __init__(self, jsonl: str, sample_rate: int, channels: int,
                  clip_seconds: float, label_freq: int, channel_mode: str="first",
-                 min_clip_ratio: float=1.0):
+                 min_clip_ratio: float=1.0, backend: Optional[str] = None):
         super().__init__(
             jsonl=jsonl,
             sample_rate=sample_rate,
@@ -78,7 +78,8 @@ class _Chords1217AudioBase(BaseAudioDataset):
             clip_seconds=clip_seconds,
             label_freq=label_freq,
             channel_mode=channel_mode,
-            min_clip_ratio=min_clip_ratio
+            min_clip_ratio=min_clip_ratio,
+            backend=backend
         )
         # Build a per-file list of (start_time, chord_idx) sorted by start_time
         self.chords_meta: List[List[Tuple[float, int]]] = []

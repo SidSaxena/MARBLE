@@ -65,7 +65,7 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=True,
+            prefetch_factor=2,
         )
 
     def val_dataloader(self):
@@ -75,7 +75,7 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=True,
+            prefetch_factor=2,
         )
 
     def test_dataloader(self):
@@ -85,7 +85,7 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=True,
+            prefetch_factor=2,
         )
 
 
@@ -112,6 +112,7 @@ class BaseAudioDataset(Dataset, ABC):
         label_freq: int,
         channel_mode: str = "first",
         min_clip_ratio: float = 1.0,
+        backend: Optional[str] = None
     ):
         """
         Args:
@@ -143,6 +144,7 @@ class BaseAudioDataset(Dataset, ABC):
         self.clip_len_target = int(self.clip_seconds * self.sample_rate)
         self.label_freq = label_freq
         self.min_clip_ratio = min_clip_ratio
+        self.backend = backend
 
         # Validate channel_mode if expecting mono output
         if self.channels == 1 and self.channel_mode not in ("first", "mix", "random"):
@@ -246,7 +248,8 @@ class BaseAudioDataset(Dataset, ABC):
         waveform, _ = torchaudio.load(
             path,
             frame_offset=offset,
-            num_frames=orig_clip_frames
+            num_frames=orig_clip_frames,
+            backend=self.backend
         )  # waveform shape: (orig_channels, actual_frames)
 
         # 1. Channel handling / downmixing / replication
