@@ -95,6 +95,15 @@ class _Chords1217AudioBase(BaseAudioDataset):
     def get_targets(self, file_idx: int, slice_idx: int, orig_sr: int, orig_clip_frames: int):
         """
         Generate a frame-level chord label sequence for a single clip.
+        
+        Steps:
+          1. Determine clip start/end times in seconds.
+          2. Collect annotations whose start_time falls within [clip_start, clip_end).
+          3. If no annotation covers clip_start, either carry over the last chord from before the clip
+             or insert “no chord” (24) at clip_start.
+          4. Append a “no chord” sentinel at clip_end to mark the final segment.
+          5. For each frame (indexed by label_freq), assign the chord active at that frame’s time.
+             If encountering a temporary “no chord” marker, inherit the previous chord label.
 
         Args:
             file_idx (int): Index of the audio file in self.meta.
@@ -107,106 +116,63 @@ class _Chords1217AudioBase(BaseAudioDataset):
             torch.LongTensor: A 1D tensor of length `label_len = int(self.label_freq * self.clip_seconds)`,
                               where each element is a chord index (0–23 for chords, 24 for “no chord”).
         """
-        # Retrieve the sorted list of (start_time, chord_idx) pairs for this file
-        chord_annotations = self.chords_meta[file_idx]
+        # 1. Get sorted (time, chord_idx) annotations for this file
+        chord_ann = self.chords_meta[file_idx]
 
-        # Compute the clip's start time in seconds:
-        #   slice_idx * (orig_clip_frames / orig_sr) gives seconds offset of this slice
+        # 2. Compute clip start/end in seconds
         clip_start = slice_idx * (orig_clip_frames / orig_sr)
-
-        # Total number of label frames for each clip = label_freq * clip_seconds
-        label_len = int(self.label_freq * self.clip_seconds)
-
-        # Create an array to hold the chord index for each frame; initialize to zeros
-        chord_seq = np.zeros(label_len, dtype=np.int64)
-
-        # Compute the clip's end time in seconds
         clip_end = clip_start + self.clip_seconds
 
-        # If there are no chord annotations at all for this file, fill with “no chord” (index 24)
-        if not chord_annotations:
+        # 3. Prepare an array of length label_len to hold chord indices
+        label_len = int(self.label_freq * self.clip_seconds)
+        chord_seq = np.zeros(label_len, dtype=np.int64)
+
+        # If no annotations exist, fill all frames with “no chord” (24)
+        if not chord_ann:
             chord_seq[:] = 24
-        else:
-            # Build a list `segments` that contains only the annotations whose start_time
-            # falls within [clip_start, clip_end). We’ll later insert boundary markers.
-            segments: List[Tuple[float, int]] = []
-            for (t0, cidx) in chord_annotations:
-                if t0 >= clip_end:
-                    # Once we reach an annotation that starts after this clip, stop collecting
-                    break
-                if t0 < clip_start:
-                    # Skip any annotation that started before the clip began
-                    continue
+            return torch.from_numpy(chord_seq)
+
+        # 4. Collect segments that start inside the clip
+        segments: List[Tuple[float, int]] = []
+        for t0, cidx in chord_ann:
+            if t0 >= clip_end:
+                break
+            if t0 >= clip_start:
                 segments.append((t0, cidx))
 
-            # If the first collected segment starts after clip_start, we need to decide:
-            #   a) Does a previous chord extend into this clip?
-            #   b) If not, we must begin this clip with “no chord” (24).
-            if not segments or segments[0][0] > clip_start:
-                prev_chord = None
-                # Scan the original annotations in reverse to find the last chord
-                # that started before clip_start. If found, that chord is still “active”
-                # at the start of this clip.
-                for (ps, pl) in reversed(chord_annotations):
-                    if ps < clip_start:
-                        prev_chord = pl
-                        break
+        # 5. If the first segment starts after clip_start, check for carryover or set “no chord”
+        if not segments or segments[0][0] > clip_start:
+            prev_chord = None
+            for t0, cidx in reversed(chord_ann):
+                if t0 < clip_start:
+                    prev_chord = cidx
+                    break
+            # Carry over previous chord if it overlaps; otherwise start with “no chord”
+            start_label = prev_chord if prev_chord is not None else 24
+            segments.insert(0, (clip_start, start_label))
 
-                if prev_chord is not None:
-                    # If we found a chord that started earlier and lasted into this clip,
-                    # insert it at time=clip_start so we carry it over.
-                    segments.insert(0, (clip_start, prev_chord))
-                else:
-                    # Otherwise, explicitly mark “no chord” at clip_start
-                    segments.insert(0, (clip_start, 24))
+        # 6. Append a “no chord” sentinel at clip_end
+        segments.append((clip_end, 24))
 
-            # Append a sentinel at the end of the clip with “no chord” (24). This
-            # helps us know when to stop each chord segment.
-            segments.append((clip_end, 24))
+        # 7. Iterate over frames and assign labels
+        seg_ptr = 0
+        current_label = segments[0][1]
+        next_change = segments[1][0]
 
-            # At this point, `segments` is a list of (time, chord_index) sorted by time,
-            # covering [clip_start, clip_end]. Example:
-            #   [
-            #     (clip_start,    some_chord_idx or 24),
-            #     (t1,            chord_idx1),
-            #     (t2,            chord_idx2),
-            #     ...,
-            #     (clip_end,      24)
-            #   ]
+        for i in range(label_len):
+            t = clip_start + i / self.label_freq
+            # Advance to the next segment if time passes its start
+            while t >= next_change and seg_ptr + 1 < len(segments) - 1:
+                seg_ptr += 1
+                current_label = segments[seg_ptr][1]
+                next_change = segments[seg_ptr + 1][0] if seg_ptr + 1 < len(segments) else clip_end
 
-            # We’ll walk through each label frame (0 .. label_len-1), compute its
-            # timestamp, and determine which segment applies.
-            seg_ptr = 0
-            current_label = segments[0][1]
-            # The next boundary time when chord changes:
-            next_change_time = segments[1][0] if len(segments) > 1 else clip_end
+            # If current_label is “no chord” but not at the very beginning, inherit previous chord
+            if current_label == 24 and seg_ptr > 0:
+                current_label = segments[seg_ptr - 1][1]
 
-            # Iterate over every label frame
-            for f_idx in range(label_len):
-                # Compute the exact time (in seconds) of this frame:
-                t = clip_start + f_idx / self.label_freq
+            chord_seq[i] = current_label
 
-                # Advance the segment pointer if we have passed the next boundary
-                while t >= next_change_time and seg_ptr + 1 < len(segments) - 1:
-                    seg_ptr += 1
-                    current_label = segments[seg_ptr][1]
-                    # Update the next boundary time (or use clip_end if at last real segment)
-                    next_change_time = (
-                        segments[seg_ptr + 1][0]
-                        if (seg_ptr + 1) < len(segments)
-                        else clip_end
-                    )
-
-                # If current_label is “no chord” (24) but there is a previous segment,
-                # inherit that previous chord. This ensures that short “no chord” markers
-                # don’t override an ongoing chord unless it truly ends.
-                if current_label == 24 and seg_ptr > 0:
-                    current_label = segments[seg_ptr - 1][1]
-
-                # Assign the chosen label index to this frame
-                chord_seq[f_idx] = current_label
-
-        # Convert the numpy array to a PyTorch LongTensor and return
         return torch.from_numpy(chord_seq)
 
 
