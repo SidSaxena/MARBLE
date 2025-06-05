@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple, Union, Literal
 import torch
 import torchaudio
 import numpy as np
+from mir_eval.chord import encode, QUALITIES
 from scipy.ndimage import maximum_filter1d
 
 
@@ -216,3 +217,104 @@ def mask_to_times(mask: np.ndarray, fps: int) -> np.ndarray:
     unique_times = np.unique(np.sort(times))
 
     return unique_times
+
+
+def chord_to_majmin(chord_str):
+    """
+    Convert a chord label to a simplified 25 class major/minor index, treating any chord
+    that contains a major triad as “major” and any chord that contains a minor
+    triad as “minor.” This includes seventh chords (e.g., C:7, C:maj7, C:min7),
+    since they still contain a clear major or minor triad. Only chords that lack
+    a definite major or minor third—such as sus, aug, or dim—will not be classified.
+
+    Parameters
+    ----------
+    chord_str : str
+        Chord label in the format accepted by mir_eval.chord.encode (e.g., 'C:maj7', 'D:min7', 'G:sus4').
+
+    Returns
+    -------
+    int
+        - 0–11: indices for major chords (C major = 0, C# major = 1, … B major = 11)
+        - 12–23: indices for minor chords (C minor = 12, C# minor = 13, … B minor = 23)
+        - 24: no chord (label 'N' or any chord with no valid root)
+        - -1: any chord quality that doesn’t contain a pure major or pure minor triad
+             (e.g., suspended (sus), augmented (aug), diminished (dim), or other ambiguous qualities)
+             DO NOT compute loss for -1 in 25 classes classification.
+    """
+    # Encode the chord string into numerical form:
+    #   root_number: integer 0–11 for C–B; <0 if no chord (e.g., 'N')
+    #   semitone_bitmap: length-12 binary vector indicating which scale degrees are present
+    #   bass_number: integer 0–11 for the bass note (not used for major/minor detection)
+    root_number, semitone_bitmap, bass_number = encode(chord_str)
+
+    # If there is no valid root (e.g., 'N'), classify as “no chord”
+    if root_number < 0:
+        return 24
+
+    # Retrieve the reference bitmaps for a major triad and a minor triad
+    major_quality = QUALITIES['maj']   # [1,0,0,0,1,0,0,1,0,0,0,0]
+    minor_quality = QUALITIES['min']   # [1,0,0,1,0,0,0,1,0,0,0,0]
+
+    # Check if the chord contains at least the three notes of a major triad:
+    #   For each “1” in major_quality, semitone_bitmap must also have “1” at that position.
+    contains_major = np.all(
+        np.logical_and(semitone_bitmap, major_quality) == major_quality
+    )
+
+    # Check if the chord contains at least the three notes of a minor triad:
+    contains_minor = np.all(
+        np.logical_and(semitone_bitmap, minor_quality) == minor_quality
+    )
+
+    # If it contains a major triad (and not a minor triad), classify as major (0–11)
+    if contains_major and not contains_minor:
+        return root_number
+
+    # If it contains a minor triad (and not a major triad), classify as minor (12–23)
+    elif contains_minor and not contains_major:
+        return root_number + 12
+
+    # Otherwise—e.g., suspended (no clear third), augmented, diminished, or ambiguous—return -1
+    return -1
+
+def id2chord_str(chord_id):
+    """
+    Convert an integer representing a chord index (-1–23) to the corresponding chord string for triads.
+
+    Parameters
+    ----------
+    chord_id : int
+        Chord index, where 0–11 represent major chords (C major = 0, C# major = 1, … B major = 11),
+        -1 represents any chord that does not contain a pure major or minor triad (e.g., suspended, augmented, diminished),
+        12–23 represent minor chords (C minor = 12, C# minor = 13, … B minor = 23),
+        and 24 represents "no chord".
+
+    Returns
+    -------
+    str
+        Chord string in the format 'C:maj', 'D:min', etc. or 'N' for no chord. or 'X' for invalid input.
+    """
+    # Define the chord roots and qualities
+    chord_roots = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    major_quality = ':maj'
+    minor_quality = ':min'
+    
+    if chord_id < 0:
+        return 'X'
+    
+    if chord_id == 24:
+        return 'N'  # No chord
+
+    # Determine whether the chord is major or minor based on the index
+    if chord_id < 12:  # Major chords
+        root = chord_roots[chord_id]
+        return f'{root}{major_quality}'
+
+    elif chord_id < 24:  # Minor chords
+        root = chord_roots[chord_id - 12]
+        return f'{root}{minor_quality}'
+    
+    # If the index is not within the valid range, return None or raise an exception
+    raise ValueError(f"Invalid chord index: {chord_id}. Must be in range 0-24.")
+    
