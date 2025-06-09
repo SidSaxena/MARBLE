@@ -36,7 +36,7 @@ def download_dataset(dataset_name: str, save_root: str):
         local_dir_use_symlinks=False,
     )
 
-    print(f"Dataset '{dataset_name}' Data folder has been saved to '{target_dir}/Data'.")
+    print(f"Dataset '{dataset_name}' Data folder has been saved to '{target_dir}'.")
 
 
 def main():
