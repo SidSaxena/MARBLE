@@ -17,7 +17,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.Chords1217.MERT-v1-95M/checkpoints/" # Please specify your own path
+        dirpath: "./output/probe.MergeGSHT.MERT-v1-95M/checkpoints/" # Please specify your own path
         filename: "best"
         save_top_k: 1 # -1 to save all checkpoints
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
@@ -26,19 +26,19 @@ trainer:
         logging_interval: step
     - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
       init_args:
-        monitor: "val/acc"               # 要监控的 metric 名称
+        monitor: "val/weighted_score"               # 要监控的 metric 名称
         patience: 10                       # 在多少次验证后无改进就停止
         mode: "max"                       # “val_loss” 下降时才算改进
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.Chords1217.MERT-v1-95M"
-      save_dir: "./output/probe.Chords1217.MERT-v1-95M/"
+      name: "probe.HookTheoryKey.MERT-v1-95M"
+      save_dir: "./output/probe.MergeGSHT.MERT-v1-95M/"
 
 
 model:
-  class_path: marble.tasks.Chords1217.probe.ProbeAudioTask
+  class_path: marble.tasks.HookTheoryKey.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
     use_ema: false
@@ -52,53 +52,54 @@ model:
         preprocess_in_forward: false
       
     emb_transforms:
-      # - class_path: marble.modules.transforms.LayerSelector
-      #   init_args:
-      #     layers: [7]  # something like [1, 3, "10..72"]
-      - class_path: marble.modules.transforms.MLPReduce
+      - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          num_layers: 13
-          hidden_size: 768
+          layers: [8]  # something like [1, 3, "10..72"]
+      - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
     
     decoders:
-      - class_path: marble.modules.decoders.MLPDecoderKeepTime
+      - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 768
-          out_dim: 25 # 10 genres
+          out_dim: 24 # 24 KEYS
           hidden_layers: [512]
           activation_fn: 
             class_path: torch.nn.ReLU
           dropout: 0.2
 
     losses:
-      - class_path: marble.tasks.Chords1217.probe.ChordCrossEntropyLoss 
+      - class_path: torch.nn.CrossEntropyLoss
         init_args:
-          time_dim_mismatch_tol: 5
+          reduction: mean
 
     metrics:
       train:
         acc:
-          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
+          class_path: torchmetrics.Accuracy
           init_args:
-            time_dim_mismatch_tol: 5
-            ignore_index: -1 # ignore the non maj min chords
-
+            num_classes: 24
+            task: multiclass
+        weighted_score:
+          class_path: marble.tasks.HookTheoryKey.probe.KeyWeightedScore
       val:
         acc:
-          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
+          class_path: torchmetrics.Accuracy
           init_args:
-            time_dim_mismatch_tol: 5
-            ignore_index: -1 # ignore the non maj min chords
-
+            num_classes: 24
+            task: multiclass
+        weighted_score:
+          class_path: marble.tasks.HookTheoryKey.probe.KeyWeightedScore
       test:
         acc:
-          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
+          class_path: torchmetrics.Accuracy
           init_args:
-            time_dim_mismatch_tol: 5
-            ignore_index: -1 # ignore the non maj min chords
+            num_classes: 24
+            task: multiclass
+        weighted_score:
+          class_path: marble.tasks.HookTheoryKey.probe.KeyWeightedScore
     
 data:
-  class_path: marble.tasks.Chords1217.datamodule.Chords1217DataModule
+  class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyDataModule
   init_args:
     batch_size: 8
     num_workers: 16
@@ -121,38 +122,35 @@ data:
             squeeze: true
 
     train:
-      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioTrain
+      class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioTrain
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
-        min_clip_ratio: 0.1 # at least 10% of the clip length
+        min_clip_ratio: 0.8 # at least 80% of the clip length
         channel_mode: random # first, random, mix
-        jsonl: data/Chords1217/Chords1217.train.jsonl
-        label_freq: 75
-        backend: "soundfile" # speed up random read flac
+        jsonl: data/MergeGSHT/MergeGSHT.train.jsonl
+        maj_minor_only: true # only use major and minor keys
     val:
-      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioVal
+      class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioVal
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
-        min_clip_ratio: 0.1
+        min_clip_ratio: 0.8
         channel_mode: mix
-        jsonl: data/Chords1217/Chords1217.val.jsonl
-        label_freq: 75
-        backend: "soundfile" # speed up random read flac
+        jsonl: data/MergeGSHT/MergeGSHT.val.jsonl
+        maj_minor_only: true # only use major and minor keys
     test:
-      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioTest
+      class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioTest
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
-        min_clip_ratio: 0.1
+        min_clip_ratio: 0.8
         channel_mode: mix
-        jsonl: data/Chords1217/Chords1217.test.jsonl
-        label_freq: 75
-        backend: "soundfile" # speed up random read flac
+        jsonl: data/GS/GS.test.jsonl
+        maj_minor_only: true # only use major and minor keys
 
 optimizer:
   class_path: torch.optim.Adam
@@ -163,6 +161,6 @@ lr_scheduler:
   class_path: lightning.pytorch.cli.ReduceLROnPlateau
   init_args:
     mode: "max"
-    factor: 0.5
+    factor: 0.1
     patience: 5
-    monitor: "val/acc"
+    monitor: "val/weighted_score"
