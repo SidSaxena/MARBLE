@@ -1,5 +1,6 @@
 # marble/tasks/HookTheoryKey/probe.py
 from collections import defaultdict
+import json
 
 import numpy as np
 import torch

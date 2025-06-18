@@ -419,3 +419,5 @@ marble/tasks/GTZANBeatTracking/madmom/hmm.c
 ## Ending custom gitignore rules.
 ########
 abs.filelist.txt
+tests/filelist.txt
+pred.jsonl
