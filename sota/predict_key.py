@@ -161,6 +161,8 @@ def download_ckpt_from_hf(download_dir):
     Downloads the model from Hugging Face. Uses snapshot_download.
     """
     repo_id = "m-a-p/key_sota_20250618"  # Model repository ID
+    if os.path.exists(os.path.join(download_dir, "checkpoints/best.ckpt")):
+        return
 
     print(f"Downloading Hugging Face model repo: {repo_id} to {download_dir} using snapshot_download...")
     # snapshot_download will automatically skip download if files already exist
