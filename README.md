@@ -66,6 +66,7 @@ Marble is a modular, configuration-driven suite for training, evaluating, and pe
     # 4. [Optional] downgrade pip to 24.0 if you are using fairseq modules
     # pip install pip==24.0
     # pip install fairseq
+    # some encoders (e.g. Xcodec) may require additional dependencies, see marble/encoders/*/requirements.txt
     ```
 
 2. **Prepare data**: `python download.py all`.
