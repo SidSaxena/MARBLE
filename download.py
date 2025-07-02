@@ -7,15 +7,31 @@ __all_datasets__ = [
     "GTZAN",
     "EMO",
     "GS",
-    "Chords1217"
+    "Chords1217",
     # "MTT",
-    # "HookTheory",
+    "HookTheory",
 ]
 
 __gated_datasets__ = [
     "Chords1217",
     "HookTheory",
 ]
+
+def extract_HookTheory(save_root: str):
+    # run data/HookTheoryUpload/extract.sh
+    import subprocess
+    script_path = os.path.join(save_root, "HookTheory", "extract.sh")
+    if not os.path.exists(script_path):
+        print(f"Error: Extraction script '{script_path}' does not exist. Please ensure you have the correct dataset structure.")
+        sys.exit(1)
+    print(f"Running extraction script '{script_path}'...")
+    try:
+        subprocess.run(["bash", script_path], check=True)
+        print("Extraction completed successfully.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error during extraction: {e}", file=sys.stderr)
+        sys.exit(1)
+
 
 def download_dataset(dataset_name: str, save_root: str):
     """
@@ -37,6 +53,10 @@ def download_dataset(dataset_name: str, save_root: str):
     )
 
     print(f"Dataset '{dataset_name}' Data folder has been saved to '{target_dir}'.")
+    
+    if dataset_name == "HookTheory":
+        print("HookTheory dataset requires extraction. Running extraction script...")
+        extract_HookTheory(save_root)
 
 
 def main():
