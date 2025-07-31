@@ -1,4 +1,4 @@
-# marble/tasks/MTGTop50/probe.py
+# marble/tasks/MTGGenre/probe.py
 from collections import defaultdict
 import json
 

@@ -4,10 +4,9 @@ from typing import Optional
 import torch
 
 from marble.core.base_datamodule import BaseDataModule, BaseAudioDataset
-from marble.tasks.MTGTop50.datamodule import _MTGTop50AudioBase
 
 
-class _MTGMoodAudioBase(_MTGTop50AudioBase):
+class _MTGMoodAudioBase(BaseAudioDataset):
     LABEL2IDX = {
         'mood/theme---background': 0,
         'mood/theme---film': 1,
@@ -77,6 +76,27 @@ class _MTGMoodAudioBase(_MTGTop50AudioBase):
         "bit_depth": 16, 
         "channels": 1
         }
+
+    def __init__(self, jsonl: str, sample_rate: int, channels: int,
+                 clip_seconds: float, channel_mode: str="first",
+                 min_clip_ratio: float=1.0, backend: Optional[str] = None):
+        super().__init__(
+            jsonl=jsonl,
+            sample_rate=sample_rate,
+            channels=channels,
+            clip_seconds=clip_seconds,
+            channel_mode=channel_mode,
+            min_clip_ratio=min_clip_ratio,
+            backend=backend
+        )
+
+    def get_targets(self, file_idx: int, slice_idx: int, orig_sr: int, orig_clip_frames: int):
+        info = self.meta[file_idx]
+        label_indices = [self.LABEL2IDX[tag] for tag in info['label']]
+        num_labels = len(self.LABEL2IDX)
+        label = torch.zeros(num_labels, dtype=torch.int)
+        label[label_indices] = 1
+        return label
 
 
 class MTGMoodAudioTrain(_MTGMoodAudioBase):
