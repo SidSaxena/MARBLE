@@ -5,7 +5,8 @@ trainer:
   fast_dev_run: false
   accelerator: gpu
   strategy: ddp # or ddp_find_unused_parameters 
-  devices: [4,5,6,7] # torchrun --nproc_per_node=4 cli.py fit -c xxx
+  devices: [0,1,2,3] # torchrun --nproc_per_node=4 cli.py fit -c xxx
+  # devices: [0,]
   accumulate_grad_batches: 1
   num_nodes: 1
   precision: bf16 # or 32, or 16
@@ -17,7 +18,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.MTGTop50.MuQ/checkpoints/" # Please specify your own path
+        dirpath: "./output/probe.MTGTop50.MuQMuLan/checkpoints/" # Please specify your own path
         filename: "best"
         save_top_k: 1 # -1 to save all checkpoints
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
@@ -34,8 +35,8 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGTop50.MuQ"
-      save_dir: "./output/probe.MTGTop50.MuQ/"
+      name: "probe.MTGTop50.MuQMuLan"
+      save_dir: "./output/probe.MTGTop50.MuQMuLan/"
 
 
 model:
@@ -45,22 +46,21 @@ model:
     use_ema: false
 
     encoder:
-      class_path: marble.encoders.MuQ.model.MuQ_Encoder
+      class_path: marble.encoders.MuQMuLan.model.MuQMuLan_Encoder
       init_args:
         pre_trained_folder: null
         train_mode: freeze  # also supports lora, or full
       
     emb_transforms:
-      - class_path: marble.modules.transforms.MLPReduce
+      - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          num_layers: 13
-          hidden_size: 1024
+          layers: [0]  # something like [1, 3, "10..72"]
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
     
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
-          in_dim: 1024
+          in_dim: 512
           out_dim: 50 # 10 genres
           hidden_layers: [512]
           activation_fn: 

@@ -104,20 +104,23 @@ class MuQMuLan_Encoder(BaseEncoder):
         # Ensure input dtype matches model parameters (fp16 vs fp32)
         model_dtype = next(self.model.parameters()).dtype
         wavs = wavs.to(device=self.model.device, dtype=model_dtype)
+        # if 3D and the middle dim is 1, squeeze it
+        if wavs.ndim == 3 and wavs.shape[1] == 1:
+            wavs = wavs.squeeze(1)
         
-        outputs = self.model(wavs=wavs, texts=texts)
+        outputs = self.model(wavs=wavs, texts=texts, parallel_processing=True)
         
         # add seq_len dimension
         outputs = outputs.unsqueeze(1) 
 
-        return outputs
+        return (outputs, )
 
 
 
 if __name__ == "__main__":
     device = 'cuda'
     # fake wav for testing
-    wav = torch.randn(2, 24000 * 10)  # 10 seconds of audio at 24kHz
+    wav = torch.randn(4, 24000 * 10)  # 10 seconds of audio at 24kHz
     wavs = torch.tensor(wav).to(device) 
 
     # This will automatically fetch the checkpoint from huggingface
@@ -127,6 +130,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         output = muq(wavs)
 
-    print(output.shape)
+    print('Total number of layers: ', len(output))
+    print('Output shape of each layer: ', [layer.shape for layer in output])
     
     

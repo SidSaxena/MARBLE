@@ -149,5 +149,6 @@ if __name__ == "__main__":
         output = model(wavs)
 
     print('Total number of layers: ', len(output))
+    print('Output shape of each layer: ', [layer.shape for layer in output])
     
     

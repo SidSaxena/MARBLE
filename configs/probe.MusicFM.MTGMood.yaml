@@ -5,7 +5,8 @@ trainer:
   fast_dev_run: false
   accelerator: gpu
   strategy: ddp # or ddp_find_unused_parameters 
-  devices: [4,5,6,7] # torchrun --nproc_per_node=4 cli.py fit -c xxx
+  devices: [0,1,2,3] # torchrun --nproc_per_node=4 cli.py fit -c xxx
+  # devices: [0,]
   accumulate_grad_batches: 1
   num_nodes: 1
   precision: bf16 # or 32, or 16
@@ -17,7 +18,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.MTGTop50.MuQ/checkpoints/" # Please specify your own path
+        dirpath: "./output/probe.MTGMood.MusicFM/checkpoints/" # Please specify your own path
         filename: "best"
         save_top_k: 1 # -1 to save all checkpoints
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
@@ -34,18 +35,18 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGTop50.MuQ"
-      save_dir: "./output/probe.MTGTop50.MuQ/"
+      name: "probe.MTGMood.MusicFM"
+      save_dir: "./output/probe.MTGMood.MusicFM/"
 
 
 model:
-  class_path: marble.tasks.MTGTop50.probe.ProbeAudioTask
+  class_path: marble.tasks.MTGMood.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
     use_ema: false
 
     encoder:
-      class_path: marble.encoders.MuQ.model.MuQ_Encoder
+      class_path: marble.encoders.MusicFM.model.MusicFM_Encoder
       init_args:
         pre_trained_folder: null
         train_mode: freeze  # also supports lora, or full
@@ -61,7 +62,7 @@ model:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 1024
-          out_dim: 50 # 10 genres
+          out_dim: 56 # 10 genres
           hidden_layers: [512]
           activation_fn: 
             class_path: torch.nn.ReLU
@@ -76,85 +77,85 @@ model:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro # Can be 'micro', 'macro', or 'weighted'
         auroc:
           class_path: torchmetrics.AUROC # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro
         ap:
           class_path: torchmetrics.AveragePrecision # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro
         f1_micro:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: micro # Can be 'micro', 'macro', or 'weighted'
       val:
         f1:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro # Can be 'micro', 'macro', or 'weighted'
         auroc:
           class_path: torchmetrics.AUROC # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro
         ap:
           class_path: torchmetrics.AveragePrecision # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro
         f1_micro:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: micro # Can be 'micro', 'macro', or 'weighted'
       test:
         f1:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro # Can be 'micro', 'macro', or 'weighted'
         f1_micro:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: micro # Can be 'micro', 'macro', or 'weighted'
         auroc:
           class_path: torchmetrics.AUROC # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro
         ap:
           class_path: torchmetrics.AveragePrecision # ADD
           init_args:
             task: multilabel
-            num_labels: 50
+            num_labels: 56
             average: macro
     
 data:
-  class_path: marble.tasks.MTGTop50.datamodule.MTGTop50DataModule
+  class_path: marble.tasks.MTGMood.datamodule.MTGMoodDataModule
   init_args:
     batch_size: 32
     num_workers: 32
 
     train:
-      class_path: marble.tasks.MTGTop50.datamodule.MTGTop50AudioTrain
+      class_path: marble.tasks.MTGMood.datamodule.MTGMoodAudioTrain
       init_args:
         sample_rate: 24000
         channels: 1
@@ -162,9 +163,9 @@ data:
         min_clip_ratio: 0.8 # at least 80% of the clip length
         channel_mode: mix # first, random, mix
         backend: "soundfile" # or "sox_io"
-        jsonl: data/MTG/MTGTop50.train.jsonl
+        jsonl: data/MTG/MTGMood.train.jsonl
     val:
-      class_path: marble.tasks.MTGTop50.datamodule.MTGTop50AudioVal
+      class_path: marble.tasks.MTGMood.datamodule.MTGMoodAudioVal
       init_args:
         sample_rate: 24000
         channels: 1
@@ -172,9 +173,9 @@ data:
         min_clip_ratio: 0.8
         channel_mode: mix
         backend: "soundfile" # or "sox_io"
-        jsonl: data/MTG/MTGTop50.val.jsonl
+        jsonl: data/MTG/MTGMood.val.jsonl
     test:
-      class_path: marble.tasks.MTGTop50.datamodule.MTGTop50AudioTest
+      class_path: marble.tasks.MTGMood.datamodule.MTGMoodAudioTest
       init_args:
         sample_rate: 24000
         channels: 1
@@ -182,7 +183,7 @@ data:
         min_clip_ratio: 0.8
         channel_mode: mix
         backend: "soundfile" # or "sox_io"
-        jsonl: data/MTG/MTGTop50.test.jsonl
+        jsonl: data/MTG/MTGMood.test.jsonl
 
 optimizer:
   class_path: torch.optim.Adam

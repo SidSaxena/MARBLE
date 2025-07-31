@@ -5,7 +5,8 @@ trainer:
   fast_dev_run: false
   accelerator: gpu
   strategy: ddp # or ddp_find_unused_parameters 
-  devices: [4,5,6,7] # torchrun --nproc_per_node=4 cli.py fit -c xxx
+  devices: [0,1,2,3] # torchrun --nproc_per_node=4 cli.py fit -c xxx
+  # devices: [0,]
   accumulate_grad_batches: 1
   num_nodes: 1
   precision: bf16 # or 32, or 16
@@ -17,7 +18,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.MTGTop50.MuQ/checkpoints/" # Please specify your own path
+        dirpath: "./output/probe.MTGTop50.MusicFM/checkpoints/" # Please specify your own path
         filename: "best"
         save_top_k: 1 # -1 to save all checkpoints
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
@@ -34,8 +35,8 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGTop50.MuQ"
-      save_dir: "./output/probe.MTGTop50.MuQ/"
+      name: "probe.MTGTop50.MusicFM"
+      save_dir: "./output/probe.MTGTop50.MusicFM/"
 
 
 model:
@@ -45,7 +46,7 @@ model:
     use_ema: false
 
     encoder:
-      class_path: marble.encoders.MuQ.model.MuQ_Encoder
+      class_path: marble.encoders.MusicFM.model.MusicFM_Encoder
       init_args:
         pre_trained_folder: null
         train_mode: freeze  # also supports lora, or full
