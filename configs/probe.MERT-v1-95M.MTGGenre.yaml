@@ -5,7 +5,8 @@ trainer:
   fast_dev_run: false
   accelerator: gpu
   strategy: ddp # or ddp_find_unused_parameters
-  devices: [4,5,6,7]
+  devices: [4,5,6,7] # torchrun --nproc_per_node=4 cli.py fit -c xxx
+  # devices: [0]
   accumulate_grad_batches: 1
   num_nodes: 1
   precision: bf16 # or 32, or 16
@@ -17,7 +18,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.MTGMood.MERT-v1-95M/checkpoints/" # Please specify your own path
+        dirpath: "./output/probe.MTGGenre.MERT-v1-95M/checkpoints/" # Please specify your own path
         filename: "best"
         save_top_k: 1 # -1 to save all checkpoints
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
@@ -34,12 +35,12 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGMood.MERT-v1-95M"
-      save_dir: "./output/probe.MTGMood.MERT-v1-95M/"
+      name: "probe.MTGGenre.MERT-v1-95M"
+      save_dir: "./output/probe.MTGGenre.MERT-v1-95M/"
 
 
 model:
-  class_path: marble.tasks.MTGMood.probe.ProbeAudioTask
+  class_path: marble.tasks.MTGGenre.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
     use_ema: false
@@ -62,7 +63,7 @@ model:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 768
-          out_dim: 56
+          out_dim: 87
           hidden_layers: [512]
           activation_fn: 
             class_path: torch.nn.ReLU
@@ -77,79 +78,79 @@ model:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro # Can be 'micro', 'macro', or 'weighted'
         auroc:
           class_path: torchmetrics.AUROC # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro
         ap:
           class_path: torchmetrics.AveragePrecision # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro
         f1_micro:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: micro # Can be 'micro', 'macro', or 'weighted'
       val:
         f1:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro # Can be 'micro', 'macro', or 'weighted'
         auroc:
           class_path: torchmetrics.AUROC # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro
         ap:
           class_path: torchmetrics.AveragePrecision # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro
         f1_micro:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: micro # Can be 'micro', 'macro', or 'weighted'
       test:
         f1:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro # Can be 'micro', 'macro', or 'weighted'
         f1_micro:
           class_path: torchmetrics.F1Score # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: micro # Can be 'micro', 'macro', or 'weighted'
         auroc:
           class_path: torchmetrics.AUROC # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro
         ap:
           class_path: torchmetrics.AveragePrecision # ADD
           init_args:
             task: multilabel
-            num_labels: 56
+            num_labels: 87
             average: macro
     
 data:
-  class_path: marble.tasks.MTGMood.datamodule.MTGMoodDataModule
+  class_path: marble.tasks.MTGGenre.datamodule.MTGGenreDataModule
   init_args:
     batch_size: 32
     num_workers: 32
@@ -172,7 +173,7 @@ data:
             squeeze: true
 
     train:
-      class_path: marble.tasks.MTGMood.datamodule.MTGMoodAudioTrain
+      class_path: marble.tasks.MTGGenre.datamodule.MTGGenreAudioTrain
       init_args:
         sample_rate: 24000
         channels: 1
@@ -180,9 +181,9 @@ data:
         min_clip_ratio: 0.8 # at least 80% of the clip length
         channel_mode: mix # first, random, mix
         backend: "soundfile" # or "sox_io"
-        jsonl: data/MTG/MTGMood.train.jsonl
+        jsonl: data/MTG/MTGGenre.train.jsonl
     val:
-      class_path: marble.tasks.MTGMood.datamodule.MTGMoodAudioVal
+      class_path: marble.tasks.MTGGenre.datamodule.MTGGenreAudioVal
       init_args:
         sample_rate: 24000
         channels: 1
@@ -190,9 +191,9 @@ data:
         min_clip_ratio: 0.8
         channel_mode: mix
         backend: "soundfile" # or "sox_io"
-        jsonl: data/MTG/MTGMood.val.jsonl
+        jsonl: data/MTG/MTGGenre.val.jsonl
     test:
-      class_path: marble.tasks.MTGMood.datamodule.MTGMoodAudioTest
+      class_path: marble.tasks.MTGGenre.datamodule.MTGGenreAudioTest
       init_args:
         sample_rate: 24000
         channels: 1
@@ -200,7 +201,7 @@ data:
         min_clip_ratio: 0.8
         channel_mode: mix
         backend: "soundfile" # or "sox_io"
-        jsonl: data/MTG/MTGMood.test.jsonl
+        jsonl: data/MTG/MTGGenre.test.jsonl
 
 optimizer:
   class_path: torch.optim.Adam

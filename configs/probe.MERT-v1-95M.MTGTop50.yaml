@@ -4,8 +4,8 @@ ckpt_path: null # to resume
 trainer:
   fast_dev_run: false
   accelerator: gpu
-  # strategy: ddp # or ddp_find_unused_parameters
-  devices: [1]
+  strategy: ddp # or ddp_find_unused_parameters
+  devices: [4,5,6,7]
   accumulate_grad_batches: 1
   num_nodes: 1
   precision: bf16 # or 32, or 16
@@ -27,7 +27,8 @@ trainer:
     - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
       init_args:
         monitor: "val/auroc"               # 要监控的 metric 名称
-        patience: 5                       # 在多少次验证后无改进就停止
+        check_on_train_epoch_end: false
+        patience: 10                       # 在多少次验证后无改进就停止
         mode: "max"                       # “val_loss” 下降时才算改进
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
@@ -55,7 +56,8 @@ model:
       - class_path: marble.modules.transforms.MLPReduce
         init_args:
           num_layers: 13
-          hidden_size: 768
+          hidden_size: 1024
+      - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
     
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
@@ -90,6 +92,12 @@ model:
             task: multilabel
             num_labels: 50
             average: macro
+        f1_micro:
+          class_path: torchmetrics.F1Score # ADD
+          init_args:
+            task: multilabel
+            num_labels: 50
+            average: micro # Can be 'micro', 'macro', or 'weighted'
       val:
         f1:
           class_path: torchmetrics.F1Score # ADD
@@ -109,6 +117,12 @@ model:
             task: multilabel
             num_labels: 50
             average: macro
+        f1_micro:
+          class_path: torchmetrics.F1Score # ADD
+          init_args:
+            task: multilabel
+            num_labels: 50
+            average: micro # Can be 'micro', 'macro', or 'weighted'
       test:
         f1:
           class_path: torchmetrics.F1Score # ADD
@@ -116,6 +130,12 @@ model:
             task: multilabel
             num_labels: 50
             average: macro # Can be 'micro', 'macro', or 'weighted'
+        f1_micro:
+          class_path: torchmetrics.F1Score # ADD
+          init_args:
+            task: multilabel
+            num_labels: 50
+            average: micro # Can be 'micro', 'macro', or 'weighted'
         auroc:
           class_path: torchmetrics.AUROC # ADD
           init_args:
@@ -132,7 +152,7 @@ model:
 data:
   class_path: marble.tasks.MTGTop50.datamodule.MTGTop50DataModule
   init_args:
-    batch_size: 64
+    batch_size: 32
     num_workers: 32
 
     audio_transforms:
@@ -193,5 +213,5 @@ lr_scheduler:
   init_args:
     mode: "max"
     factor: 0.5
-    patience: 2
+    patience: 3
     monitor: "val/auroc"
