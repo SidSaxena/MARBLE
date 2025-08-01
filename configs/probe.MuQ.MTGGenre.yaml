@@ -52,9 +52,10 @@ model:
         train_mode: freeze  # also supports lora, or full
       
     emb_transforms:
-      - class_path: marble.modules.transforms.LayerSelector
+      - class_path: marble.modules.transforms.MLPReduce
         init_args:
-          layers: [6]  # something like [1, 3, "10..72"]
+          num_layers: 13
+          hidden_size: 1024
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
     
     decoders:
@@ -78,18 +79,6 @@ model:
             task: multilabel
             num_labels: 87
             average: macro # Can be 'micro', 'macro', or 'weighted'
-        auroc:
-          class_path: torchmetrics.AUROC # ADD
-          init_args:
-            task: multilabel
-            num_labels: 87
-            average: macro
-        ap:
-          class_path: torchmetrics.AveragePrecision # ADD
-          init_args:
-            task: multilabel
-            num_labels: 87
-            average: macro
         f1_micro:
           class_path: torchmetrics.F1Score # ADD
           init_args:

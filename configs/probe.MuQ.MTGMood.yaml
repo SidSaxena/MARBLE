@@ -78,18 +78,6 @@ model:
             task: multilabel
             num_labels: 56
             average: macro # Can be 'micro', 'macro', or 'weighted'
-        auroc:
-          class_path: torchmetrics.AUROC # ADD
-          init_args:
-            task: multilabel
-            num_labels: 56
-            average: macro
-        ap:
-          class_path: torchmetrics.AveragePrecision # ADD
-          init_args:
-            task: multilabel
-            num_labels: 56
-            average: macro
         f1_micro:
           class_path: torchmetrics.F1Score # ADD
           init_args:
