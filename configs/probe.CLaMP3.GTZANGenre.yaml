@@ -144,7 +144,7 @@ data:
 optimizer:
   class_path: torch.optim.Adam
   init_args:
-    lr: 5e-3
+    lr: 1e-3
 
 lr_scheduler:
   class_path: lightning.pytorch.cli.ReduceLROnPlateau

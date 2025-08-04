@@ -40,7 +40,7 @@ trainer:
 model:
   class_path: marble.tasks.GTZANGenre.probe.ProbeAudioTask
   init_args:
-    sample_rate: 24000
+    sample_rate: 16000
     use_ema: false
 
     encoder:
@@ -100,7 +100,7 @@ data:
     train:
       class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreAudioTrain
       init_args:
-        sample_rate: 24000
+        sample_rate: 16000
         channels: 1
         clip_seconds: 30.2
         min_clip_ratio: 0.8 # at least 80% of the clip length
@@ -109,7 +109,7 @@ data:
     val:
       class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreAudioVal
       init_args:
-        sample_rate: 24000
+        sample_rate: 16000
         channels: 1
         clip_seconds: 30.2
         min_clip_ratio: 0.8
@@ -118,7 +118,7 @@ data:
     test:
       class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreAudioTest
       init_args:
-        sample_rate: 24000
+        sample_rate: 16000
         channels: 1
         clip_seconds: 30.2
         min_clip_ratio: 0.8
