@@ -56,7 +56,7 @@ model:
       - class_path: marble.modules.transforms.MLPReduce
         init_args:
           num_layers: 13
-          hidden_size: 1024
+          hidden_size: 768
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
     
     decoders:
