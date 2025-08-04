@@ -101,7 +101,8 @@ python sota/predict_key.py --filelist_path <filelist> --output_path <output> --b
 
 ## Supported/In-coming Tasks and Encoders
 
-Below are the encoders and downstream tasks currently supported or under development in MARBLE.
+<details>
+<summary>Click here to view the encoders and downstream tasks currently supported or under development in MARBLE.</summary>
 
 ---
 
@@ -150,7 +151,7 @@ Below are the encoders and downstream tasks currently supported or under develop
 | **[v1] VocalSet**           | Solo singing-voice dataset (12 vowels × 4 registers × 30 singers).                                                                                                                     | Wilkins et al. (ISMIR 2018) [VocalSet: A Singing Voice Dataset](https://interactiveaudiolab.github.io/assets/papers/wilkins_seetharaman_ismir18.pdf)                                         | [VocalSet dataset](https://zenodo.org/records/1193957)                                                                                                                                           |
 | **[Planning] WildSVDD**           | Anomaly detection on WILD (Singing Voice Deepfake Detection Challenge) tracks (real vs. AI-generated).                                                                                | Zhang et al. (ICASSP 2024) [SVDD 2024: The Inaugural Singing Voice Deepfake Detection Challenge](https://arxiv.org/abs/2408.16132)                                                             | [SVDD Challenge](https://svddchallenge.org/)                                                                                                                                                     |
 
-
+</details>
 
 
 ## Project Structure
