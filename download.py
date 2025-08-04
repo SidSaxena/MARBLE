@@ -8,6 +8,7 @@ __all_datasets__ = [
     "EMO",
     "GS",
     "Chords1217",
+    "MTG",
     # "MTT",
     "HookTheory",
 ]
