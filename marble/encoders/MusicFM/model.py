@@ -1,22 +1,24 @@
-# marble/encoders/MuQMuLan/model.py
+# marble/encoders/MusicFM/model.py
 from typing import Sequence, Dict, Optional, Union, Tuple, List
+import os
 
 import torch
 
-from marble.encoders.MuQMuLan.muq_mulan import MuQMuLan
+from marble.encoders.MusicFM.musicfm_25hz import MusicFM25Hz
 from marble.core.base_encoder import BaseEncoder
 
 
-class MuQMuLan_Encoder(BaseEncoder):
+class MusicFM_Encoder(BaseEncoder):
     """
     A Hugging Face HuBERT-based wrapper with optional LoRA adapters, full fine-tuning, or freezing.
     """
 
-    NAME = "MuQMuLan"
-    HUGGINGFACE_MODEL_NAME = "OpenMuQ/MuQ-MuLan-large"
-    TOKEN_RATE = 1  # Number of feature frames per second of audio
+    NAME = "MusicFM"
+    MODEL_NAME = "minzwon/MusicFM/pretrained_msd"
+    TOKEN_RATE = 25  # Number of feature frames per second of audio
     SAMPLING_RATE = 24000  # Audio sampling rate expected by the model
-    NUM_FEATURES = 512  # Hidden dimension of the HuBERT model
+    NUM_FEATURES = 1024  # Hidden dimension of the HuBERT model
+    N_TRANSFORMER_LAYERS = 12  # Number of transformer layers in the backbone
 
     def __init__(
         self,
@@ -41,11 +43,30 @@ class MuQMuLan_Encoder(BaseEncoder):
         super().__init__()
         self.sample_rate = self.SAMPLING_RATE
 
+        # pre_trained_folder is default to $HOME/.cache/musicfm/
+        if pre_trained_folder is None:
+            pre_trained_folder = os.path.expanduser("~/.cache/musicfm/")
+            if not os.path.exists(pre_trained_folder):
+                os.makedirs(pre_trained_folder)
+        
+        # autodownload if not exist
+        # wget -P ~/.cache/musicfm/ https://huggingface.co/minzwon/MusicFM/resolve/main/msd_stats.json
+        # wget -P ~/.cache/musicfm/ https://huggingface.co/minzwon/MusicFM/resolve/main/pretrained_msd.pt
+        if not os.path.exists(os.path.join(pre_trained_folder, "msd_stats.json")) or \
+           not os.path.exists(os.path.join(pre_trained_folder, "pretrained_msd.pt")):
+            print("Downloading pre-trained MusicFM model files...")
+            os.system(f"wget -P {pre_trained_folder} https://huggingface.co/minzwon/MusicFM/resolve/main/msd_stats.json")
+            os.system(f"wget -P {pre_trained_folder} https://huggingface.co/minzwon/MusicFM/resolve/main/pretrained_msd.pt")
+            print("Download complete. Files saved to:", pre_trained_folder)
+        
+        
         # Load the core MusicHuBERT model
-        self.model = MuQMuLan.from_pretrained(
-            pre_trained_folder or self.HUGGINGFACE_MODEL_NAME
+        self.model = MusicFM25Hz(
+            is_flash=False,
+            stat_path=os.path.join(pre_trained_folder, "msd_stats.json"),
+            model_path=os.path.join(pre_trained_folder, "pretrained_msd.pt"),
         )
-
+        
 
         # Configure which parameters to train
         if train_mode == "freeze":
@@ -85,35 +106,32 @@ class MuQMuLan_Encoder(BaseEncoder):
 
     def forward(
         self,
-        wavs: torch.Tensor,
-        texts: Optional[Union[str, List[str]]] = None,
+        x: torch.Tensor,
         *args,
+        output_hidden_states: bool = True,
         **kwargs
     ) -> dict:
         """
         Perform a forward pass through the HuBERT encoder.
 
         Args:
-            wavs (torch.Tensor): Waveform tensor, shape (batch_size, num_samples), values in [-1, 1].
-            texts (str or List[str], optional): Text input for the model, if applicable.
+            x (torch.Tensor): Waveform tensor, shape (batch_size, num_samples), values in [-1, 1].
+            output_hidden_states (bool): If True, return all intermediate hidden states.
             *args, **kwargs: Additional arguments passed to the underlying model.
 
         Returns:
-            A Tensor object (batch_size, seq_len, NUM_FEATURES).
+            hidden_states (tuple of torch.FloatTensor, optional): All layer outputs
+                  if output_hidden_states=True; each is (batch_size, seq_len, NUM_FEATURES).
         """
-        # Ensure input dtype matches model parameters (fp16 vs fp32)
-        model_dtype = next(self.model.parameters()).dtype
-        wavs = wavs.to(device=self.model.device, dtype=model_dtype)
-        # if 3D and the middle dim is 1, squeeze it
-        if wavs.ndim == 3 and wavs.shape[1] == 1:
-            wavs = wavs.squeeze(1)
-        
-        outputs = self.model(wavs=wavs, texts=texts, parallel_processing=True)
-        
-        # add seq_len dimension
-        outputs = outputs.unsqueeze(1) 
+        model_parameters = next(self.model.parameters())
+        model_dtype = model_parameters.dtype
+        x = x.to(device=model_parameters.device, dtype=model_dtype)
 
-        return (outputs, )
+        _, outputs = self.model.get_predictions(
+            x=x,
+        )
+
+        return outputs # tuple of per layer emb, 13 layers in total, each shape of (B, T, H)
 
 
 
@@ -124,11 +142,11 @@ if __name__ == "__main__":
     wavs = torch.tensor(wav).to(device) 
 
     # This will automatically fetch the checkpoint from huggingface
-    muq = MuQMuLan_Encoder()
-    muq = muq.to(device).eval()
+    model = MusicFM_Encoder()
+    model = model.to(device).eval()
 
     with torch.no_grad():
-        output = muq(wavs)
+        output = model(wavs)
 
     print('Total number of layers: ', len(output))
     print('Output shape of each layer: ', [layer.shape for layer in output])

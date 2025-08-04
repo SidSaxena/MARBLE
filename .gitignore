@@ -421,3 +421,5 @@ marble/tasks/GTZANBeatTracking/madmom/hmm.c
 abs.filelist.txt
 tests/filelist.txt
 pred.jsonl
+tests/test.clamp3.npy
+tests/test.mert.npy

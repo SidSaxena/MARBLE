@@ -130,5 +130,6 @@ if __name__ == "__main__":
         output = muq(wavs, output_hidden_states=True)
 
     print('Total number of layers: ', len(output))
+    print('Output shape of each layer: ', [layer.shape for layer in output])
     
     

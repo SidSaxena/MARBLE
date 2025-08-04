@@ -1,4 +1,4 @@
-# marble/tasks/HookTheoryKey/probe.py
+# marble/tasks/HookTheoryStructure/probe.py
 from collections import defaultdict
 import json
 
@@ -12,12 +12,12 @@ from torchmetrics import Metric, MetricCollection
 
 from marble.core.base_task import BaseTask
 from marble.core.utils import instantiate_from_config
-from marble.tasks.HookTheoryKey.datamodule import _HookTheoryKeyAudioBase
+from marble.tasks.HookTheoryStructure.datamodule import _HookTheoryStructureAudioBase
 
 
 class ProbeAudioTask(BaseTask):
     """
-    HookTheoryKey probe task. Inherits training/val logic, multi-head,
+    HookTheoryStructure probe task. Inherits training/val logic, multi-head,
     losses, metrics and EMA support from BaseTask.
     """
 
@@ -97,46 +97,3 @@ class ProbeAudioTask(BaseTask):
             metrics_out = mc(batched_logits, batched_labels)
             self.log_dict(metrics_out, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
 
-
-class KeyWeightedScore(Metric):
-    """
-    Key weighted score for key estimation using logits.
-    Uses mir_eval to compute the weighted score for key estimation.
-    """
-    IDX2LABEL = _HookTheoryKeyAudioBase.IDX2LABEL
-    LABEL2IDX = _HookTheoryKeyAudioBase.LABEL2IDX
-    
-    def __init__(self):
-        super().__init__()
-        self.add_state("preds", default=[], dist_reduce_fx="cat")
-        self.add_state("labels", default=[], dist_reduce_fx="cat")
-
-    def update(self, preds: torch.Tensor, labels: torch.Tensor):
-        """
-        Update the metric with predictions and ground truth labels.
-        """
-        device = preds.device  # Use the device of preds to ensure consistency
-        self.preds.append(preds.to(device))
-        self.labels.append(labels.to(device))
-
-    def compute(self):
-        """
-        Compute the weighted score using mir_eval without the need for aggregation.
-        Assumes the inputs have already been aggregated.
-        """
-        preds = torch.cat(self.preds, dim=0)
-        labels = torch.cat(self.labels, dim=0)
-
-        # Convert logits to predicted labels
-        preds_label = torch.argmax(preds, dim=-1)
-
-        # Convert to numpy for mir_eval
-        preds_label = preds_label.cpu().numpy()
-        labels = labels.cpu().numpy()
-
-        # Calculate the weighted score
-        scores = [
-            mir_eval.key.weighted_score(self.IDX2LABEL[ref_key], self.IDX2LABEL[est_key])
-            for ref_key, est_key in zip(labels, preds_label)
-        ]
-        return torch.tensor(np.mean(scores), device=preds.device)

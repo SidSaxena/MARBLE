@@ -1,4 +1,4 @@
-# marble/core/base_datamodule.pyimport torch
+# marble/core/base_datamodule.py
 
 import os
 import json
@@ -109,7 +109,7 @@ class BaseAudioDataset(Dataset, ABC):
         sample_rate: int,
         channels: int,
         clip_seconds: float,
-        label_freq: int,
+        label_freq: int = -1,
         channel_mode: str = "first",
         min_clip_ratio: float = 1.0,
         backend: Optional[str] = None
