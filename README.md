@@ -85,23 +85,11 @@ Marble is a modular, configuration-driven suite for training, evaluating, and pe
 6. **Inference**: We provide scripts for inference on pretrained models. See the [Inference SOTA SSL MIR models](#inference-sota-ssl-mir-models) section below.
 
 
-## Inference SOTA SSL MIR models
-We are collaborating with MIREX to introduce state-of-the-art SSL-based models for Music Information Retrieval (MIR). We believe that the future of MIR lies in Self-Supervised Learning (SSL), as acquiring labeled data for MIR is costly, and fully supervised paradigms are too expensive. In contrast, the computational cost is continuously decreasing and will eventually become more affordable than manual labeling.
-
-### Key Prediction
-
-The `sota/predict_key.py` script performs key prediction on audio files using a pretrained model. It automatically downloads the model from Hugging Face if necessary, processes audio clips in batches, and saves the predictions (key and confidence) to a JSONL file. To run, use the following command:
-
-```bash
-python sota/predict_key.py --filelist_path <filelist> --output_path <output> --batch_size 16 --download_dir <dir>
-
-# You may reproduce the training/testing (if you have access to corresponding data) by running 
-# bash sota/reproduce_key_sota_20250618.sh
-```
 
 ## Supported/In-coming Tasks and Encoders
 
-Below are the encoders and downstream tasks currently supported or under development in MARBLE.
+<details>
+<summary> 👈Click here to view the encoders and downstream tasks currently supported or under development in MARBLE.</summary>
 
 ---
 
@@ -150,8 +138,23 @@ Below are the encoders and downstream tasks currently supported or under develop
 | **[v1] VocalSet**           | Solo singing-voice dataset (12 vowels × 4 registers × 30 singers).                                                                                                                     | Wilkins et al. (ISMIR 2018) [VocalSet: A Singing Voice Dataset](https://interactiveaudiolab.github.io/assets/papers/wilkins_seetharaman_ismir18.pdf)                                         | [VocalSet dataset](https://zenodo.org/records/1193957)                                                                                                                                           |
 | **[Planning] WildSVDD**           | Anomaly detection on WILD (Singing Voice Deepfake Detection Challenge) tracks (real vs. AI-generated).                                                                                | Zhang et al. (ICASSP 2024) [SVDD 2024: The Inaugural Singing Voice Deepfake Detection Challenge](https://arxiv.org/abs/2408.16132)                                                             | [SVDD Challenge](https://svddchallenge.org/)                                                                                                                                                     |
 
+</details>
 
 
+
+## Inference SOTA SSL MIR models
+We are collaborating with MIREX to introduce state-of-the-art SSL-based models for Music Information Retrieval (MIR). We believe that the future of MIR lies in Self-Supervised Learning (SSL), as acquiring labeled data for MIR is costly, and fully supervised paradigms are too expensive. In contrast, the computational cost is continuously decreasing and will eventually become more affordable than manual labeling.
+
+### Key Prediction
+
+The `sota/predict_key.py` script performs key prediction on audio files using a pretrained model. It automatically downloads the model from Hugging Face if necessary, processes audio clips in batches, and saves the predictions (key and confidence) to a JSONL file. To run, use the following command:
+
+```bash
+python sota/predict_key.py --filelist_path <filelist> --output_path <output> --batch_size 16 --download_dir <dir>
+
+# You may reproduce the training/testing (if you have access to corresponding data) by running 
+# bash sota/reproduce_key_sota_20250618.sh
+```
 
 ## Project Structure
 ```bash
