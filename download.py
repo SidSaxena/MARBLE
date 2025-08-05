@@ -9,7 +9,7 @@ __all_datasets__ = [
     "GS",
     "Chords1217",
     "MTG",
-    # "MTT",
+    "MTT",
     "HookTheory",
 ]
 
