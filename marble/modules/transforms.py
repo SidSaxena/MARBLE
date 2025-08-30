@@ -319,6 +319,32 @@ class TimeAdaptivePool(BaseEmbTransform):
         return rearrange(y, '(b l) h t -> b l t h', b=x.size(0), l=x.size(1))
 
 
+class LinearInterpolation(BaseEmbTransform):
+    """
+    Linearly resamples the time axis to a fixed number of frames.
+    """
+    def __init__(self, target_frames: int, align_corners: bool = False):
+        super().__init__()
+        self.target_frames = target_frames
+        self.align_corners = align_corners
+
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        """
+        Args:
+            x (Tensor): Layer-stacked tensor of shape
+                (batch_size, num_layers, seq_len, hidden_size).
+        Returns:
+            Tensor: Time-resampled tensor of shape
+                (batch_size, num_layers, target_frames, hidden_size).
+        """
+        b, l, t, h = x.shape
+        # Treat hidden_size as channels for 1D interpolation over time
+        x2 = rearrange(x, 'b l t h -> (b l) h t')  # (B*L, H, T)
+        y = F.interpolate(x2, size=self.target_frames, mode='linear',
+                          align_corners=self.align_corners)
+        return rearrange(y, '(b l) h t -> b l t h', b=b, l=l)
+
+
 class TimeAvgPool(BaseEmbTransform):
     """
     Computes simple average pooling over the time dimension.
