@@ -48,6 +48,7 @@ model:
       init_args:
         pre_trained_folder: null
         mode: vq_emb  # vq_emb / pre_vq_emb  
+        target_bw: 6.0  # one of [0.5, 1.0, ..., 6.0] kbps
       
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector

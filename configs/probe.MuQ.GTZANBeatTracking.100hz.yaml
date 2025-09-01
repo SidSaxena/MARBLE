@@ -5,7 +5,7 @@ trainer:
   fast_dev_run: false
   accelerator: gpu
   # strategy: ddp # or ddp_find_unused_parameters
-  devices: [1]
+  devices: [0]
   accumulate_grad_batches: 8
   num_nodes: 1
   precision: bf16 # or 32, or 16
@@ -17,7 +17,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.GTZANBeatTracking.MuQ/checkpoints/" # Please specify your own path
+        dirpath: "./output/probe.GTZANBeatTracking.MuQ.100hz/checkpoints/" # Please specify your own path
         filename: "best"
         save_top_k: 1 # -1 to save all checkpoints
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
@@ -33,15 +33,15 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.GTZANBeatTracking.MuQ"
-      save_dir: "./output/probe.GTZANBeatTracking.MuQ/"
+      name: "probe.GTZANBeatTracking.MuQ.100hz"
+      save_dir: "./output/probe.GTZANBeatTracking.MuQ.100hz/"
 
 
 model:
   class_path: marble.tasks.GTZANBeatTracking.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
-    fps: 25
+    fps: 100
     use_ema: false
     loss_weights: [1.0, 1.0, 0.0] # beat, downbeat, tempo (tempo disabled, seems interfering with beat tracking)
 
@@ -56,11 +56,14 @@ model:
         init_args:
           num_layers: 13
           hidden_size: 1024
+      - class_path: marble.modules.transforms.LinearInterpolation
+        init_args:
+          target_frames: 1000
     
     decoders:
       - class_path: marble.tasks.GTZANBeatTracking.probe.BeatDownbeatTempoMultitaskDecoder
         init_args:
-          fps: 25
+          fps: 100
           use_ssl_for_tempo: false
           
           joint_decoder:
@@ -76,7 +79,7 @@ model:
           tempo_decoder:
             class_path: marble.tasks.GTZANBeatTracking.modules.FFTTempoEstimator
             init_args:
-              label_fps: 25
+              label_fps: 100
               freq_resolution: 4
 
     losses:
@@ -97,13 +100,13 @@ model:
         beat_f1:
           class_path: marble.tasks.GTZANBeatTracking.metrics.TimeEventFMeasure
           init_args:
-            label_freq: 25
+            label_freq: 100
             tol: 0.07
             threshold: 0.99
         downbeat_f1:
           class_path: marble.tasks.GTZANBeatTracking.metrics.TimeEventFMeasure
           init_args:
-            label_freq: 25
+            label_freq: 100
             tol: 0.07
             threshold: 0.99
         tempo_mae:
@@ -116,13 +119,13 @@ model:
         beat_f1:
           class_path: marble.tasks.GTZANBeatTracking.metrics.TimeEventFMeasure
           init_args:
-            label_freq: 25
+            label_freq: 100
             tol: 0.07
             threshold: 0.99
         downbeat_f1:
           class_path: marble.tasks.GTZANBeatTracking.metrics.TimeEventFMeasure
           init_args:
-            label_freq: 25
+            label_freq: 100
             tol: 0.07
             threshold: 0.99
         tempo_mae:
@@ -147,7 +150,7 @@ data:
         min_clip_ratio: 0.8 # at least 80% of the clip length
         channel_mode: first # first, random, mix
         jsonl: data/GTZAN/GTZANBeatTracking.train.jsonl
-        label_freq: 25
+        label_freq: 100
         num_neighbors: 2
     val:
       class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingAudioVal
@@ -158,7 +161,7 @@ data:
         min_clip_ratio: 0.8
         channel_mode: first
         jsonl: data/GTZAN/GTZANBeatTracking.val.jsonl
-        label_freq: 25
+        label_freq: 100
         num_neighbors: 0
     test:
       class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingAudioTest
@@ -169,7 +172,7 @@ data:
         min_clip_ratio: 0.8
         channel_mode: first
         jsonl: data/GTZAN/GTZANBeatTracking.test.jsonl
-        label_freq: 25
+        label_freq: 100
         num_neighbors: 0
 
 optimizer:

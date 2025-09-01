@@ -5,7 +5,7 @@ trainer:
   fast_dev_run: false
   accelerator: gpu
   # strategy: ddp # or ddp_find_unused_parameters
-  devices: [1]
+  devices: [0]
   accumulate_grad_batches: 8
   num_nodes: 1
   precision: bf16 # or 32, or 16
@@ -48,6 +48,7 @@ model:
       init_args:
         pre_trained_folder: null
         mode: vq_emb  # vq_emb / pre_vq_emb  
+        target_bw: 6.0  # one of [0.5, 1.0, ..., 6.0] kbps
       
     emb_transforms:
       - class_path: marble.modules.transforms.MLPReduce

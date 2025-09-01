@@ -35,7 +35,8 @@ class Xcodec_Encoder(BaseEncoder):
     def __init__(
         self,
         pre_trained_folder: str = None,
-        mode: str = "vq_emb"
+        mode: str = "vq_emb",
+        target_bw: float = 6.0,
     ) -> None:
         """
         Initialize the XCodec encoder in frozen mode.
@@ -54,6 +55,10 @@ class Xcodec_Encoder(BaseEncoder):
         self.mode = mode
         # removed support for "indices" mode in marble
         assert self.mode in ["vq_emb", "pre_vq_emb"], "Mode must be in ['vq_emb', 'pre_vq_emb']."
+        
+        self.target_bw = target_bw
+        assert self.target_bw in [i*0.5 for i in range(1, 13)], "target_bw must be one of [0.5, 1.0, ..., 6.0]"
+        print(f"Initializing XCodec Encoder in '{self.mode}' mode with target_bw={self.target_bw} kbps.")
 
         # Determine the root directory for model files
         if pre_trained_folder:
@@ -134,7 +139,7 @@ class Xcodec_Encoder(BaseEncoder):
         if x.dim() == 2:
             x = x.unsqueeze(1)
         
-        embeddings_b_d_t = self.model.encode(x, mode=self.mode, **kwargs) # [B, H, T]
+        embeddings_b_d_t = self.model.encode(x, mode=self.mode, target_bw=self.target_bw, **kwargs) # [B, H, T]
         embeddings_b_t_d = embeddings_b_d_t.permute(0, 2, 1) # [B, T, H]
 
         return (embeddings_b_t_d,)

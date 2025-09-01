@@ -153,7 +153,7 @@ if __name__ == "__main__":
 
     # 1. make a input
     import librosa
-    audio_path = "/aifs4su/mmcode/codeclm/marble2/data/GTZAN/genres/blues/blues.00000.wav"
+    audio_path = "/aifs4su/mmcode/codeclm/MARBLE2/data/GTZAN/genres/blues/blues.00000.wav"
     audio = librosa.load(audio_path, sr=16000)[0]
     
 
