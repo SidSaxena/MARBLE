@@ -251,7 +251,7 @@ class MFCC_Encoder(_LibrosaFeatureEncoder):
         return feats.to(torch.float32)
 
 
-# 可选：保留 librosa 版（如需与旧代码对齐），但仍将外壳保持 torch 交互
+# optinal: slow ver librosa cpu ver.
 try:
     import librosa  # 可选依赖
     class Chroma_Encoder(_LibrosaFeatureEncoder):
