@@ -276,7 +276,7 @@ except Exception:
 
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    sec = 10
+    sec = 15
     B = 4
     wav = torch.randn(B, _LibrosaFeatureEncoder.SAMPLING_RATE * sec, dtype=torch.float32, device=device)
 
