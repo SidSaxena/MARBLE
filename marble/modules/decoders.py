@@ -1,9 +1,10 @@
 # tasks/gtzan_genre/decoder.py
-from typing import Optional, Callable, Dict
+from typing import Optional, Callable, Dict, List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from einops import rearrange, reduce
 
 from marble.core.base_decoder import BaseDecoder
@@ -153,6 +154,102 @@ class LSTMDecoder(BaseDecoder):
         lstm_out, _ = self.lstm(emb_flat)
         last_hidden = lstm_out[:, -1, :]
         return self.fc(last_hidden)
+
+
+class BiLSTMMLPDecoderKeepTime(BaseDecoder):
+    """
+    BiLSTM + MLP Decoder that collapses the 'layer' dimension (L) but preserves the 'time' dimension (T).
+
+    Input:  emb of shape [B, L, T, H]
+    Steps:
+      1) Mean-pool across L -> [B, T, H]
+      2) BiLSTM over T -> [B, T, D], D = lstm_hidden * (2 if bidirectional else 1)
+      3) Per-time-step MLP -> [B, T, out_dim]
+
+    Optional:
+      - Provide 'lengths' (LongTensor[B]) to pack/pad variable-length sequences.
+    """
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int = 10,
+        # LSTM settings
+        lstm_hidden: int = 256,
+        lstm_layers: int = 1,
+        bidirectional: bool = True,
+        lstm_dropout: float = 0.0,      # only active if lstm_layers > 1
+        # MLP head settings
+        mlp_hidden_layers: List[int] = [512],
+        activation_fn: Optional[Dict] = None,  # e.g. {"class_path": "torch.nn.ReLU", "init_args": {"inplace": True}}
+        mlp_dropout: float = 0.5,
+    ):
+        super().__init__(in_dim, out_dim)
+
+        self.bidirectional = bidirectional
+
+        # LSTM expects input size = H (after pooling L)
+        self.lstm = nn.LSTM(
+            input_size=in_dim,
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            batch_first=True,           # [B, T, H]
+            bidirectional=bidirectional,
+            dropout=lstm_dropout if lstm_layers > 1 else 0.0,
+        )
+
+        lstm_out_dim = lstm_hidden * (2 if bidirectional else 1)
+
+        # Build MLP head applied to last dim (per time step)
+        layers = []
+        prev_dim = lstm_out_dim
+        for hidden_dim in mlp_hidden_layers:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            if activation_fn is not None:
+                act = instantiate_from_config(activation_fn)
+                layers.append(act)
+            if mlp_dropout > 0.0:
+                layers.append(nn.Dropout(mlp_dropout))
+            prev_dim = hidden_dim
+        layers.append(nn.Linear(prev_dim, out_dim))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(
+        self,
+        emb: torch.Tensor,
+        lengths: Optional[torch.Tensor] = None,
+        *_,
+    ) -> torch.Tensor:
+        """
+        Args:
+            emb: Tensor [B, L, T, H]
+            lengths: Optional LongTensor [B], true lengths along T (before any padding)
+
+        Returns:
+            Tensor [B, T, out_dim]
+        """
+        assert emb.dim() == 4, f"Expected 4D tensor [B, L, T, H], got {emb.dim()}D tensor"
+
+        # 1) pool over L -> [B, T, H]
+        x = reduce(emb, 'b l t h -> b t h', 'mean')
+
+        # 2) BiLSTM over time (support var-length with pack/pad)
+        if lengths is not None:
+            # Ensure lengths on CPU for packing; enforce descending not required with enforce_sorted=False
+            packed = pack_padded_sequence(
+                x, lengths.cpu(), batch_first=True, enforce_sorted=False
+            )
+            packed_out, _ = self.lstm(packed)
+            x_lstm, _ = pad_packed_sequence(packed_out, batch_first=True)  # [B, T_max, D]
+            # Note: pad_packed_sequence pads to max length in batch; positions beyond each length are padded with 0
+        else:
+            x_lstm, _ = self.lstm(x)  # [B, T, D]
+
+        # 3) MLP per time step -> [B, T, out_dim]
+        out = self.mlp(x_lstm)
+
+        # If lengths given, out already zero-padded beyond valid timesteps
+        return out
 
 
 # Attempt to import Flash Attention implementation; fallback to native PyTorch scaled_dot_product_attention
