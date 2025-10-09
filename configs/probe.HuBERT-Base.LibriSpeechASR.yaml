@@ -46,6 +46,7 @@ model:
   class_path: marble.tasks.LibriSpeechASR.finetune.HuBERTCTCTask
   init_args:
     backbone: "facebook/hubert-base-ls960"   # 可换成 facebook/hubert-large-ll60k
+    total_stride: 320
     sampling_rate: 16000
     vocab_path: "marble/tasks/LibriSpeechASR/vocab.json"    # 确保文件存在（与 data 保持一致）
 
