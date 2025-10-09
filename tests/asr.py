@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+# asr.py
 # -*- coding: utf-8 -*-
 """
 HuBERT + CTC 训练脚本（融合官方 tricks & 默参，含防塌缩 v3）

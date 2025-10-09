@@ -80,13 +80,13 @@ class HuBERTCTCTask(pl.LightningModule):
             try:
                 self.model.gradient_checkpointing_enable()
                 cfg.gradient_checkpointing = True
-                self.print("Gradient checkpointing enabled.")
+                print("Gradient checkpointing enabled.")
             except Exception as e:
-                self.print(f"Enable gradient checkpointing failed: {e}")
+                print(f"Enable gradient checkpointing failed: {e}")
         if freeze_fe:
             for p in self.model.hubert.feature_extractor.parameters():
                 p.requires_grad = False
-            self.print("Feature extractor frozen.")
+            print("Feature extractor frozen.")
 
         # 2) 优化器与调度器参数
         self.lr = lr
