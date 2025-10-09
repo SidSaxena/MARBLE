@@ -38,7 +38,7 @@ class HuBERTCTCTask(pl.LightningModule):
         feat_proj_dropout: float = 0.0,
         hidden_dropout: float = 0.0,
         final_dropout: float = 0.0,
-        mask_time_prob: float = 0.05,
+        mask_time_prob: float = 0.0,
         layerdrop: float = 0.0,
         freeze_fe: bool = False,
         grad_ckpt: bool = False,
@@ -101,7 +101,7 @@ class HuBERTCTCTask(pl.LightningModule):
 
         # 打印样例控制
         self._printed_example = {"train": False, "val": False, "test": False}
-
+        
         # ---- 对齐 asr.py：epoch 聚合容器（val/test 各自用）----
         self._epoch_bucket = {
             "val": None,
@@ -112,6 +112,11 @@ class HuBERTCTCTask(pl.LightningModule):
         #   "min_input_len_samples": Optional[int], "max_label_len": int,
         #   "raw_pred_sample": Optional[str], "pairs": List[Tuple[str, str]]
         # }
+        
+        print(f"[init] vocab_size={len(self.processor.tokenizer)}, "
+               f"tokenizer.pad_id={self.processor.tokenizer.pad_token_id}, "
+               f"model.pad_id(blank)={self.model.config.pad_token_id}, "
+               f"ctc_zero_infinity={self.model.config.ctc_zero_infinity}")
 
     # --------- Lightning hooks ---------
 
@@ -170,7 +175,7 @@ class HuBERTCTCTask(pl.LightningModule):
 
         # 预测 ID 与 blank 统计
         pred_ids = torch.argmax(logits, dim=-1)
-        pad_id = self.processor.tokenizer.pad_token_id
+        pad_id = int(self.model.config.pad_token_id)
         blank_sum = (pred_ids == pad_id).sum().item()
         total_tokens = pred_ids.numel()
         bucket["blank_sum"] += int(blank_sum)
@@ -205,7 +210,7 @@ class HuBERTCTCTask(pl.LightningModule):
         else:
             labels = batch_tensors["labels"].clone()
             labels[labels < 0] = pad_id
-            ref_txt = self.processor.batch_decode(labels)  # group_tokens=True
+            ref_txt = self.processor.batch_decode(labels, group_tokens=False) 
             ref_txt = [s.replace('|', ' ') for s in ref_txt]
 
         # WER 更新
