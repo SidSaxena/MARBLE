@@ -355,6 +355,13 @@ class LibriSpeechASRDataModule(BaseDataModule):
             self._vocab_path = build_vocab(self.auto_vocab_dir, charset=None)
 
         self.processor = create_processor(self._vocab_path, self.sampling_rate)
+        
+        print(
+            f"[DM] vocab_path={self._vocab_path}, "
+            f"vocab_size={len(self.processor.tokenizer)}, "
+            f"pad_id={self.processor.tokenizer.pad_token_id}, "
+            f"'|'_id={self.processor.tokenizer.convert_tokens_to_ids('|')}"
+        )
 
         # 3) collator
         self._collate_train = LibriSpeechASRCollator(
