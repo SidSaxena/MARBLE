@@ -28,7 +28,7 @@ class HuBERTCTCTask(pl.LightningModule):
 
         # 优化器/调度器
         lr: float = 5e-5,
-        warmup_ratio: float = 0.1,
+        warmup_steps: float = 2000,
         use_bitsandbytes_adam8bit: bool = False,
 
         # 模型/正则化配置（与原脚本一致）
@@ -92,7 +92,7 @@ class HuBERTCTCTask(pl.LightningModule):
 
         # 2) 优化器与调度器参数
         self.lr = lr
-        self.warmup_ratio = warmup_ratio
+        self.warmup_steps = warmup_steps
         self.use_bnb = use_bitsandbytes_adam8bit
 
         # 打印样例控制
@@ -210,10 +210,9 @@ class HuBERTCTCTask(pl.LightningModule):
             total_steps = int(self.trainer.estimated_stepping_batches)
 
         if total_steps and total_steps > 0:
-            warmup_steps = int(self.warmup_ratio * total_steps)
             scheduler = get_linear_schedule_with_warmup(
                 optim,
-                num_warmup_steps=warmup_steps,
+                num_warmup_steps=self.warmup_steps,
                 num_training_steps=total_steps,
             )
             return {

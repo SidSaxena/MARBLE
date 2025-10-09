@@ -22,7 +22,7 @@ HuBERT + CTC 训练脚本（融合官方 tricks & 默参，含防塌缩 v3）
       --epochs 20 --batch_size 32 --lr 5e-5 --warmup_ratio 0.1 \
       --freeze_fe --filter_long_labels --pad_to_multiple_of 8 \
       --mask_time_prob 0.05 --layerdrop 0.0 --hidden_dropout 0.0 \
-      --adam8bit --grad_ckpt --auto_vocab --use_dev_clean
+      --adam8bit --auto_vocab --use_dev_clean --fp16 --overwrite_output_dir
 
 如果没有 dev-clean，本脚本会从 train-clean-100 随机切 5% 做验证。
 """
