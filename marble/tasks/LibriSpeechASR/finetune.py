@@ -6,6 +6,7 @@ import torch
 import lightning.pytorch as pl
 from transformers import HubertForCTC, get_linear_schedule_with_warmup, Wav2Vec2Processor
 from jiwer import wer
+from torchmetrics.text import WordErrorRate
 
 from marble.tasks.LibriSpeechASR.datamodule import create_processor
 
@@ -70,6 +71,8 @@ class HuBERTCTCTask(pl.LightningModule):
         cfg.final_dropout = final_dropout
         cfg.mask_time_prob = mask_time_prob
         cfg.layerdrop = layerdrop
+        self.tm_wer_val = WordErrorRate()
+        self.tm_wer_test = WordErrorRate()
 
         # lm_head 尺寸安全对齐
         if self.model.lm_head.out_features != len(self.processor.tokenizer):
@@ -118,7 +121,18 @@ class HuBERTCTCTask(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         self._eval_common(batch, stage="test")
+        
+    def on_validation_epoch_start(self):
+        self.tm_wer_val.reset()
 
+    def on_test_epoch_start(self):
+        self.tm_wer_test.reset()
+
+    def on_validation_epoch_end(self):
+        self.log("val/wer", self.tm_wer_val.compute(), prog_bar=True, sync_dist=True)
+
+    def on_test_epoch_end(self):
+        self.log("test/wer", self.tm_wer_test.compute(), prog_bar=True, sync_dist=True)
     # --------- Eval helpers ---------
 
     @torch.no_grad()
@@ -135,24 +149,27 @@ class HuBERTCTCTask(pl.LightningModule):
         blank_ratio = (pred_ids == pad_id).float().mean()
 
         # 预测/参考解码成文本
-        pred_txt = self.processor.batch_decode(pred_ids)  # group_tokens=True（默认）
+        pred_txt = self.processor.batch_decode(pred_ids, group_tokens=True)
         pred_txt = [s.replace('|', ' ') for s in pred_txt]
 
-        # 参考：把 -100 位置置回 pad_id，再 decode（保留重复 token，避免 CTC 合并）
-        labels = batch_tensors["labels"].clone()
-        labels[labels < 0] = pad_id
-        ref_txt = self.processor.batch_decode(labels, group_tokens=False)
-        ref_txt = [s.replace('|', ' ') for s in ref_txt]
-
-        # 计算 WER（逐批）
-        try:
-            score = wer(ref_txt, pred_txt)
-        except Exception:
-            score = 1.0
+        # 参考文本：优先使用 collator 提供的“原始文本”（与 asr.py 一致，避免 PAD/blank 污染）
+        if isinstance(batch.get("texts"), list) and len(batch["texts"]) > 0:
+            ref_txt = [t.replace('|', ' ') for t in batch["texts"]]
+        else:
+            # 兜底：若没有 texts，再从 labels 反解，但要把 blank 去掉
+            labels = batch_tensors["labels"].clone()
+            labels[labels < 0] = pad_id
+            # 注意：group_tokens=True 会移除 CTC blank（pad）并合并重复，得到干净序列
+            ref_txt = self.processor.batch_decode(labels, group_tokens=True)
+            ref_txt = [s.replace('|', ' ') for s in ref_txt]
 
         bsz = batch_tensors["input_values"].size(0)
-        self.log(f"{stage}/wer", score, on_epoch=True, prog_bar=True, sync_dist=True, batch_size=bsz)
         self.log(f"{stage}/blank_ratio", blank_ratio, on_epoch=True, prog_bar=False, sync_dist=True, batch_size=bsz)
+        
+        if stage == "val":
+            self.tm_wer_val.update(pred_txt, ref_txt)
+        else:
+            self.tm_wer_test.update(pred_txt, ref_txt)
 
         # 打印一个样例
         if not self._printed_example[stage]:

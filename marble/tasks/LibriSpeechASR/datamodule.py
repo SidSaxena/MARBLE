@@ -65,6 +65,8 @@ def create_processor(vocab_path: str, sampling_rate: int) -> Wav2Vec2Processor:
         word_delimiter_token='|',
         do_lower_case=False,
     )
+    tok.bos_token = None
+    tok.eos_token = None
     fe = Wav2Vec2FeatureExtractor(
         feature_size=1,
         sampling_rate=sampling_rate,
@@ -119,6 +121,8 @@ class LibriSpeechASRDataset(Dataset):
                 do_lower_case=False,
             )
             self.pad_id = self.tokenizer.pad_token_id
+            self.tokenizer.bos_token = None
+            self.tokenizer.eos_token = None
 
     def __len__(self) -> int:
         return len(self.ds)
