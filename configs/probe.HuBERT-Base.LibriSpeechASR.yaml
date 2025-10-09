@@ -1,0 +1,118 @@
+seed_everything: 1234
+ckpt_path: null
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  # strategy: ddp  # or ddp_find_unused_parameters
+  devices: [0]
+  accumulate_grad_batches: 8
+  num_nodes: 1
+  precision: bf16        # or 16, or 32
+  max_epochs: 20
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 2
+  log_every_n_steps: 50
+  gradient_clip_val: 1.0
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "./output/asr.hubert_ctc/checkpoints/"
+        filename: "best"
+        save_top_k: 1
+        monitor: "val/wer"
+        mode: "min"
+    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback  # 可留作测试阶段自动加载
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
+      init_args:
+        monitor: "val/wer"
+        patience: 10
+        mode: "min"
+
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      name: "asr.hubert_ctc"
+      save_dir: "./output/asr.hubert_ctc/"
+
+model:
+  class_path: marble.tasks.LibriSpeechASR.finetune.HuBERTCTCTask
+  init_args:
+    backbone: "facebook/hubert-base-ls960"   # 可换成 facebook/hubert-large-ll60k
+    sampling_rate: 16000
+    vocab_path: "marble/tasks/LibriSpeechASR/vocab.json"    # 确保文件存在（与 data 保持一致）
+
+    # 优化器/调度器（在 Task 内配置：AdamW + 线性 warmup）
+    lr: 5e-5
+    warmup_ratio: 0.1
+    use_bitsandbytes_adam8bit: false
+
+    # 正则/稳态
+    ctc_loss_reduction: "mean"
+    attention_dropout: 0.0
+    activation_dropout: 0.0
+    feat_proj_dropout: 0.0
+    hidden_dropout: 0.0
+    final_dropout: 0.0
+    mask_time_prob: 0.0
+    layerdrop: 0.0
+    freeze_fe: true
+    grad_ckpt: false
+
+data:
+  class_path: marble.tasks.LibriSpeechASR.datamodule.LibriSpeechASRDataModule
+  init_args:
+    batch_size: 16
+    num_workers: 16
+
+    # 若不需要波形增强，可为空字典；如需，按 stage 配置
+    audio_transforms: {}
+
+    # 与模型一致
+    sampling_rate: 16000
+    vocab_path: "marble/tasks/LibriSpeechASR/vocab.json"   # 与 model 保持同一路径
+    auto_vocab: false                       # 如需自动生成，请改 true，并确保 model 也能读到同一路径
+    auto_vocab_dir: "marble/tasks/LibriSpeechASR/"
+    chars_to_ignore: ",.?;!:\"“”‘’'()[]{}-—–…`~@#$%^&*_+=|/\\<>"
+
+    # Collator 相关
+    pad_to_multiple_of: 8
+    filter_long_labels: true
+    total_stride: 320
+    min_duration_sec: 0.0
+    max_duration_sec: 0.0
+
+    # 三个数据集（用 torchaudio 内置 LibriSpeech；root 为包含 ./LibriSpeech/ 的目录）
+    train:
+      class_path: marble.tasks.LibriSpeechASR.datamodule.LibriSpeechASRDataset
+      init_args:
+        root: "data/LibriSpeech"       # 例如：/data/OpenSLR
+        url: "train-clean-100"
+        target_sr: 16000
+        vocab_path: "marble/tasks/LibriSpeechASR/vocab.json"
+        download: false
+        # backend: "soundfile"               # 如读 flac 走 soundfile 更快，可按需开启
+    val:
+      class_path: marble.tasks.LibriSpeechASR.datamodule.LibriSpeechASRDataset
+      init_args:
+        root: "data/LibriSpeech"
+        url: "dev-clean"
+        target_sr: 16000
+        vocab_path: "marble/tasks/LibriSpeechASR/vocab.json"
+        download: false
+    test:
+      class_path: marble.tasks.LibriSpeechASR.datamodule.LibriSpeechASRDataset
+      init_args:
+        root: "data/LibriSpeech"
+        url: "test-clean"
+        target_sr: 16000
+        vocab_path: "marble/tasks/LibriSpeechASR/vocab.json"
+        download: false
+
+# 说明：优化器与 LR 调度器已在 HuBERTCTCTask.configure_optimizers 中配置（AdamW + 线性 warmup），
+# 若你更想用 CLI 的 optimizer/lr_scheduler 配置，请删除 Task 内的 configure_optimizers 或改为透传。
