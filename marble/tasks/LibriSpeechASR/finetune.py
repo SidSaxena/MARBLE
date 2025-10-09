@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional
 import torch
 import lightning.pytorch as pl
 from transformers import HubertForCTC, get_linear_schedule_with_warmup, Wav2Vec2Processor
-from jiwer import wer
 from torchmetrics.text import WordErrorRate
 
 from marble.tasks.LibriSpeechASR.datamodule import create_processor
@@ -128,11 +127,6 @@ class HuBERTCTCTask(pl.LightningModule):
     def on_test_epoch_start(self):
         self.tm_wer_test.reset()
 
-    def on_validation_epoch_end(self):
-        self.log("val/wer", self.tm_wer_val.compute(), prog_bar=True, sync_dist=True)
-
-    def on_test_epoch_end(self):
-        self.log("test/wer", self.tm_wer_test.compute(), prog_bar=True, sync_dist=True)
     # --------- Eval helpers ---------
 
     @torch.no_grad()
@@ -168,8 +162,10 @@ class HuBERTCTCTask(pl.LightningModule):
         
         if stage == "val":
             self.tm_wer_val.update(pred_txt, ref_txt)
+            self.log("val/wer", self.tm_wer_val, on_epoch=True, on_step=False, prog_bar=True, sync_dist=True)
         else:
             self.tm_wer_test.update(pred_txt, ref_txt)
+            self.log("test/wer", self.tm_wer_test, on_epoch=True, on_step=False, prog_bar=True, sync_dist=True)
 
         # 打印一个样例
         if not self._printed_example[stage]:
@@ -186,7 +182,7 @@ class HuBERTCTCTask(pl.LightningModule):
             hyp = "(no pred)"
             if logits is not None and logits.ndim == 3 and logits.size(0) > 0:
                 pred_ids = torch.argmax(logits[0], dim=-1, keepdim=True).T  # (1, T)
-                hyp = self.processor.batch_decode(pred_ids)[0].replace('|', ' ')
+                hyp = self.processor.batch_decode(pred_ids, group_tokens=True)[0].replace('|', ' ')
             self.print(f"[{stage}] REF: {ref}")
             self.print(f"[{stage}] HYP: {hyp}")
             self._printed_example[stage] = True
