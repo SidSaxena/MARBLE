@@ -1,0 +1,18 @@
+python cli.py \
+  --model.class_path marble.tasks.ASR.probe.HuBERTCTCTask \
+  --model.init_args.backbone facebook/hubert-base-ls960 \
+  --model.init_args.sampling_rate 16000 \
+  --model.init_args.vocab_path ./hubert_ctc/vocab.json \
+  --data.class_path marble.tasks.ASR.datamodule.LibriSpeechCTCDataModule \
+  --data.init_args.batch_size 16 \
+  --data.init_args.num_workers 8 \
+  --data.init_args.sampling_rate 16000 \
+  --data.init_args.vocab_path ./hubert_ctc/vocab.json \
+  --data.init_args.train.class_path marble.tasks.ASR.datamodule.LibriSpeechCTCDataset \
+  --data.init_args.train.init_args.root /path/to/LibriSpeech \
+  --data.init_args.train.init_args.url train-clean-100 \
+  --data.init_args.train.init_args.target_sr 16000 \
+  --data.init_args.val.class_path marble.tasks.ASR.datamodule.LibriSpeechCTCDataset \
+  --data.init_args.val.init_args.root /path/to/LibriSpeech \
+  --data.init_args.val.init_args.url dev-clean \
+  --data.init_args.val.init_args.target_sr 16000

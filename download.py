@@ -45,7 +45,7 @@ def download_dataset(dataset_name: str, save_root: str):
     # Ensure the target directory exists
     os.makedirs(target_dir, exist_ok=True)
 
-    # Download only the 'Data' subfolder, writing files directly into target_dir/Data
+    # Download to target_dir/data/
     snapshot_download(
         repo_id=repo_id,
         repo_type="dataset",
