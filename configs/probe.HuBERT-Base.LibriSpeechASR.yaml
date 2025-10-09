@@ -1,17 +1,17 @@
 # configs/probe.HuBERT-Base.LibriSpeechASR.yaml
-seed_everything: 1234
+seed_everything: 42
 ckpt_path: null
 
 trainer:
   fast_dev_run: false
   accelerator: gpu
   strategy: ddp_find_unused_parameters_true  # or ddp_find_unused_parameters_true
-  devices: [0,1,2,3]
-  # devices: [0]
+  devices: [1,2]
+  # devices: [1]
   accumulate_grad_batches: 1
   num_nodes: 1
-  precision: bf16-mixed        # or 16, or 32
-  max_epochs: 40
+  precision: 16        # or 16, or 32
+  max_epochs: 20
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 2
   log_every_n_steps: 50
@@ -51,7 +51,7 @@ model:
 
     # 优化器/调度器（在 Task 内配置：AdamW + 线性 warmup）
     lr: 5e-5
-    warmup_ratio: 0.1
+    warmup_steps: 2000
     use_bitsandbytes_adam8bit: false
 
     # 正则/稳态
@@ -61,7 +61,7 @@ model:
     feat_proj_dropout: 0.0
     hidden_dropout: 0.0
     final_dropout: 0.0
-    mask_time_prob: 0.0
+    mask_time_prob: 0.05
     layerdrop: 0.0
     freeze_fe: true
     grad_ckpt: false
@@ -77,14 +77,14 @@ data:
 
     # 与模型一致
     sampling_rate: 16000
-    vocab_path: null
-    auto_vocab: true                       # 如需自动生成，请改 true，并确保 model 也能读到同一路径
+    vocab_path: marble/tasks/LibriSpeechASR/vocab.json
+    auto_vocab: false                       # 如需自动生成，请改 true，并确保 model 也能读到同一路径
     auto_vocab_dir: "marble/tasks/LibriSpeechASR/"
     chars_to_ignore: ",.?;!:\"“”‘’'()[]{}-—–…`~@#$%^&*_+=|/\\<>"
 
     # Collator 相关
     pad_to_multiple_of: 8
-    filter_long_labels: false
+    filter_long_labels: true
     total_stride: 320
     min_duration_sec: 0.0
     max_duration_sec: 0.0
@@ -96,7 +96,7 @@ data:
         root: "data/LibriSpeech"       # 例如：/data/OpenSLR
         url: "train-clean-100"
         target_sr: 16000
-        vocab_path: null
+        vocab_path: marble/tasks/LibriSpeechASR/vocab.json
         download: false
         # backend: "soundfile"               # 如读 flac 走 soundfile 更快，可按需开启
     val:
@@ -105,7 +105,7 @@ data:
         root: "data/LibriSpeech"
         url: "dev-clean"
         target_sr: 16000
-        vocab_path: null
+        vocab_path: marble/tasks/LibriSpeechASR/vocab.json
         download: false
     test:
       class_path: marble.tasks.LibriSpeechASR.datamodule.LibriSpeechASRDataset
@@ -113,7 +113,7 @@ data:
         root: "data/LibriSpeech"
         url: "test-clean"
         target_sr: 16000
-        vocab_path: null
+        vocab_path: marble/tasks/LibriSpeechASR/vocab.json
         download: false
 
 # 说明：优化器与 LR 调度器已在 HuBERTCTCTask.configure_optimizers 中配置（AdamW + 线性 warmup），
