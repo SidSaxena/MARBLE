@@ -5,8 +5,8 @@ ckpt_path: null
 trainer:
   fast_dev_run: false
   accelerator: gpu
-  strategy: ddp_find_unused_parameters_true  # or ddp_find_unused_parameters_true
-  devices: [0,3]
+  # strategy: ddp_find_unused_parameters_true  # or ddp_find_unused_parameters_true
+  devices: [0]
   # devices: [1]
   accumulate_grad_batches: 1
   num_nodes: 1
@@ -70,7 +70,7 @@ model:
 data:
   class_path: marble.tasks.LibriSpeechASR.datamodule.LibriSpeechASRDataModule
   init_args:
-    batch_size: 16
+    batch_size: 32
     num_workers: 16
 
     # 若不需要波形增强，可为空字典；如需，按 stage 配置

@@ -204,14 +204,7 @@ class HuBERTCTCTask(pl.LightningModule):
         pred_txt = self.processor.batch_decode(pred_ids)  # group_tokens=True（默认）
         pred_txt = [s.replace('|', ' ') for s in pred_txt]
 
-        # 参考文本：首选 collator 提供的原始文本（含 '|'）
-        if isinstance(batch.get("texts"), list) and len(batch["texts"]) > 0:
-            ref_txt = [t.replace('|', ' ') for t in batch["texts"]]
-        else:
-            labels = batch_tensors["labels"].clone()
-            labels[labels < 0] = pad_id
-            ref_txt = self.processor.batch_decode(labels, group_tokens=False) 
-            ref_txt = [s.replace('|', ' ') for s in ref_txt]
+        ref_txt = [t.replace('|', ' ') for t in batch["texts"]]
 
         # WER 更新
         if stage == "val":
