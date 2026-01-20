@@ -16,7 +16,7 @@ class DaSheng_Encoder(BaseEncoder):
 
     NAME = "DaSheng"
     SAMPLING_RATE = 16000
-    TOKEN_RATE = 50
+    TOKEN_RATE = 25
 
     def __init__(
         self,
