@@ -265,6 +265,72 @@ class CLaMP3_Encoder(BaseEncoder):
         return final_embedding
         
     @torch.no_grad()
+    def _get_layer_embeddings_from_segments(
+        self,
+        input_data: torch.Tensor,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """
+        Extract per-layer BERT embeddings for a single audio item, aggregated
+        across segments with weighted average by segment length.
+
+        Parameters
+        ----------
+        input_data : torch.Tensor
+            Shape ``(S, AUDIO_HIDDEN_SIZE)`` — the full sequence of MERT chunk
+            features for one item (with leading/trailing zero vectors prepended
+            by the caller).
+        device : torch.device
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(13, H)`` — one averaged vector per BERT hidden state
+            (embedding layer + 12 transformer layers).
+        """
+        segments = self._prepare_segments(input_data, self.config.MAX_AUDIO_LENGTH)
+        per_layer_accum = None
+        total_weight = 0.0
+
+        for segment in segments:
+            seg_len = segment.size(0)
+            pad_len = self.config.MAX_AUDIO_LENGTH - seg_len
+            mask = F.pad(
+                torch.ones(seg_len, device=device),
+                (0, pad_len),
+                value=0.0,
+            )
+            pad_tensor = torch.zeros(pad_len, self.config.AUDIO_HIDDEN_SIZE, device=device)
+            segment_padded = torch.cat((segment, pad_tensor), dim=0)
+
+            bert_out = self.model.audio_model(
+                inputs_embeds=segment_padded.unsqueeze(0).to(device),
+                attention_mask=mask.unsqueeze(0).to(device),
+                output_hidden_states=True,
+            )
+
+            # mask_3d: (1, seq_len, 1) for broadcasting over hidden dim
+            mask_3d = mask.view(1, -1, 1)
+            valid_tokens = mask_3d.sum(dim=1)  # (1, 1)
+
+            # Stack all 13 hidden states and mean-pool over valid token positions
+            # bert_out.hidden_states: tuple of 13 tensors, each (1, seq_len, H)
+            layer_feats = torch.stack(
+                [(hs * mask_3d).sum(dim=1) / valid_tokens for hs in bert_out.hidden_states],
+                dim=0,
+            ).squeeze(1)  # (13, H)
+
+            weight = float(seg_len)
+            per_layer_accum = (
+                layer_feats * weight
+                if per_layer_accum is None
+                else per_layer_accum + layer_feats * weight
+            )
+            total_weight += weight
+
+        return per_layer_accum / total_weight  # (13, H)
+
+    @torch.no_grad()
     def forward(
         self,
         wavs: Optional[torch.Tensor] = None,
@@ -272,6 +338,14 @@ class CLaMP3_Encoder(BaseEncoder):
     ) -> tuple:
         """
         Generates embeddings for a batch of audio waveforms or texts.
+
+        Audio path now returns a **tuple of 13 tensors**, one per BERT
+        hidden state (embedding layer + 12 transformer layers), each of
+        shape ``(B, 1, H)``.  This is compatible with
+        ``marble.modules.transforms.LayerSelector``.
+
+        Text path is unchanged and still returns a single ``(B, 1, H)`` tensor
+        wrapped in a 1-element tuple.
         """
         # Determine device from input tensor or model parameters
         if wavs is not None:
@@ -280,14 +354,14 @@ class CLaMP3_Encoder(BaseEncoder):
             device = next(self.model.parameters()).device
         else:
             raise ValueError("Either 'wavs' or 'texts' must be provided.")
-        
+
         self.model.to(device)
         self.mert_encoder.to(device)
 
         # --- Audio Path ---
         if wavs is not None:
             batch_size = wavs.size(0)
-            
+
             # 1. Preprocess audio batch for MERT
             processed_wavs_list = [
                 self.mert_preprocessor({'input_features': wav, 'sampling_rate': self.SAMPLING_RATE})['input_features']
@@ -297,31 +371,26 @@ class CLaMP3_Encoder(BaseEncoder):
 
             # 2. Extract batched MERT features (B, L, C, H)
             mert_features = extract_mert_features_batch(processed_wavs, self.mert_encoder, device)
-            
-            # ** 3. Average over layers to align with infer_test3.py logic **
-            # This is the key step for result alignment.
-            # Shape becomes (B, C, H)
-            mert_chunk_features = mert_features.mean(dim=1) 
-            
-            # 4. Process each item in the batch through CLaMP's audio tower
-            embeddings = []
+
+            # 3. Average over MERT layers → (B, C, H)
+            mert_chunk_features = mert_features.mean(dim=1)
+
+            # 4. For each item in the batch, collect all 13 BERT layer embeddings
+            all_layer_embeddings = []
             for i in range(batch_size):
-                item_features = mert_chunk_features[i].to(device) # Shape: (C, H)
-                
+                item_features = mert_chunk_features[i].to(device)  # (C, H)
+
                 # Add zero vectors at start/end to match original script
                 zero_vec = torch.zeros((1, item_features.size(-1)), device=device)
-                input_data = torch.cat((zero_vec, item_features, zero_vec), 0)
+                input_data = torch.cat((zero_vec, item_features, zero_vec), dim=0)
 
-                emb = self._get_embedding_from_segments(
-                    input_data=input_data,
-                    max_len=self.config.MAX_AUDIO_LENGTH,
-                    data_type='audio',
-                    device=device
-                )
-                embeddings.append(emb)
+                layer_embeds = self._get_layer_embeddings_from_segments(input_data, device)
+                all_layer_embeddings.append(layer_embeds)  # (13, H)
 
-            output = torch.stack(embeddings, dim=0)
-            return (output.unsqueeze(1),) # Return shape (B, 1, H)
+            stacked = torch.stack(all_layer_embeddings, dim=0)  # (B, 13, H)
+            num_layers = stacked.shape[1]
+            # Return tuple of 13 tensors, each (B, 1, H)
+            return tuple(stacked[:, l, :].unsqueeze(1) for l in range(num_layers))
 
         # --- Text Path ---
         if texts is not None:
