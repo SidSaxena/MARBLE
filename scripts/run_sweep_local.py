@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""
+scripts/run_sweep_local.py
+──────────────────────────
+Local (non-Modal) layer sweep runner. Drop-in equivalent of the Modal
+`run_sweep` function — generates per-layer configs, runs fit+test for each
+layer sequentially, and prints a results summary at the end.
+
+Supports resume: layers whose checkpoint already exists are skipped by
+default (disable with --no-skip).
+
+Usage
+─────
+# Full 24-layer OMARRQ × GiantSteps sweep
+python scripts/run_sweep_local.py \\
+    --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
+    --num-layers  24 \\
+    --model-tag   OMARRQ-multifeature25hz \\
+    --task-tag    GS
+
+# Resume an interrupted sweep (skips completed layers automatically)
+python scripts/run_sweep_local.py \\
+    --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
+    --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS
+
+# Run only specific layers (e.g. for debugging layer 0 and 12)
+python scripts/run_sweep_local.py \\
+    --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
+    --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS \\
+    --layers 0 12
+
+# Override accelerator (e.g. for Apple Silicon)
+python scripts/run_sweep_local.py \\
+    --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
+    --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS \\
+    --accelerator mps
+"""
+
+import argparse
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+# ──────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────
+
+def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    print(f"$ {' '.join(cmd)}", flush=True)
+    return subprocess.run(cmd, check=True, **kw)
+
+
+def _extract_test_metrics(stdout: str) -> dict[str, float]:
+    """Parse Lightning's test output for key=value metric lines."""
+    metrics = {}
+    for line in stdout.splitlines():
+        # Match lines like:  │  test/weighted_score  │  0.812  │
+        # or plain:           test/weighted_score           0.812
+        m = re.findall(r"(test/[\w_]+)\s+([0-9]+\.[0-9]+)", line)
+        for key, val in m:
+            metrics[key] = float(val)
+    return metrics
+
+
+def _format_metrics(metrics: dict[str, float]) -> str:
+    if not metrics:
+        return "(no test metrics parsed)"
+    return "  ".join(f"{k.split('/')[-1]}={v:.4f}" for k, v in sorted(metrics.items()))
+
+
+def _checkpoint_exists(task_tag: str, model_tag: str, layer: int) -> bool:
+    """Look for best.ckpt in the output directory for this layer's sweep config."""
+    # Directory is built by gen_sweep_configs: output/<base_stem>.layer<N>/checkpoints/
+    # base_stem = probe.<task_tag>.<model_tag>  (matches dirpath in base config)
+    candidates = list(Path("output").glob(
+        f"*{model_tag}*{task_tag}*layer{layer}*/checkpoints/best.ckpt"
+    )) + list(Path("output").glob(
+        f"*{task_tag}*{model_tag}*layer{layer}*/checkpoints/best.ckpt"
+    ))
+    return bool(candidates)
+
+
+# ──────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run a MARBLE layer sweep locally (fit + test per layer)."
+    )
+    parser.add_argument("--base-config", required=True,
+                        help="Path to the base YAML config (e.g. configs/probe.OMARRQ-multifeature25hz.GS.yaml)")
+    parser.add_argument("--num-layers", type=int, required=True,
+                        help="Total number of transformer layers (e.g. 24 for OMARRQ, 13 for CLaMP3)")
+    parser.add_argument("--model-tag", required=True,
+                        help="Model identifier used in output paths (e.g. OMARRQ-multifeature25hz)")
+    parser.add_argument("--task-tag", required=True,
+                        help="Task identifier used in output paths (e.g. GS, EMO, Chords1217)")
+    parser.add_argument("--layers", type=int, nargs="*",
+                        help="Subset of layer indices to run (default: all 0..num_layers-1)")
+    parser.add_argument("--no-skip", action="store_true",
+                        help="Re-run fit even if a checkpoint already exists (default: skip)")
+    parser.add_argument("--accelerator", default=None,
+                        help="Override trainer accelerator (gpu/mps/cpu). Defaults to config value.")
+    args = parser.parse_args()
+
+    sweep_dir = f"configs/sweeps/{args.model_tag}.{args.task_tag}"
+
+    # ── 1. Generate per-layer configs ────────────────────────────────────────
+    _run([
+        "python", "scripts/gen_sweep_configs.py",
+        "--base-config", args.base_config,
+        "--num-layers",  str(args.num_layers),
+        "--model-tag",   args.model_tag,
+        "--task-tag",    args.task_tag,
+        "--out-dir",     sweep_dir,
+    ])
+
+    run_layers = args.layers if args.layers is not None else list(range(args.num_layers))
+    results: dict[int, dict] = {}
+    t_sweep_start = time.time()
+
+    # ── 2. Run each layer ────────────────────────────────────────────────────
+    for layer in run_layers:
+        cfg = f"{sweep_dir}/sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
+
+        print(f"\n{'='*60}")
+        print(f" Layer {layer}/{args.num_layers - 1}  [{args.model_tag} | {args.task_tag}]")
+        print(f"{'='*60}", flush=True)
+
+        t_layer_start = time.time()
+
+        # Optionally skip layers that already have a checkpoint
+        skip_fit = (not args.no_skip) and _checkpoint_exists(args.task_tag, args.model_tag, layer)
+        if skip_fit:
+            print(f"  ✓ Checkpoint found — skipping fit, running test only.")
+        else:
+            fit_cmd = ["python", "cli.py", "fit", "-c", cfg]
+            if args.accelerator:
+                fit_cmd += [f"--trainer.accelerator={args.accelerator}"]
+            _run(fit_cmd)
+
+        # Always run test (loads best checkpoint via LoadLatestCheckpointCallback)
+        test_cmd = ["python", "cli.py", "test", "-c", cfg]
+        if args.accelerator:
+            test_cmd += [f"--trainer.accelerator={args.accelerator}"]
+
+        result = subprocess.run(test_cmd, capture_output=True, text=True)
+        elapsed = time.time() - t_layer_start
+
+        print(result.stdout)
+        if result.returncode != 0:
+            print("STDERR:", result.stderr, file=sys.stderr)
+
+        metrics = _extract_test_metrics(result.stdout)
+        results[layer] = {"metrics": metrics, "elapsed": elapsed, "stdout": result.stdout}
+
+    # ── 3. Summary table ─────────────────────────────────────────────────────
+    total_elapsed = time.time() - t_sweep_start
+    print(f"\n{'='*60}")
+    print(f" Sweep complete  [{args.model_tag} | {args.task_tag}]")
+    print(f" Total wall time: {total_elapsed/60:.1f} min")
+    print(f"{'='*60}")
+    for layer in run_layers:
+        r = results.get(layer, {})
+        m_str = _format_metrics(r.get("metrics", {}))
+        t_str = f"{r.get('elapsed', 0)/60:.1f}m"
+        print(f"  layer {layer:2d}  [{t_str:>5}]  {m_str}")
+
+    # ── 4. Best layer ─────────────────────────────────────────────────────────
+    # Rank by the first test metric found (works for both weighted_score and r2)
+    scored = {
+        layer: list(r["metrics"].values())[0]
+        for layer, r in results.items()
+        if r.get("metrics")
+    }
+    if scored:
+        best_layer = max(scored, key=scored.__getitem__)
+        print(f"\n  Best layer: {best_layer}  ({list(results[best_layer]['metrics'].keys())[0]}={scored[best_layer]:.4f})")
+
+
+if __name__ == "__main__":
+    main()
