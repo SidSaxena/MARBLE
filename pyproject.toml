@@ -3,13 +3,7 @@
 #   Linux:  sudo apt install ffmpeg
 
 [build-system]
-requires = [
-  "setuptools>=42",
-  "wheel",
-  "cython>=0.29",
-  "numpy>=1.19",
-  "scipy>=1.5",
-]
+requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -39,6 +33,7 @@ dependencies = [
     "yt-dlp",        # download_hooktheory.py
     "numpy>=1.19",
     "scipy>=1.5",
+    "numba",         # GTZANBeatTracking HMM (replaces the old Cython extension)
 ]
 
 [project.optional-dependencies]
