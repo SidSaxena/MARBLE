@@ -22,6 +22,8 @@ modal run modal_marble.py::run_probe --config configs/probe.MuQ.Chords1217.yaml
 modal volume ls marble-output
 """
 
+import http
+
 import modal
 import os
 import sys
@@ -185,7 +187,7 @@ def _download_covers80():
     dest.mkdir(parents=True, exist_ok=True)
     archive = dest / "covers80.tar.bz2"
 
-    url = "http://labrosa.ee.columbia.edu/projects/coversongs/covers80/covers80.tar.bz2"
+    url = "http://labrosa.ee.columbia.edu/projects/coversongs/covers80/covers80.tgz"
     print(f"Downloading {url} …")
     try:
         urllib.request.urlretrieve(url, archive)
