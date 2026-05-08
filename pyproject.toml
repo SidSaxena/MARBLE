@@ -44,7 +44,7 @@ dependencies = [
 [project.optional-dependencies]
 # uv sync --extra xcodec
 xcodec = [
-    "audiotools @ git+https://github.com/descriptinc/audiotools",
+    "descript-audiotools @ git+https://github.com/descriptinc/audiotools",
 ]
 
 [tool.setuptools.packages.find]
