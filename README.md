@@ -53,20 +53,24 @@ Marble is a modular, configuration-driven suite for training, evaluating, and pe
 
 1. **Install dependencies**:
     ```bash
-    # 1. create a new conda env
-    conda create -n marble python=3.10 -y
-    conda activate marble
+    # 1. install ffmpeg (system package — not managed by uv)
+    brew install ffmpeg          # macOS
+    # sudo apt install ffmpeg   # Linux / GPU machine
 
-    # 2. install ffmpeg
-    conda install -c conda-forge ffmpeg -y
+    # 2. create the venv and install everything (Python 3.10 pinned via .python-version)
+    uv sync
 
-    # 3. now install other dependencies
-    pip install -e .
+    # On Linux the CUDA-enabled torch/torchaudio wheels are fetched automatically
+    # from the PyTorch cu124 index defined in pyproject.toml.
 
-    # 4. [Optional] downgrade pip to 24.0 if you are using fairseq modules
-    # pip install pip==24.0
-    # pip install fairseq
-    # some encoders (e.g. Xcodec) may require additional dependencies, see marble/encoders/*/requirements.txt
+    # 3. [Optional] install extra encoder dependencies (e.g. Xcodec)
+    uv sync --extra xcodec
+
+    # 4. run scripts directly via uv run, or activate the venv first:
+    uv run python cli.py fit --config configs/probe.MERT-v1-95M.GTZANGenre.yaml
+    # — or —
+    source .venv/bin/activate
+    python cli.py fit --config configs/probe.MERT-v1-95M.GTZANGenre.yaml
     ```
 
 2. **Prepare data**: `python download.py all`.
