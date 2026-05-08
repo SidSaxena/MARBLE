@@ -30,10 +30,15 @@ Priority order
   2. CLaMP3 × GS            (key detection,    13 layers, ~1.5h)
   3. OMARRQ × Chords1217    (chord recognition,24 layers, ~8–10h)
   4. OMARRQ × BeatTracking  (beat tracking,    24 layers, ~3–4h)
-  5. OMARRQ × EMO           (emotion,          24 layers, ~3h)
-  6. CLaMP3 × EMO           (emotion,          13 layers, ~1.5h)
+  5. OMARRQ × NSynth        (pitch class.,     24 layers, ~4–6h)
+  6. CLaMP3 × NSynth        (pitch class.,     13 layers, ~2h)
+  7. OMARRQ × Covers80      (cover retrieval,  24 layers, ~30min — zero-shot)
+  8. CLaMP3 × Covers80      (cover retrieval,  13 layers, ~15min — zero-shot)
+  9. OMARRQ × EMO           (emotion,          24 layers, ~3h)
+ 10. CLaMP3 × EMO           (emotion,          13 layers, ~1.5h)
 
-Total wall-time estimate on RTX 5060 Ti: ~20–24h sequential.
+Total wall-time estimate on RTX 5060 Ti: ~28–35h sequential.
+Covers80 is very fast (no training, pure retrieval each layer).
 """
 
 import argparse
@@ -91,7 +96,39 @@ SWEEPS: list[SweepDef] = [
         note="Beat tracking  | beat_f1 metric | frame-level",
     ),
 
-    # ── Priority 4: emotion regression (secondary) ───────────────────────────
+    # ── Priority 4: pitch classification (NSynth) ────────────────────────────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="NSynth",
+        base_config="configs/probe.OMARRQ-multifeature25hz.NSynth.yaml",
+        num_layers=24,
+        note="Pitch classification | 88 MIDI classes | acc metric",
+    ),
+    SweepDef(
+        model="CLaMP3",
+        task="NSynth",
+        base_config="configs/probe.CLaMP3-layers.NSynth.yaml",
+        num_layers=13,
+        note="Pitch classification | 88 MIDI classes | CLaMP3 comparison",
+    ),
+
+    # ── Priority 5: cover-song retrieval (Covers80) ──────────────────────────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="Covers80",
+        base_config="configs/probe.OMARRQ-multifeature25hz.Covers80.yaml",
+        num_layers=24,
+        note="Cover-song retrieval | MAP metric | zero-shot (no training)",
+    ),
+    SweepDef(
+        model="CLaMP3",
+        task="Covers80",
+        base_config="configs/probe.CLaMP3-layers.Covers80.yaml",
+        num_layers=13,
+        note="Cover-song retrieval | MAP metric | CLaMP3 comparison",
+    ),
+
+    # ── Priority 6: emotion regression (secondary) ───────────────────────────
     SweepDef(
         model="OMARRQ-multifeature25hz",
         task="EMO",
@@ -128,13 +165,17 @@ def _completed_layers(model: str, task: str, num_layers: int) -> list[int]:
 
 
 def _data_present(task: str) -> bool:
-    """Check that at least a train JSONL exists for this task."""
+    """Check that the primary JSONL for a task exists."""
     jsonl_map = {
         "GS":                 "data/GS/GS.train.jsonl",
         "EMO":                "data/EMO/EMO.train.jsonl",
         "Chords1217":         "data/Chords1217/Chords1217.train.jsonl",
         "GTZANBeatTracking":  "data/GTZAN/GTZANBeatTracking.train.jsonl",
         "GTZANGenre":         "data/GTZAN/GTZANGenre.train.jsonl",
+        # NSynth: ~19 GB training split required
+        "NSynth":             "data/NSynth/NSynth.train.jsonl",
+        # Covers80: single evaluation JSONL (no train/val split)
+        "Covers80":           "data/Covers80/Covers80.test.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()
