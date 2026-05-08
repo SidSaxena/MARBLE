@@ -120,9 +120,9 @@ def main():
                 sys.exit(1)
 
     # ── 2. Extract ────────────────────────────────────────────────────────────
-    # The archive usually expands to covers32k/ inside the current dir.
-    covers_root = dest / "covers32k"
-    if not covers_root.exists():
+    # The archive usually expands to coversongs/covers32k/ inside the current dir.
+    covers_root = next(dest.rglob("covers32k"), None)
+    if not covers_root:
         if not archive.exists():
             print(f"ERROR: archive not found at {archive}")
             sys.exit(1)
@@ -130,63 +130,33 @@ def main():
         with tarfile.open(archive, "r:gz") as tf:
             tf.extractall(dest)
         print("Extraction complete.")
+        covers_root = next(dest.rglob("covers32k"), None)
+        if not covers_root:
+            print(f"ERROR: could not find covers32k directory after extraction")
+            sys.exit(1)
 
-    # ── 3. Locate list1 / list2 ───────────────────────────────────────────────
-    # Try common directory names used in various versions of the archive.
-    list1 = None
-    list2 = None
-    for candidate in (covers_root, dest):
-        for name1, name2 in [("list1", "list2"), ("covers1", "covers2")]:
-            d1 = next(candidate.glob(f"**/{name1}"), None)
-            d2 = next(candidate.glob(f"**/{name2}"), None)
-            if d1 and d2:
-                list1, list2 = d1, d2
-                break
-        if list1:
-            break
+    # ── 3. Locate works ──────────────────────────────────────────────────────
+    # All work subdirectories are directly under covers32k/
+    works = sorted([p for p in covers_root.iterdir() if p.is_dir()])
+    n_works = len(works)
+    print(f"Found {n_works} works under {covers_root}")
 
-    if not list1 or not list2:
-        print(f"ERROR: could not find list1/list2 directories under {dest}")
-        print(f"Found: {list(dest.rglob('*'))[:20]}")
-        sys.exit(1)
 
-    print(f"list1 → {list1}")
-    print(f"list2 → {list2}")
-
-    # ── 4. Match works across both lists ─────────────────────────────────────
-    # Each subdirectory of list1/list2 corresponds to one work.
-    # They should have the same names (alphabetically sorted).
-
-    def works(d: Path) -> list[Path]:
-        """Return sorted list of subdirectories (one per work)."""
-        return sorted([p for p in d.iterdir() if p.is_dir()])
-
-    works1 = works(list1)
-    works2 = works(list2)
-
-    if len(works1) != len(works2):
-        print(
-            f"WARNING: list1 has {len(works1)} works, list2 has {len(works2)}. "
-            f"Matching by sorted order."
-        )
-
-    n_works = min(len(works1), len(works2))
-
-    # ── 5. Build JSONL ────────────────────────────────────────────────────────
+    # ── 4. Build JSONL ────────────────────────────────────────────────────────
     records: list[dict] = []
     skipped: list[str]  = []
 
-    for work_id, (w1_dir, w2_dir) in enumerate(
-        zip(works1[:n_works], works2[:n_works])
-    ):
-        for version, work_dir in enumerate([w1_dir, w2_dir]):
-            files = _audio_files(work_dir)
-            if not files:
-                skipped.append(f"work {work_id} v{version}: no audio in {work_dir}")
-                continue
+    for work_id, work_dir in enumerate(works):
+        files = sorted(_audio_files(work_dir))
+        if len(files) < 2:
+            skipped.append(f"work {work_id}: expected at least 2 audio files, found {len(files)} in {work_dir}")
+            continue
 
-            # Take the first (and usually only) audio file in the work dir.
-            audio_path = files[0]
+        # Take the first 2 files (sorted alphabetically)
+        if len(files) > 2:
+            print(f"WARNING: work {work_id} has {len(files)} files, using first 2: {files[:2]}")
+
+        for version, audio_path in enumerate(files[:2]):
             sr, n_samples, channels = _audio_info(audio_path)
             duration = n_samples / sr if sr > 0 else 0.0
 
@@ -194,7 +164,7 @@ def main():
                 "audio_path":  str(audio_path),
                 "work_id":     work_id,
                 "version":     version,
-                "work_name":   w1_dir.name,          # human-readable label
+                "work_name":   work_dir.name,          # human-readable label
                 "sample_rate": sr,
                 "num_samples": n_samples,
                 "channels":    channels,
@@ -217,7 +187,7 @@ def main():
     unique_works = sorted({r["work_name"] for r in records})
     labels_path.write_text(json.dumps(unique_works, indent=2))
 
-    print(f"\n✓ {len(records)} tracks ({n_works} works × 2 versions)")
+    print(f"\n✓ {len(records)} tracks ({len(set(r['work_id'] for r in records))} works × 2 versions)")
     print(f"  → {out_path}")
     print(f"  → {labels_path}")
 
