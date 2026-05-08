@@ -27,10 +27,10 @@ All 160 tracks go into one file:  data/Covers80/Covers80.test.jsonl
 
 Source archive
   Columbia LABROSA:
-    http://labrosa.ee.columbia.edu/projects/coversongs/covers80/covers80.tar.bz2
+    http://labrosa.ee.columbia.edu/projects/coversongs/covers80/covers80.tgz
 
 If the download fails (the Columbia server can be slow), place the archive
-manually at  data/Covers80/covers80.tar.bz2  and re-run.
+manually at  data/Covers80/covers80.tgz  and re-run.
 
 Usage
 -----
@@ -48,7 +48,7 @@ from pathlib import Path
 
 
 COVERS80_URL = (
-    "http://labrosa.ee.columbia.edu/projects/coversongs/covers80/covers80.tar.bz2"
+    "http://labrosa.ee.columbia.edu/projects/coversongs/covers80/covers80.tgz"
 )
 
 
@@ -101,7 +101,7 @@ def main():
 
     dest = Path(args.data_dir)
     dest.mkdir(parents=True, exist_ok=True)
-    archive = dest / "covers80.tar.bz2"
+    archive = dest / "covers80.tgz"
 
     # ── 1. Download ───────────────────────────────────────────────────────────
     if not args.no_download:
@@ -115,7 +115,7 @@ def main():
                 print()
             except Exception as e:
                 print(f"\n\nDownload failed: {e}")
-                print("Manually place covers80.tar.bz2 in the data directory and re-run:")
+                print("Manually place covers80.tgz in the data directory and re-run:")
                 print(f"  python scripts/download_covers80.py --data-dir {dest} --no-download")
                 sys.exit(1)
 
@@ -127,7 +127,7 @@ def main():
             print(f"ERROR: archive not found at {archive}")
             sys.exit(1)
         print("Extracting archive …")
-        with tarfile.open(archive, "r:bz2") as tf:
+        with tarfile.open(archive, "r:gz") as tf:
             tf.extractall(dest)
         print("Extraction complete.")
 
