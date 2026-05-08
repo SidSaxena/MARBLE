@@ -35,6 +35,7 @@ dependencies = [
     "scipy>=1.5",
     "numba",         # GTZANBeatTracking HMM (replaces the old Cython extension)
     "omar-rq @ git+https://github.com/MTG/omar-rq.git",  # OMARRQ encoder
+    "hf-xet>=1.5.0",
 ]
 
 [project.optional-dependencies]
