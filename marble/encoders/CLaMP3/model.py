@@ -46,15 +46,27 @@ class CLaMP3Config:
 # --- Helper Functions ---
 
 def download_checkpoint_if_needed(folder: str, filename: str, url: str):
-    """Downloads the checkpoint file if it doesn't exist."""
-    if not os.path.exists(folder):
-        print(f"Creating directory: {folder}")
-        os.makedirs(folder)
-    
+    """Downloads the checkpoint file if it doesn't exist (cross-platform)."""
+    import urllib.request
+
+    os.makedirs(folder, exist_ok=True)
+
     filepath = os.path.join(folder, filename)
     if not os.path.exists(filepath):
-        print("Downloading pre-trained CLaMP3 model...")
-        os.system(f"wget -O {filepath} {url}") # Use -O to ensure correct filename
+        print(f"Downloading pre-trained CLaMP3 model to {filepath} ...")
+        tmp = filepath + ".part"
+        try:
+            def _progress(block, block_size, total):
+                if total > 0:
+                    pct = min(100, block * block_size * 100 // total)
+                    print(f"\r  {pct}%", end="", flush=True)
+            urllib.request.urlretrieve(url, tmp, reporthook=_progress)
+            print()
+            os.replace(tmp, filepath)
+        except Exception:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
         print(f"Download complete. File saved to: {filepath}")
     return filepath
 
