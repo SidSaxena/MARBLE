@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""
+scripts/run_all_sweeps.py
+─────────────────────────
+Orchestrator: runs all relevant MARBLE layer sweeps sequentially,
+in priority order, writing a master results table at the end.
+
+Each sweep calls run_sweep_local.py internally. All sweeps support
+resume — already-completed layers (checkpoint exists) are skipped.
+
+Usage
+─────
+# Run everything (ordered by priority, skips completed layers)
+python scripts/run_all_sweeps.py
+
+# Run only specific models or tasks
+python scripts/run_all_sweeps.py --models OMARRQ
+python scripts/run_all_sweeps.py --tasks GS Chords1217
+python scripts/run_all_sweeps.py --models CLaMP3 --tasks GS EMO
+
+# Dry-run: print what would be run without running anything
+python scripts/run_all_sweeps.py --dry-run
+
+# Override accelerator (Apple Silicon)
+python scripts/run_all_sweeps.py --accelerator mps
+
+Priority order
+──────────────
+  1. OMARRQ × GS            (key detection,    24 layers, ~3–4h)
+  2. CLaMP3 × GS            (key detection,    13 layers, ~1.5h)
+  3. OMARRQ × Chords1217    (chord recognition,24 layers, ~8–10h)
+  4. OMARRQ × BeatTracking  (beat tracking,    24 layers, ~3–4h)
+  5. OMARRQ × EMO           (emotion,          24 layers, ~3h)
+  6. CLaMP3 × EMO           (emotion,          13 layers, ~1.5h)
+
+Total wall-time estimate on RTX 5060 Ti: ~20–24h sequential.
+"""
+
+import argparse
+import subprocess
+import sys
+import time
+from pathlib import Path
+from dataclasses import dataclass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sweep definitions
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class SweepDef:
+    model:       str   # display name / --model-tag
+    task:        str   # display name / --task-tag
+    base_config: str   # path to base YAML
+    num_layers:  int
+    note:        str   # one-line description
+
+SWEEPS: list[SweepDef] = [
+    # ── Priority 1: key detection (most directly relevant to leitmotif) ──────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="GS",
+        base_config="configs/probe.OMARRQ-multifeature25hz.GS.yaml",
+        num_layers=24,
+        note="Key detection  | 24 classes | weighted_score metric",
+    ),
+    SweepDef(
+        model="CLaMP3",
+        task="GS",
+        base_config="configs/probe.CLaMP3-layers.GS.yaml",
+        num_layers=13,
+        note="Key detection  | 24 classes | CLaMP3 comparison",
+    ),
+
+    # ── Priority 2: chord recognition (frame-level harmonic identity) ────────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="Chords1217",
+        base_config="configs/probe.OMARRQ-multifeature25hz.Chords1217.yaml",
+        num_layers=24,
+        note="Chord recognition | 25 classes | frame-level | needs HF token",
+    ),
+
+    # ── Priority 3: beat tracking (rhythmic identity) ────────────────────────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="GTZANBeatTracking",
+        base_config="configs/probe.OMARRQ-multifeature25hz.GTZANBeatTracking.yaml",
+        num_layers=24,
+        note="Beat tracking  | beat_f1 metric | frame-level",
+    ),
+
+    # ── Priority 4: emotion regression (secondary) ───────────────────────────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="EMO",
+        base_config="configs/probe.OMARRQ-multifeature25hz.EMO.yaml",
+        num_layers=24,
+        note="Emotion (valence/arousal) | R² metric | regression",
+    ),
+    SweepDef(
+        model="CLaMP3",
+        task="EMO",
+        base_config="configs/probe.CLaMP3-layers.EMO.yaml",
+        num_layers=13,
+        note="Emotion         | R² metric | CLaMP3 comparison",
+    ),
+]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _completed_layers(model: str, task: str, num_layers: int) -> list[int]:
+    """Return indices of layers that already have a best.ckpt."""
+    done = []
+    for layer in range(num_layers):
+        candidates = list(Path("output").glob(
+            f"*{model}*{task}*layer{layer}*/checkpoints/best.ckpt"
+        )) + list(Path("output").glob(
+            f"*{task}*{model}*layer{layer}*/checkpoints/best.ckpt"
+        ))
+        if candidates:
+            done.append(layer)
+    return done
+
+
+def _data_present(task: str) -> bool:
+    """Check that at least a train JSONL exists for this task."""
+    jsonl_map = {
+        "GS":                 "data/GS/GS.train.jsonl",
+        "EMO":                "data/EMO/EMO.train.jsonl",
+        "Chords1217":         "data/Chords1217/Chords1217.train.jsonl",
+        "GTZANBeatTracking":  "data/GTZAN/GTZANBeatTracking.train.jsonl",
+        "GTZANGenre":         "data/GTZAN/GTZANGenre.train.jsonl",
+    }
+    path = jsonl_map.get(task)
+    return path is not None and Path(path).exists()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run all MARBLE layer sweeps sequentially."
+    )
+    parser.add_argument("--models", nargs="*",
+                        help="Filter to specific model tags (e.g. OMARRQ CLaMP3)")
+    parser.add_argument("--tasks", nargs="*",
+                        help="Filter to specific task tags (e.g. GS Chords1217 EMO)")
+    parser.add_argument("--no-skip", action="store_true",
+                        help="Re-run layers even if checkpoints exist")
+    parser.add_argument("--accelerator", default=None,
+                        help="Override trainer accelerator (gpu/mps/cpu)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print planned sweeps without running anything")
+    args = parser.parse_args()
+
+    # Filter sweep list
+    sweeps = SWEEPS
+    if args.models:
+        sweeps = [s for s in sweeps if any(m.lower() in s.model.lower() for m in args.models)]
+    if args.tasks:
+        sweeps = [s for s in sweeps if s.task in args.tasks]
+
+    if not sweeps:
+        print("No sweeps match the given filters.", file=sys.stderr)
+        sys.exit(1)
+
+    # Print plan
+    print(f"\n{'='*70}")
+    print(f"  MARBLE Layer Sweep Plan  ({len(sweeps)} sweeps)")
+    print(f"{'='*70}")
+    total_layers = 0
+    for i, s in enumerate(sweeps, 1):
+        done = _completed_layers(s.model, s.task, s.num_layers)
+        remaining = s.num_layers - len(done)
+        data_ok = _data_present(s.task)
+        status = "✓ data" if data_ok else "✗ data missing"
+        skip_note = f"({len(done)} layers done)" if done else ""
+        print(f"  {i}. [{s.model} × {s.task}]  {s.num_layers} layers  {status}  {skip_note}")
+        print(f"       {s.note}")
+        total_layers += remaining
+    print(f"\n  Total remaining layers: {total_layers}")
+    print(f"{'='*70}\n")
+
+    if args.dry_run:
+        print("Dry run — exiting without running.")
+        return
+
+    # Check data availability
+    missing_data = [s for s in sweeps if not _data_present(s.task)]
+    if missing_data:
+        print("WARNING: the following sweeps have missing data and will be skipped:")
+        for s in missing_data:
+            print(f"  {s.model} × {s.task}  →  run data download first")
+        print()
+        sweeps = [s for s in sweeps if _data_present(s.task)]
+        if not sweeps:
+            print("No sweeps have data available. Exiting.")
+            sys.exit(1)
+
+    # Run each sweep
+    sweep_results: dict[str, str] = {}
+    t_start = time.time()
+
+    for i, s in enumerate(sweeps, 1):
+        print(f"\n{'#'*70}")
+        print(f"  Sweep {i}/{len(sweeps)}: {s.model} × {s.task}")
+        print(f"  {s.note}")
+        print(f"{'#'*70}\n")
+
+        cmd = [
+            "python", "scripts/run_sweep_local.py",
+            "--base-config", s.base_config,
+            "--num-layers",  str(s.num_layers),
+            "--model-tag",   s.model,
+            "--task-tag",    s.task,
+        ]
+        if args.no_skip:
+            cmd.append("--no-skip")
+        if args.accelerator:
+            cmd += ["--accelerator", args.accelerator]
+
+        print(f"$ {' '.join(cmd)}\n", flush=True)
+
+        t0 = time.time()
+        result = subprocess.run(cmd)
+        elapsed = time.time() - t0
+
+        key = f"{s.model} × {s.task}"
+        if result.returncode == 0:
+            sweep_results[key] = f"OK  ({elapsed/3600:.1f}h)"
+        else:
+            sweep_results[key] = f"FAILED (exit {result.returncode})"
+            print(f"\n  ⚠ Sweep failed — continuing with next.", file=sys.stderr)
+
+    # Final summary
+    total_elapsed = time.time() - t_start
+    print(f"\n{'='*70}")
+    print(f"  All sweeps complete  (total: {total_elapsed/3600:.1f}h)")
+    print(f"{'='*70}")
+    for key, status in sweep_results.items():
+        print(f"  {key:<45}  {status}")
+    print()
+
+
+if __name__ == "__main__":
+    main()
