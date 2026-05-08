@@ -43,6 +43,11 @@ import sys
 import time
 from pathlib import Path
 
+# Use the same Python interpreter that is running this script so that the
+# correct venv is used on all platforms (important on Windows where "python"
+# may not resolve to the venv's interpreter).
+PYTHON = sys.executable
+
 
 # ──────────────────────────────────────────────
 # Helpers
@@ -111,7 +116,7 @@ def main():
 
     # ── 1. Generate per-layer configs ────────────────────────────────────────
     _run([
-        "python", "scripts/gen_sweep_configs.py",
+        PYTHON, "scripts/gen_sweep_configs.py",
         "--base-config", args.base_config,
         "--num-layers",  str(args.num_layers),
         "--model-tag",   args.model_tag,
@@ -138,13 +143,13 @@ def main():
         if skip_fit:
             print(f"  ✓ Checkpoint found — skipping fit, running test only.")
         else:
-            fit_cmd = ["python", "cli.py", "fit", "-c", cfg]
+            fit_cmd = [PYTHON, "cli.py", "fit", "-c", cfg]
             if args.accelerator:
                 fit_cmd += [f"--trainer.accelerator={args.accelerator}"]
             _run(fit_cmd)
 
         # Always run test (loads best checkpoint via LoadLatestCheckpointCallback)
-        test_cmd = ["python", "cli.py", "test", "-c", cfg]
+        test_cmd = [PYTHON, "cli.py", "test", "-c", cfg]
         if args.accelerator:
             test_cmd += [f"--trainer.accelerator={args.accelerator}"]
 

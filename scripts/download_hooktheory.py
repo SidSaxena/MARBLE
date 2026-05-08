@@ -15,9 +15,12 @@ Data source
 
 Prerequisites
 -------------
-  pip install yt-dlp
-  # ffmpeg must be on PATH:  brew install ffmpeg  (macOS)
-  #                          sudo apt install ffmpeg  (Ubuntu)
+  # yt-dlp is installed automatically via `uv sync`.
+  # ffmpeg must be on PATH (system package, not managed by uv):
+  #   macOS:   brew install ffmpeg
+  #   Linux:   sudo apt install ffmpeg
+  #   Windows: winget install ffmpeg
+  #            (or download from https://ffmpeg.org/download.html and add to PATH)
 
 Usage
 -----

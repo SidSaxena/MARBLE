@@ -53,6 +53,11 @@ import time
 from pathlib import Path
 from dataclasses import dataclass
 
+# Use the same Python interpreter that is running this script so that the
+# correct venv is used on all platforms (important on Windows where "python"
+# may not resolve to the venv's interpreter).
+PYTHON = sys.executable
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Sweep definitions
@@ -296,7 +301,7 @@ def main():
         print(f"{'#'*70}\n")
 
         cmd = [
-            "python", "scripts/run_sweep_local.py",
+            PYTHON, "scripts/run_sweep_local.py",
             "--base-config", s.base_config,
             "--num-layers",  str(s.num_layers),
             "--model-tag",   s.model,

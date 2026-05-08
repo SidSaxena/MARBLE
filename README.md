@@ -52,24 +52,39 @@ Marble is a modular, configuration-driven suite for training, evaluating, and pe
 ## Getting Started
 
 1. **Install dependencies**:
+
+    **macOS**
     ```bash
-    # 1. install ffmpeg (system package — not managed by uv)
-    brew install ffmpeg          # macOS
-    # sudo apt install ffmpeg   # Linux / GPU machine
-
-    # 2. create the venv and install everything (Python 3.10 pinned via .python-version)
+    brew install ffmpeg
     uv sync
+    ```
 
-    # On Linux the CUDA-enabled torch/torchaudio wheels are fetched automatically
-    # from the PyTorch cu124 index defined in pyproject.toml.
+    **Linux**
+    ```bash
+    sudo apt install ffmpeg
+    uv sync
+    # CUDA-enabled torch/torchaudio wheels are fetched automatically
+    # from the PyTorch cu124 index (see pyproject.toml).
+    ```
 
-    # 3. [Optional] install extra encoder dependencies (e.g. Xcodec)
+    **Windows**
+    ```powershell
+    winget install ffmpeg
+    # Also install the MSVC C++ Build Tools (required for the Cython extension):
+    # https://visualstudio.microsoft.com/visual-cpp-build-tools/
+    uv sync
+    # CUDA wheels are fetched automatically (same as Linux).
+    ```
+
+    ```bash
+    # [Optional] install extra encoder dependencies (e.g. Xcodec)
     uv sync --extra xcodec
 
-    # 4. run scripts directly via uv run, or activate the venv first:
+    # Run scripts via uv run, or activate the venv first:
     uv run python cli.py fit --config configs/probe.MERT-v1-95M.GTZANGenre.yaml
     # — or —
-    source .venv/bin/activate
+    source .venv/bin/activate        # macOS / Linux
+    # .venv\Scripts\activate         # Windows
     python cli.py fit --config configs/probe.MERT-v1-95M.GTZANGenre.yaml
     ```
 
