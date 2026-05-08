@@ -34,14 +34,12 @@ Priority order
   6. CLaMP3 × NSynth              (pitch class.,     13 layers, ~2h)
   7. OMARRQ × Covers80            (cover retrieval,  24 layers, ~30min — zero-shot)
   8. CLaMP3 × Covers80            (cover retrieval,  13 layers, ~15min — zero-shot)
-  9. OMARRQ × EMO                 (emotion,          24 layers, ~3h)
- 10. CLaMP3 × EMO                 (emotion,          13 layers, ~1.5h)
- 11. OMARRQ × HookTheoryKey       (key estimation,   24 layers, ~4–6h — needs audio DL)
- 12. CLaMP3 × HookTheoryKey       (key estimation,   13 layers, ~2h   — needs audio DL)
- 13. OMARRQ × HookTheoryStructure (structure class., 24 layers, ~4–6h — needs audio DL)
- 14. CLaMP3 × HookTheoryStructure (structure class., 13 layers, ~2h   — needs audio DL)
+  9. OMARRQ × HookTheoryKey       (key estimation,   24 layers, ~4–6h — needs audio DL)
+ 10. CLaMP3 × HookTheoryKey       (key estimation,   13 layers, ~2h   — needs audio DL)
+ 11. OMARRQ × HookTheoryStructure (structure class., 24 layers, ~4–6h — needs audio DL)
+ 12. CLaMP3 × HookTheoryStructure (structure class., 13 layers, ~2h   — needs audio DL)
 
-Total wall-time estimate on RTX 5060 Ti: ~38–50h sequential.
+Total wall-time estimate on RTX 5060 Ti: ~30–40h sequential.
 Covers80 is very fast (no training, pure retrieval each layer).
 HookTheory tasks require running scripts/download_hooktheory.py first.
 """
@@ -138,23 +136,7 @@ SWEEPS: list[SweepDef] = [
         note="Cover-song retrieval | MAP metric | CLaMP3 comparison",
     ),
 
-    # ── Priority 6: emotion regression (secondary) ───────────────────────────
-    SweepDef(
-        model="OMARRQ-multifeature25hz",
-        task="EMO",
-        base_config="configs/probe.OMARRQ-multifeature25hz.EMO.yaml",
-        num_layers=24,
-        note="Emotion (valence/arousal) | R² metric | regression",
-    ),
-    SweepDef(
-        model="CLaMP3",
-        task="EMO",
-        base_config="configs/probe.CLaMP3-layers.EMO.yaml",
-        num_layers=13,
-        note="Emotion         | R² metric | CLaMP3 comparison",
-    ),
-
-    # ── Priority 7: HookTheory key estimation (requires audio download) ───────
+    # ── Priority 6: HookTheory key estimation (requires audio download) ─────────
     SweepDef(
         model="OMARRQ-multifeature25hz",
         task="HookTheoryKey",
@@ -170,7 +152,7 @@ SWEEPS: list[SweepDef] = [
         note="Key estimation  | 24 classes | CLaMP3 comparison",
     ),
 
-    # ── Priority 8: HookTheory structure classification ───────────────────────
+    # ── Priority 7: HookTheory structure classification ───────────────────────
     SweepDef(
         model="OMARRQ-multifeature25hz",
         task="HookTheoryStructure",
