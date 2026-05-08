@@ -26,19 +26,24 @@ python scripts/run_all_sweeps.py --accelerator mps
 
 Priority order
 ──────────────
-  1. OMARRQ × GS            (key detection,    24 layers, ~3–4h)
-  2. CLaMP3 × GS            (key detection,    13 layers, ~1.5h)
-  3. OMARRQ × Chords1217    (chord recognition,24 layers, ~8–10h)
-  4. OMARRQ × BeatTracking  (beat tracking,    24 layers, ~3–4h)
-  5. OMARRQ × NSynth        (pitch class.,     24 layers, ~4–6h)
-  6. CLaMP3 × NSynth        (pitch class.,     13 layers, ~2h)
-  7. OMARRQ × Covers80      (cover retrieval,  24 layers, ~30min — zero-shot)
-  8. CLaMP3 × Covers80      (cover retrieval,  13 layers, ~15min — zero-shot)
-  9. OMARRQ × EMO           (emotion,          24 layers, ~3h)
- 10. CLaMP3 × EMO           (emotion,          13 layers, ~1.5h)
+  1. OMARRQ × GS                  (key detection,    24 layers, ~3–4h)
+  2. CLaMP3 × GS                  (key detection,    13 layers, ~1.5h)
+  3. OMARRQ × Chords1217          (chord recognition,24 layers, ~8–10h)
+  4. OMARRQ × BeatTracking        (beat tracking,    24 layers, ~3–4h)
+  5. OMARRQ × NSynth              (pitch class.,     24 layers, ~4–6h)
+  6. CLaMP3 × NSynth              (pitch class.,     13 layers, ~2h)
+  7. OMARRQ × Covers80            (cover retrieval,  24 layers, ~30min — zero-shot)
+  8. CLaMP3 × Covers80            (cover retrieval,  13 layers, ~15min — zero-shot)
+  9. OMARRQ × EMO                 (emotion,          24 layers, ~3h)
+ 10. CLaMP3 × EMO                 (emotion,          13 layers, ~1.5h)
+ 11. OMARRQ × HookTheoryKey       (key estimation,   24 layers, ~4–6h — needs audio DL)
+ 12. CLaMP3 × HookTheoryKey       (key estimation,   13 layers, ~2h   — needs audio DL)
+ 13. OMARRQ × HookTheoryStructure (structure class., 24 layers, ~4–6h — needs audio DL)
+ 14. CLaMP3 × HookTheoryStructure (structure class., 13 layers, ~2h   — needs audio DL)
 
-Total wall-time estimate on RTX 5060 Ti: ~28–35h sequential.
+Total wall-time estimate on RTX 5060 Ti: ~38–50h sequential.
 Covers80 is very fast (no training, pure retrieval each layer).
+HookTheory tasks require running scripts/download_hooktheory.py first.
 """
 
 import argparse
@@ -143,6 +148,38 @@ SWEEPS: list[SweepDef] = [
         num_layers=13,
         note="Emotion         | R² metric | CLaMP3 comparison",
     ),
+
+    # ── Priority 7: HookTheory key estimation (requires audio download) ───────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="HookTheoryKey",
+        base_config="configs/probe.OMARRQ-multifeature25hz.HookTheoryKey.yaml",
+        num_layers=24,
+        note="Key estimation  | 24 classes | weighted_score | run download_hooktheory.py first",
+    ),
+    SweepDef(
+        model="CLaMP3",
+        task="HookTheoryKey",
+        base_config="configs/probe.CLaMP3-layers.HookTheoryKey.yaml",
+        num_layers=13,
+        note="Key estimation  | 24 classes | CLaMP3 comparison",
+    ),
+
+    # ── Priority 8: HookTheory structure classification ───────────────────────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="HookTheoryStructure",
+        base_config="configs/probe.OMARRQ-multifeature25hz.HookTheoryStructure.yaml",
+        num_layers=24,
+        note="Structure class.| 7 classes  | acc metric | run download_hooktheory.py first",
+    ),
+    SweepDef(
+        model="CLaMP3",
+        task="HookTheoryStructure",
+        base_config="configs/probe.CLaMP3-layers.HookTheoryStructure.yaml",
+        num_layers=13,
+        note="Structure class.| 7 classes  | CLaMP3 comparison",
+    ),
 ]
 
 
@@ -176,6 +213,9 @@ def _data_present(task: str) -> bool:
         "NSynth":             "data/NSynth/NSynth.train.jsonl",
         # Covers80: single evaluation JSONL (no train/val split)
         "Covers80":           "data/Covers80/Covers80.test.jsonl",
+        # HookTheory: requires download_hooktheory.py (YouTube audio via yt-dlp)
+        "HookTheoryKey":       "data/HookTheory/HookTheoryKey.train.jsonl",
+        "HookTheoryStructure": "data/HookTheory/HookTheoryStructure.train.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()
