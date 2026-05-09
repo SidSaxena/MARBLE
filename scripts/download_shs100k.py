@@ -133,13 +133,18 @@ def _find_existing(ytid: str, audio_dir: Path) -> Optional[Path]:
     return None
 
 
-def _download_audio(ytid: str, audio_dir: Path, skip: bool) -> Optional[Path]:
+def _download_audio(
+    ytid: str, audio_dir: Path, skip: bool, browser: Optional[str] = None
+) -> Optional[Path]:
     """
     Download and extract audio from YouTube as MP3 (requires system ffmpeg).
 
     yt-dlp fetches the best available audio stream and re-encodes it to MP3
     at best VBR quality (--audio-quality 0 ≈ 320 kbps).  MP3 is readable by
     torchaudio on every platform without any additional codec setup.
+
+    browser: if set (e.g. "chrome", "edge", "firefox"), passes
+             --cookies-from-browser to yt-dlp to bypass bot detection.
 
     Returns the downloaded Path, or None on failure / unavailability.
     """
@@ -149,18 +154,21 @@ def _download_audio(ytid: str, audio_dir: Path, skip: bool) -> Optional[Path]:
     if skip:
         return None
 
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--quiet", "--no-warnings",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",      # best VBR quality (~320 kbps)
+        "-o", str(audio_dir / f"{ytid}.%(ext)s"),
+    ]
+    if browser:
+        cmd += ["--cookies-from-browser", browser]
+    cmd.append(f"https://www.youtube.com/watch?v={ytid}")
+
     try:
         result = subprocess.run(
-            [
-                sys.executable, "-m", "yt_dlp",
-                "--quiet", "--no-warnings",
-                "--extract-audio",
-                "--audio-format", "mp3",
-                "--audio-quality", "0",      # best VBR quality (~320 kbps)
-                "-o", str(audio_dir / f"{ytid}.%(ext)s"),
-                f"https://www.youtube.com/watch?v={ytid}",
-            ],
-            capture_output=True, text=True, timeout=180,
+            cmd, capture_output=True, text=True, timeout=180,
         )
         if result.returncode != 0:
             log.warning(f"yt-dlp failed for {ytid} (rc={result.returncode}): "
@@ -175,10 +183,11 @@ def _download_audio(ytid: str, audio_dir: Path, skip: bool) -> Optional[Path]:
         return None
 
 
-def _process_row(row: dict, audio_dir: Path, skip_audio: bool) -> Optional[dict]:
+def _process_row(row: dict, audio_dir: Path, skip_audio: bool,
+                 browser: Optional[str] = None) -> Optional[dict]:
     """Download audio for one row and return a JSONL record, or None on failure."""
     ytid = row["youtube_id"]
-    audio_path = _download_audio(ytid, audio_dir, skip=skip_audio)
+    audio_path = _download_audio(ytid, audio_dir, skip=skip_audio, browser=browser)
     if audio_path is None or not audio_path.exists() or audio_path.stat().st_size < 10_000:
         return None
 
@@ -230,10 +239,22 @@ def main():
         help="Skip yt-dlp downloads; rebuild JSONL from already-downloaded audio.",
     )
     parser.add_argument(
+        "--browser", default=None,
+        metavar="BROWSER",
+        help=(
+            "Pass cookies from a browser to bypass YouTube bot detection "
+            "(e.g. --browser chrome, --browser edge, --browser firefox). "
+            "Open YouTube in that browser and be signed in to Google first."
+        ),
+    )
+    parser.add_argument(
         "--max-entries", type=int, default=None,
         help="Cap entries per split for smoke-testing (e.g. --max-entries 50).",
     )
     args = parser.parse_args()
+
+    if args.browser:
+        log.info(f"Using cookies from browser: {args.browser}")
 
     data_dir  = Path(args.data_dir)
     audio_dir = data_dir / "audio"
@@ -253,7 +274,8 @@ def main():
 
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futs = {
-                pool.submit(_process_row, row, audio_dir, args.skip_audio): row
+                pool.submit(_process_row, row, audio_dir, args.skip_audio,
+                            args.browser): row
                 for row in rows
             }
             n_done = 0
