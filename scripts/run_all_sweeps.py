@@ -36,15 +36,16 @@ Priority order
   8. CLaMP3 × Covers80            (cover retrieval,  13 layers, ~15min — zero-shot)
   9. OMARRQ × SHS100K             (cover retrieval,  24 layers, ~3–4h  — zero-shot, 5K tracks)
  10. CLaMP3 × SHS100K             (cover retrieval,  13 layers, ~1.5h  — zero-shot, 5K tracks)
- 11. OMARRQ × HookTheoryKey       (key estimation,   24 layers, ~4–6h — needs audio DL)
- 12. CLaMP3 × HookTheoryKey       (key estimation,   13 layers, ~2h   — needs audio DL)
- 13. OMARRQ × HookTheoryStructure (structure class., 24 layers, ~4–6h — needs audio DL)
- 14. CLaMP3 × HookTheoryStructure (structure class., 13 layers, ~2h   — needs audio DL)
+ 11. OMARRQ × HookTheoryKey       (key estimation,   24 layers, ~4–6h)
+ 12. CLaMP3 × HookTheoryKey       (key estimation,   13 layers, ~2h)
+ 13. OMARRQ × HookTheoryStructure (structure class., 24 layers, ~4–6h)
+ 14. CLaMP3 × HookTheoryStructure (structure class., 13 layers, ~2h)
 
 Total wall-time estimate on RTX 5060 Ti: ~38–48h sequential.
 Covers80 is very fast (no training, pure retrieval each layer).
 SHS100K is zero-shot retrieval over ~5K tracks (takes longer than Covers80).
-HookTheory tasks require running scripts/download_hooktheory.py first.
+HookTheory data comes from HuggingFace (m-a-p/HookTheory, ~4.1 GB clips).
+  Run first: uv run python scripts/download_hooktheory.py
 """
 
 import argparse
@@ -161,7 +162,7 @@ SWEEPS: list[SweepDef] = [
         task="HookTheoryKey",
         base_config="configs/probe.OMARRQ-multifeature25hz.HookTheoryKey.yaml",
         num_layers=24,
-        note="Key estimation  | 24 classes | weighted_score | run download_hooktheory.py first",
+        note="Key estimation  | 24 classes | weighted_score | HF: m-a-p/HookTheory",
     ),
     SweepDef(
         model="CLaMP3",
@@ -177,7 +178,7 @@ SWEEPS: list[SweepDef] = [
         task="HookTheoryStructure",
         base_config="configs/probe.OMARRQ-multifeature25hz.HookTheoryStructure.yaml",
         num_layers=24,
-        note="Structure class.| 7 classes  | acc metric | run download_hooktheory.py first",
+        note="Structure class.| 7 classes  | acc metric | HF: m-a-p/HookTheory",
     ),
     SweepDef(
         model="CLaMP3",
