@@ -207,20 +207,23 @@ def _find_existing_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
 
 
 def _download_youtube_audio(
-    ytid: str, audio_dir: Path, browser: Optional[str] = None
+    ytid: str,
+    audio_dir: Path,
+    cookies_file: Optional[Path] = None,
 ) -> Optional[Path]:
-    """
-    Download best-quality audio-only stream from YouTube (native container).
+    """Download full YouTube audio in native format (m4a/webm).
 
-    Keeps native m4a/webm format — no re-encoding here.  The subsequent
-    _extract_segment() call uses system ffmpeg (which must be on PATH) to
-    cut and re-encode each clip to MP3.  System ffmpeg handles all container
-    formats so the native download format does not matter.
+    Format selector: ``bestaudio*``
+      • Matches audio-only streams first (preferred: opus, aac)
+      • Falls back to any stream with audio (muxed video+audio)
+      Unlike ``bestaudio/best``, this never fails on modern YouTube because
+      ``best`` requires a pre-merged stream that YouTube rarely serves.
 
-    browser: if set (e.g. "chrome", "edge", "firefox"), passes
-             --cookies-from-browser to yt-dlp to bypass bot detection.
+    The native container is kept here; _extract_segment() uses ffmpeg to
+    cut and re-encode the clip to MP3, so the container format is irrelevant.
 
-    Returns the downloaded Path, or None on failure.
+    cookies_file: Netscape cookies file exported once at startup; avoids
+                  concurrent SQLite DB reads on Windows (Chromium DB lock).
     """
     existing = _find_existing_audio(ytid, audio_dir)
     if existing:
@@ -230,18 +233,16 @@ def _download_youtube_audio(
         sys.executable, "-m", "yt_dlp",
         "--quiet", "--no-warnings",
         "--no-playlist",
-        "-f", "bestaudio/best",
+        "-f", "bestaudio*",          # best audio stream; never fails on modern YouTube
         "--no-cache-dir",
         "-o", str(audio_dir / f"{ytid}.%(ext)s"),
     ]
-    if browser:
-        cmd += ["--cookies-from-browser", browser]
+    if cookies_file and cookies_file.exists():
+        cmd += ["--cookies", str(cookies_file)]
     cmd.append(f"https://www.youtube.com/watch?v={ytid}")
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             log.warning(f"yt-dlp failed for {ytid} (rc={result.returncode}): "
                         f"{(result.stderr or result.stdout or '(no output)').strip()[:300]}")
@@ -303,7 +304,7 @@ def process_entry(
     clips_dir: Path,
     skip_audio: bool,
     tasks: set[str],
-    browser: Optional[str] = None,
+    cookies_file: Optional[Path] = None,
 ) -> Optional[dict]:
     """
     Download audio + extract segment for one HookTheory entry.
@@ -351,7 +352,7 @@ def process_entry(
 
     if not skip_audio:
         # Download full YouTube audio if needed
-        audio_path = _download_youtube_audio(ytid, audio_dir, browser=browser)
+        audio_path = _download_youtube_audio(ytid, audio_dir, cookies_file=cookies_file)
         if audio_path is None:
             log.warning(f"  Skip {uid}: YouTube download failed ({ytid})")
             return None
@@ -477,9 +478,22 @@ def main():
         "--browser", default=None,
         metavar="BROWSER",
         help=(
-            "Pass cookies from a browser to bypass YouTube bot detection "
-            "(e.g. --browser chrome, --browser edge, --browser firefox). "
-            "Open YouTube in that browser and be signed in to Google first."
+            "Export cookies from this browser at startup and use them for all "
+            "downloads (e.g. --browser edge, --browser chrome, --browser firefox). "
+            "You must be signed in to YouTube in the browser. "
+            "On Windows: close the browser first to avoid cookie DB-lock errors, "
+            "or use --cookies-file with pre-exported cookies instead."
+        ),
+    )
+    parser.add_argument(
+        "--cookies-file", default=None,
+        metavar="FILE",
+        help=(
+            "Path to a pre-exported Netscape-format cookies file. "
+            "Use instead of --browser when the browser must stay open. "
+            "Export once with: "
+            "yt-dlp --cookies-from-browser edge --cookies cookies.txt "
+            "--skip-download https://www.youtube.com/"
         ),
     )
     parser.add_argument(
@@ -488,14 +502,40 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.browser:
-        log.info(f"Using cookies from browser: {args.browser}")
-
     data_dir  = Path(args.data_dir)
     audio_dir = data_dir / "audio"
     clips_dir = data_dir / "hooktheory_clips"
     for d in (data_dir, audio_dir, clips_dir):
         d.mkdir(parents=True, exist_ok=True)
+
+    # ── Resolve cookies (done once; shared across all parallel workers) ────────
+    cookies_file: Optional[Path] = None
+    if args.cookies_file:
+        cookies_file = Path(args.cookies_file)
+        if not cookies_file.exists():
+            log.error(f"--cookies-file not found: {cookies_file}")
+            sys.exit(1)
+        log.info(f"Using cookies file: {cookies_file}")
+    elif args.browser:
+        cookies_file = data_dir / ".yt-dlp-cookies.txt"
+        log.info(f"Exporting cookies from {args.browser} → {cookies_file} …")
+        result = subprocess.run(
+            [sys.executable, "-m", "yt_dlp",
+             "--cookies-from-browser", args.browser,
+             "--cookies", str(cookies_file),
+             "--skip-download", "https://www.youtube.com/"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0 or not cookies_file.exists():
+            log.warning(
+                f"Cookie export failed. Ensure {args.browser} is installed and "
+                f"you are signed in to YouTube. On Windows: close the browser first.\n"
+                f"  {(result.stderr or result.stdout or '').strip()[:300]}"
+            )
+            log.warning("Continuing without authentication — bot-detection errors are likely.")
+            cookies_file = None
+        else:
+            log.info(f"Cookies exported ({cookies_file.stat().st_size:,} bytes).")
 
     tasks = set(args.tasks)
 
@@ -528,7 +568,7 @@ def main():
     if args.workers <= 1 or args.skip_audio:
         for uid, entry in entries:
             r = process_entry(uid, entry, audio_dir, clips_dir, args.skip_audio,
-                              tasks, args.browser)
+                              tasks, cookies_file)
             if r:
                 records.append(r)
             else:
@@ -538,7 +578,7 @@ def main():
             futures = {
                 pool.submit(
                     process_entry, uid, entry, audio_dir, clips_dir,
-                    args.skip_audio, tasks, args.browser
+                    args.skip_audio, tasks, cookies_file
                 ): uid
                 for uid, entry in entries
             }
