@@ -210,9 +210,10 @@ def _download_youtube_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
     """
     Download best-quality audio-only stream from YouTube (native container).
 
-    Does NOT force mp3 conversion — keeps the native m4a or webm/opus format
-    so that ffmpeg is not required at download time.  The subsequent
-    _extract_segment call uses ffmpeg to extract and re-encode the clip.
+    Keeps native m4a/webm format — no re-encoding here.  The subsequent
+    _extract_segment() call uses system ffmpeg (which must be on PATH) to
+    cut and re-encode each clip to MP3.  System ffmpeg handles all container
+    formats so the native download format does not matter.
     Returns the downloaded Path, or None on failure.
     """
     existing = _find_existing_audio(ytid, audio_dir)
@@ -225,7 +226,7 @@ def _download_youtube_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
                 sys.executable, "-m", "yt_dlp",
                 "--quiet", "--no-warnings",
                 "--no-playlist",
-                "-f", "bestaudio/best",        # native container, no conversion
+                "-f", "bestaudio/best",
                 "--no-cache-dir",
                 "-o", str(audio_dir / f"{ytid}.%(ext)s"),
                 f"https://www.youtube.com/watch?v={ytid}",
@@ -233,7 +234,8 @@ def _download_youtube_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
             capture_output=True, text=True, timeout=300,
         )
         if result.returncode != 0:
-            log.warning(f"yt-dlp failed for {ytid}: {result.stderr[:200]}")
+            log.warning(f"yt-dlp failed for {ytid} (rc={result.returncode}): "
+                        f"{(result.stderr or result.stdout or '(no output)').strip()[:300]}")
             return None
         return _find_existing_audio(ytid, audio_dir)
     except subprocess.TimeoutExpired:
