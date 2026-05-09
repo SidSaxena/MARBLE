@@ -157,8 +157,10 @@ def _download_audio(
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--quiet", "--no-warnings",
-        "--extract-audio",
-        "--audio-format", "mp3",
+        "--no-playlist",
+        "-f", "bestaudio/best",      # select best available audio stream
+        "--extract-audio",           # extract audio track (requires ffmpeg)
+        "--audio-format", "mp3",     # re-encode to MP3
         "--audio-quality", "0",      # best VBR quality (~320 kbps)
         "-o", str(audio_dir / f"{ytid}.%(ext)s"),
     ]
