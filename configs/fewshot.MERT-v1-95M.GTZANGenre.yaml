@@ -7,7 +7,7 @@ trainer:
   # strategy: ddp # or ddp_find_unused_parameters
   devices: [0]
   num_nodes: 1
-  precision: bf16 # or 32, or 16
+  precision: bf16-mixed
   max_epochs: 1
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 0

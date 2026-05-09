@@ -10,7 +10,7 @@ trainer:
   accelerator: gpu
   devices: [0]
   num_nodes: 1
-  precision: bf16
+  precision: bf16-mixed
   max_epochs: 0
   num_sanity_val_steps: 0
 
