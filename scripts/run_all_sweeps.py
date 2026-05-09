@@ -34,13 +34,16 @@ Priority order
   6. CLaMP3 × NSynth              (pitch class.,     13 layers, ~2h)
   7. OMARRQ × Covers80            (cover retrieval,  24 layers, ~30min — zero-shot)
   8. CLaMP3 × Covers80            (cover retrieval,  13 layers, ~15min — zero-shot)
-  9. OMARRQ × HookTheoryKey       (key estimation,   24 layers, ~4–6h — needs audio DL)
- 10. CLaMP3 × HookTheoryKey       (key estimation,   13 layers, ~2h   — needs audio DL)
- 11. OMARRQ × HookTheoryStructure (structure class., 24 layers, ~4–6h — needs audio DL)
- 12. CLaMP3 × HookTheoryStructure (structure class., 13 layers, ~2h   — needs audio DL)
+  9. OMARRQ × SHS100K             (cover retrieval,  24 layers, ~3–4h  — zero-shot, 5K tracks)
+ 10. CLaMP3 × SHS100K             (cover retrieval,  13 layers, ~1.5h  — zero-shot, 5K tracks)
+ 11. OMARRQ × HookTheoryKey       (key estimation,   24 layers, ~4–6h — needs audio DL)
+ 12. CLaMP3 × HookTheoryKey       (key estimation,   13 layers, ~2h   — needs audio DL)
+ 13. OMARRQ × HookTheoryStructure (structure class., 24 layers, ~4–6h — needs audio DL)
+ 14. CLaMP3 × HookTheoryStructure (structure class., 13 layers, ~2h   — needs audio DL)
 
-Total wall-time estimate on RTX 5060 Ti: ~30–40h sequential.
+Total wall-time estimate on RTX 5060 Ti: ~38–48h sequential.
 Covers80 is very fast (no training, pure retrieval each layer).
+SHS100K is zero-shot retrieval over ~5K tracks (takes longer than Covers80).
 HookTheory tasks require running scripts/download_hooktheory.py first.
 """
 
@@ -136,7 +139,23 @@ SWEEPS: list[SweepDef] = [
         note="Cover-song retrieval | MAP metric | CLaMP3 comparison",
     ),
 
-    # ── Priority 6: HookTheory key estimation (requires audio download) ─────────
+    # ── Priority 6: cover-song retrieval (SHS-100K — community benchmark) ────
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="SHS100K",
+        base_config="configs/probe.OMARRQ-multifeature25hz.SHS100K.yaml",
+        num_layers=24,
+        note="Cover retrieval     | MAP metric | zero-shot | 500 works, ~5K tracks",
+    ),
+    SweepDef(
+        model="CLaMP3",
+        task="SHS100K",
+        base_config="configs/probe.CLaMP3-layers.SHS100K.yaml",
+        num_layers=13,
+        note="Cover retrieval     | MAP metric | CLaMP3 comparison",
+    ),
+
+    # ── Priority 7: HookTheory key estimation (requires audio download) ─────────
     SweepDef(
         model="OMARRQ-multifeature25hz",
         task="HookTheoryKey",
@@ -200,6 +219,8 @@ def _data_present(task: str) -> bool:
         "NSynth":             "data/NSynth/NSynth.train.jsonl",
         # Covers80: single evaluation JSONL (no train/val split)
         "Covers80":           "data/Covers80/Covers80.test.jsonl",
+        # SHS-100K: community-standard cover retrieval benchmark (test split)
+        "SHS100K":            "data/SHS100K/SHS100K.test.jsonl",
         # HookTheory: requires download_hooktheory.py (YouTube audio via yt-dlp)
         "HookTheoryKey":       "data/HookTheory/HookTheoryKey.train.jsonl",
         "HookTheoryStructure": "data/HookTheory/HookTheoryStructure.train.jsonl",
