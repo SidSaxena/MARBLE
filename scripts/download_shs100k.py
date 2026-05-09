@@ -18,19 +18,21 @@ Dataset
 
 Audio
 -----
-  Full songs are downloaded from YouTube in their native best-audio format
-  (usually .m4a or .webm/opus) via yt-dlp — no ffmpeg conversion needed at
-  download time.  torchaudio reads both formats at load time (uses its own
-  ffmpeg backend).  The datamodule handles splitting into 30-second clips.
+  Full songs are downloaded from YouTube and extracted to MP3 via yt-dlp +
+  system ffmpeg.  MP3 is universally readable by torchaudio on all platforms.
+  The datamodule handles splitting into 30-second clips at inference time.
 
 Prerequisites
 -------------
   yt-dlp is installed automatically by `uv sync`.
-  No ffmpeg required for downloading (native format is kept as-is).
+  System ffmpeg must be on PATH (used by yt-dlp for audio extraction):
+    Windows: winget install Gyan.FFmpeg   (restart terminal after)
+    macOS:   brew install ffmpeg
+    Linux:   sudo apt install ffmpeg
 
 Output
 ------
-  data/SHS100K/audio/            full-song audio files (m4a or webm), keyed by youtube_id
+  data/SHS100K/audio/            full-song MP3 files, keyed by youtube_id
   data/SHS100K/SHS100K.test.jsonl
   data/SHS100K/SHS100K.val.jsonl   (only with --splits val)
   data/SHS100K/SHS100K.train.jsonl (only with --splits train)
@@ -64,9 +66,10 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-# Audio file extensions that torchaudio / ffmpeg can read.
-# yt-dlp downloads in the native YouTube format (m4a or webm/opus) — we
-# accept any of these rather than forcing an mp3 conversion via ffmpeg.
+# Audio file extensions accepted as valid downloads.
+# New downloads are MP3 (via yt-dlp --extract-audio --audio-format mp3).
+# We also accept other formats so that files downloaded before ffmpeg was
+# available (e.g. .webm, .m4a) are still recognised and reused.
 _AUDIO_EXTS = {".mp3", ".m4a", ".webm", ".ogg", ".opus", ".flac", ".wav"}
 
 # ── CSV sources (branch 2025, not main) ──────────────────────────────────────
@@ -108,12 +111,22 @@ def _audio_info(path: Path) -> tuple[int, int, int]:
         info = torchaudio.info(str(path))
         return info.sample_rate, info.num_frames, info.num_channels
     except Exception as e:
-        log.warning(f"torchaudio.info failed for {path.name}: {e}")
+        # On Windows, torchaudio's bundled ffmpeg may lack Opus/Vorbis codecs
+        # needed for .webm files.  Install system ffmpeg (winget install ffmpeg)
+        # and re-run with --skip-audio to fix this without re-downloading.
+        log.warning(f"torchaudio.info FAILED for {path.name}: {e}")
         return 0, 0, 1
 
 
 def _find_existing(ytid: str, audio_dir: Path) -> Optional[Path]:
-    """Return an already-downloaded audio file for this ytid, or None."""
+    """Return an already-downloaded audio file for this ytid, or None.
+
+    Checks MP3 first (standard output of new downloads), then falls back to
+    any recognised audio format for files downloaded before ffmpeg was on PATH.
+    """
+    mp3 = audio_dir / f"{ytid}.mp3"
+    if mp3.exists() and mp3.stat().st_size > 10_000:
+        return mp3
     for f in audio_dir.glob(f"{ytid}.*"):
         if f.suffix.lower() in _AUDIO_EXTS and f.stat().st_size > 10_000:
             return f
@@ -122,10 +135,12 @@ def _find_existing(ytid: str, audio_dir: Path) -> Optional[Path]:
 
 def _download_audio(ytid: str, audio_dir: Path, skip: bool) -> Optional[Path]:
     """
-    Download best-quality audio-only stream from YouTube.
+    Download and extract audio from YouTube as MP3 (requires system ffmpeg).
 
-    Keeps the native container (m4a or webm/opus) — no ffmpeg conversion.
-    torchaudio.load() reads both formats via its built-in ffmpeg backend.
+    yt-dlp fetches the best available audio stream and re-encodes it to MP3
+    at best VBR quality (--audio-quality 0 ≈ 320 kbps).  MP3 is readable by
+    torchaudio on every platform without any additional codec setup.
+
     Returns the downloaded Path, or None on failure / unavailability.
     """
     existing = _find_existing(ytid, audio_dir)
@@ -139,16 +154,19 @@ def _download_audio(ytid: str, audio_dir: Path, skip: bool) -> Optional[Path]:
             [
                 sys.executable, "-m", "yt_dlp",
                 "--quiet", "--no-warnings",
-                "-f", "bestaudio/best",        # best audio-only; native container
+                "--extract-audio",
+                "--audio-format", "mp3",
+                "--audio-quality", "0",      # best VBR quality (~320 kbps)
                 "-o", str(audio_dir / f"{ytid}.%(ext)s"),
                 f"https://www.youtube.com/watch?v={ytid}",
             ],
             capture_output=True, text=True, timeout=180,
         )
         if result.returncode != 0:
-            log.debug(f"yt-dlp failed for {ytid}: {result.stderr[:200]}")
+            log.warning(f"yt-dlp failed for {ytid} (rc={result.returncode}): "
+                        f"{(result.stderr or result.stdout or '(no output)').strip()[:300]}")
             return None
-        return _find_existing(ytid, audio_dir)   # find whatever ext was used
+        return _find_existing(ytid, audio_dir)
     except subprocess.TimeoutExpired:
         log.warning(f"yt-dlp timeout for {ytid}")
         return None
