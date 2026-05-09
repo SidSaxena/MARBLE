@@ -521,10 +521,14 @@ def main():
         log.info(f"Exporting cookies from {args.browser} → {cookies_file} …")
         result = subprocess.run(
             [sys.executable, "-m", "yt_dlp",
+             "--quiet", "--no-warnings",
              "--cookies-from-browser", args.browser,
              "--cookies", str(cookies_file),
-             "--skip-download", "https://www.youtube.com/"],
-            capture_output=True, text=True, timeout=60,
+             "--skip-download",
+             # Single video URL — homepage extractor enumerates the feed
+             # and can take minutes; any video exports the same cookies.
+             "https://www.youtube.com/watch?v=jNQXAC9IVRw"],
+            capture_output=True, text=True, timeout=120,
         )
         if result.returncode != 0 or not cookies_file.exists():
             log.warning(

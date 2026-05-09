@@ -155,12 +155,16 @@ def _export_cookies(browser: str, cookies_file: Path) -> bool:
     result = subprocess.run(
         [
             sys.executable, "-m", "yt_dlp",
+            "--quiet", "--no-warnings",
             "--cookies-from-browser", browser,
             "--cookies", str(cookies_file),
             "--skip-download",
-            "https://www.youtube.com/",
+            # Use a single known video, not the homepage.
+            # The homepage extractor enumerates the feed and can take minutes;
+            # any single video URL exports the same domain-scoped cookies.
+            "https://www.youtube.com/watch?v=jNQXAC9IVRw",
         ],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=120,
     )
     if result.returncode != 0 or not cookies_file.exists():
         log.warning(
