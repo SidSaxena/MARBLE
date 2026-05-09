@@ -65,7 +65,8 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=2,
+            prefetch_factor=2 if self.num_workers > 0 else None,
+            persistent_workers=self.num_workers > 0,
         )
 
     def val_dataloader(self):
@@ -75,7 +76,8 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=2,
+            prefetch_factor=2 if self.num_workers > 0 else None,
+            persistent_workers=self.num_workers > 0,
         )
 
     def test_dataloader(self):
@@ -85,7 +87,8 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=2,
+            prefetch_factor=2 if self.num_workers > 0 else None,
+            persistent_workers=self.num_workers > 0,
         )
 
 

@@ -8,7 +8,7 @@ trainer:
   devices: [0]
   accumulate_grad_batches: 8
   num_nodes: 1
-  precision: bf16
+  precision: bf16-mixed
   max_epochs: 100
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 10
