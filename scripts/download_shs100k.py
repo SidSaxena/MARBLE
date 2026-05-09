@@ -18,21 +18,22 @@ Dataset
 
 Audio
 -----
-  Full songs are downloaded from YouTube and extracted to MP3 via yt-dlp +
-  system ffmpeg.  MP3 is universally readable by torchaudio on all platforms.
-  The datamodule handles splitting into 30-second clips at inference time.
+  Full songs are downloaded from YouTube in their native container (webm/opus
+  or m4a/aac) via yt-dlp.  No conversion is done at download time.
+  torchaudio reads both formats via the system ffmpeg backend at inference time.
+  The datamodule splits files into 30-second clips on the fly.
 
 Prerequisites
 -------------
   yt-dlp is installed automatically by `uv sync`.
-  System ffmpeg must be on PATH (used by yt-dlp for audio extraction):
+  System ffmpeg must be on PATH so torchaudio can decode webm/m4a:
     Windows: winget install Gyan.FFmpeg   (restart terminal after)
     macOS:   brew install ffmpeg
     Linux:   sudo apt install ffmpeg
 
 Output
 ------
-  data/SHS100K/audio/            full-song MP3 files, keyed by youtube_id
+  data/SHS100K/audio/            native-format audio files (webm/m4a), keyed by youtube_id
   data/SHS100K/SHS100K.test.jsonl
   data/SHS100K/SHS100K.val.jsonl   (only with --splits val)
   data/SHS100K/SHS100K.train.jsonl (only with --splits train)
@@ -184,18 +185,25 @@ def _download_audio(
     skip: bool,
     cookies_file: Optional[Path] = None,
 ) -> Optional[Path]:
-    """Download and extract audio from YouTube as MP3.
+    """Download audio from YouTube in its native container (webm/m4a/opus).
+
+    No format conversion is done here — yt-dlp saves whatever container
+    YouTube serves (typically webm/opus or m4a/aac).  torchaudio reads
+    both formats via the system ffmpeg backend at inference time.
 
     Format selector: ``bestaudio*``
-      • Matches audio-only streams first (preferred: opus, aac — no video data)
-      • Falls back to any stream that contains audio (e.g. muxed video+audio)
-      Unlike ``bestaudio/best``, this NEVER fails on modern YouTube.
-      ``best`` (without *) requires a pre-merged stream, which YouTube no
-      longer provides for most videos — causing "format not available" errors.
+      • Prefers audio-only streams (opus, aac) — no video data downloaded
+      • Falls back to any stream with audio if no audio-only stream exists
+      Unlike ``bestaudio/best``, the ``*`` variant never fails on modern
+      YouTube because ``best`` requires a pre-merged stream that YouTube
+      rarely serves anymore.
 
-    Audio is re-encoded to MP3 at highest VBR quality via system ffmpeg.
-    cookies_file: Netscape cookies file exported at startup; if provided,
-                  passed as --cookies to avoid bot-detection failures.
+    cookies_file: Netscape cookies file exported once at startup; avoids
+                  concurrent SQLite DB reads (Chromium DB lock on Windows).
+
+    Returns the downloaded Path, or None if the video is unavailable.
+    Note: some fraction of SHS-100K videos are private, geo-blocked, or
+    premium-only and will always fail — these are expected data gaps.
     """
     existing = _find_existing(ytid, audio_dir)
     if existing:
@@ -207,11 +215,7 @@ def _download_audio(
         sys.executable, "-m", "yt_dlp",
         "--quiet", "--no-warnings",
         "--no-playlist",
-        "-f", "bestaudio*",          # best audio stream; prefers audio-only,
-                                     # falls back to muxed if needed
-        "--extract-audio",           # strip video track if present
-        "--audio-format", "mp3",     # re-encode to MP3 (requires ffmpeg)
-        "--audio-quality", "0",      # highest VBR quality (~320 kbps)
+        "-f", "bestaudio*",   # best audio-only stream; muxed fallback if needed
         "-o", str(audio_dir / f"{ytid}.%(ext)s"),
     ]
     if cookies_file and cookies_file.exists():
