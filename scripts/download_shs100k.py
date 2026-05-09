@@ -48,8 +48,18 @@ Usage
   # Rebuild JSONL without re-downloading (audio already on disk)
   uv run python scripts/download_shs100k.py --skip-audio
 
+  # Authenticate via browser cookies (recommended; avoids bot detection).
+  # Export cookies once at startup → reused by all parallel workers.
+  # Close Edge/Chrome first on Windows (Chromium locks the cookie DB).
+  uv run python scripts/download_shs100k.py --browser edge --workers 4
+
+  # Alternative: pre-export cookies yourself and pass the file directly.
+  # (Useful if the browser stays open while the download runs.)
+  #   yt-dlp --cookies-from-browser edge --cookies cookies.txt --skip-download https://www.youtube.com/
+  uv run python scripts/download_shs100k.py --cookies-file cookies.txt --workers 4
+
   # Smoke-test with a small subset
-  uv run python scripts/download_shs100k.py --max-entries 20
+  uv run python scripts/download_shs100k.py --browser edge --max-entries 20
 """
 
 import argparse
@@ -111,18 +121,15 @@ def _audio_info(path: Path) -> tuple[int, int, int]:
         info = torchaudio.info(str(path))
         return info.sample_rate, info.num_frames, info.num_channels
     except Exception as e:
-        # On Windows, torchaudio's bundled ffmpeg may lack Opus/Vorbis codecs
-        # needed for .webm files.  Install system ffmpeg (winget install ffmpeg)
-        # and re-run with --skip-audio to fix this without re-downloading.
-        log.warning(f"torchaudio.info FAILED for {path.name}: {e}")
+        log.warning(f"torchaudio.info failed for {path.name}: {e}")
         return 0, 0, 1
 
 
 def _find_existing(ytid: str, audio_dir: Path) -> Optional[Path]:
     """Return an already-downloaded audio file for this ytid, or None.
 
-    Checks MP3 first (standard output of new downloads), then falls back to
-    any recognised audio format for files downloaded before ffmpeg was on PATH.
+    Checks MP3 first (the standard output format), then any other recognised
+    audio extension so that files from earlier download attempts are reused.
     """
     mp3 = audio_dir / f"{ytid}.mp3"
     if mp3.exists() and mp3.stat().st_size > 10_000:
@@ -133,20 +140,58 @@ def _find_existing(ytid: str, audio_dir: Path) -> Optional[Path]:
     return None
 
 
-def _download_audio(
-    ytid: str, audio_dir: Path, skip: bool, browser: Optional[str] = None
-) -> Optional[Path]:
+def _export_cookies(browser: str, cookies_file: Path) -> bool:
+    """Export browser cookies to a Netscape-format file for yt-dlp.
+
+    Done ONCE at startup so all parallel workers share the same file.
+    This avoids concurrent reads of the browser's SQLite cookie database,
+    which is locked on Windows when a Chromium-based browser (Edge, Chrome)
+    is open.  Workers then use --cookies <file> instead of
+    --cookies-from-browser <browser>.
+
+    Returns True on success.
     """
-    Download and extract audio from YouTube as MP3 (requires system ffmpeg).
+    log.info(f"Exporting cookies from {browser} → {cookies_file} …")
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "yt_dlp",
+            "--cookies-from-browser", browser,
+            "--cookies", str(cookies_file),
+            "--skip-download",
+            "https://www.youtube.com/",
+        ],
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0 or not cookies_file.exists():
+        log.warning(
+            f"Cookie export failed (rc={result.returncode}). "
+            f"Ensure {browser} is installed and you are signed in to YouTube. "
+            f"On Windows: close the browser first if you see a DB-lock error.\n"
+            f"  {(result.stderr or result.stdout or '').strip()[:300]}"
+        )
+        return False
+    log.info(f"Cookies exported ({cookies_file.stat().st_size:,} bytes).")
+    return True
 
-    yt-dlp fetches the best available audio stream and re-encodes it to MP3
-    at best VBR quality (--audio-quality 0 ≈ 320 kbps).  MP3 is readable by
-    torchaudio on every platform without any additional codec setup.
 
-    browser: if set (e.g. "chrome", "edge", "firefox"), passes
-             --cookies-from-browser to yt-dlp to bypass bot detection.
+def _download_audio(
+    ytid: str,
+    audio_dir: Path,
+    skip: bool,
+    cookies_file: Optional[Path] = None,
+) -> Optional[Path]:
+    """Download and extract audio from YouTube as MP3.
 
-    Returns the downloaded Path, or None on failure / unavailability.
+    Format selector: ``bestaudio*``
+      • Matches audio-only streams first (preferred: opus, aac — no video data)
+      • Falls back to any stream that contains audio (e.g. muxed video+audio)
+      Unlike ``bestaudio/best``, this NEVER fails on modern YouTube.
+      ``best`` (without *) requires a pre-merged stream, which YouTube no
+      longer provides for most videos — causing "format not available" errors.
+
+    Audio is re-encoded to MP3 at highest VBR quality via system ffmpeg.
+    cookies_file: Netscape cookies file exported at startup; if provided,
+                  passed as --cookies to avoid bot-detection failures.
     """
     existing = _find_existing(ytid, audio_dir)
     if existing:
@@ -158,23 +203,24 @@ def _download_audio(
         sys.executable, "-m", "yt_dlp",
         "--quiet", "--no-warnings",
         "--no-playlist",
-        "-f", "bestaudio/best",      # select best available audio stream
-        "--extract-audio",           # extract audio track (requires ffmpeg)
-        "--audio-format", "mp3",     # re-encode to MP3
-        "--audio-quality", "0",      # best VBR quality (~320 kbps)
+        "-f", "bestaudio*",          # best audio stream; prefers audio-only,
+                                     # falls back to muxed if needed
+        "--extract-audio",           # strip video track if present
+        "--audio-format", "mp3",     # re-encode to MP3 (requires ffmpeg)
+        "--audio-quality", "0",      # highest VBR quality (~320 kbps)
         "-o", str(audio_dir / f"{ytid}.%(ext)s"),
     ]
-    if browser:
-        cmd += ["--cookies-from-browser", browser]
+    if cookies_file and cookies_file.exists():
+        cmd += ["--cookies", str(cookies_file)]
     cmd.append(f"https://www.youtube.com/watch?v={ytid}")
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=180,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if result.returncode != 0:
-            log.warning(f"yt-dlp failed for {ytid} (rc={result.returncode}): "
-                        f"{(result.stderr or result.stdout or '(no output)').strip()[:300]}")
+            log.warning(
+                f"yt-dlp failed for {ytid} (rc={result.returncode}): "
+                f"{(result.stderr or result.stdout or '(no output)').strip()[:300]}"
+            )
             return None
         return _find_existing(ytid, audio_dir)
     except subprocess.TimeoutExpired:
@@ -185,11 +231,15 @@ def _download_audio(
         return None
 
 
-def _process_row(row: dict, audio_dir: Path, skip_audio: bool,
-                 browser: Optional[str] = None) -> Optional[dict]:
+def _process_row(
+    row: dict,
+    audio_dir: Path,
+    skip_audio: bool,
+    cookies_file: Optional[Path] = None,
+) -> Optional[dict]:
     """Download audio for one row and return a JSONL record, or None on failure."""
     ytid = row["youtube_id"]
-    audio_path = _download_audio(ytid, audio_dir, skip=skip_audio, browser=browser)
+    audio_path = _download_audio(ytid, audio_dir, skip=skip_audio, cookies_file=cookies_file)
     if audio_path is None or not audio_path.exists() or audio_path.stat().st_size < 10_000:
         return None
 
@@ -244,9 +294,22 @@ def main():
         "--browser", default=None,
         metavar="BROWSER",
         help=(
-            "Pass cookies from a browser to bypass YouTube bot detection "
-            "(e.g. --browser chrome, --browser edge, --browser firefox). "
-            "Open YouTube in that browser and be signed in to Google first."
+            "Export cookies from this browser at startup and use them for all "
+            "downloads (e.g. --browser edge, --browser chrome, --browser firefox). "
+            "You must be signed in to YouTube in the browser. "
+            "On Windows: close the browser first to avoid cookie DB-lock errors, "
+            "or use --cookies-file with pre-exported cookies instead."
+        ),
+    )
+    parser.add_argument(
+        "--cookies-file", default=None,
+        metavar="FILE",
+        help=(
+            "Path to a pre-exported Netscape-format cookies file. "
+            "Use instead of --browser when the browser must stay open. "
+            "Export once with: "
+            "yt-dlp --cookies-from-browser edge --cookies cookies.txt "
+            "--skip-download https://www.youtube.com/"
         ),
     )
     parser.add_argument(
@@ -255,12 +318,22 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.browser:
-        log.info(f"Using cookies from browser: {args.browser}")
-
     data_dir  = Path(args.data_dir)
     audio_dir = data_dir / "audio"
     audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Resolve cookies (done once; shared across all parallel workers) ────────
+    cookies_file: Optional[Path] = None
+    if args.cookies_file:
+        cookies_file = Path(args.cookies_file)
+        if not cookies_file.exists():
+            log.error(f"--cookies-file not found: {cookies_file}")
+            sys.exit(1)
+        log.info(f"Using cookies file: {cookies_file}")
+    elif args.browser:
+        cookies_file = data_dir / ".yt-dlp-cookies.txt"
+        if not _export_cookies(args.browser, cookies_file):
+            log.warning("Continuing without authentication — bot-detection errors are likely.")
 
     for split in args.splits:
         log.info(f"\n{'='*60}")
@@ -277,7 +350,7 @@ def main():
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futs = {
                 pool.submit(_process_row, row, audio_dir, args.skip_audio,
-                            args.browser): row
+                            cookies_file): row
                 for row in rows
             }
             n_done = 0
