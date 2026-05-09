@@ -206,7 +206,9 @@ def _find_existing_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
     return None
 
 
-def _download_youtube_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
+def _download_youtube_audio(
+    ytid: str, audio_dir: Path, browser: Optional[str] = None
+) -> Optional[Path]:
     """
     Download best-quality audio-only stream from YouTube (native container).
 
@@ -214,24 +216,31 @@ def _download_youtube_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
     _extract_segment() call uses system ffmpeg (which must be on PATH) to
     cut and re-encode each clip to MP3.  System ffmpeg handles all container
     formats so the native download format does not matter.
+
+    browser: if set (e.g. "chrome", "edge", "firefox"), passes
+             --cookies-from-browser to yt-dlp to bypass bot detection.
+
     Returns the downloaded Path, or None on failure.
     """
     existing = _find_existing_audio(ytid, audio_dir)
     if existing:
         return existing
 
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--quiet", "--no-warnings",
+        "--no-playlist",
+        "-f", "bestaudio/best",
+        "--no-cache-dir",
+        "-o", str(audio_dir / f"{ytid}.%(ext)s"),
+    ]
+    if browser:
+        cmd += ["--cookies-from-browser", browser]
+    cmd.append(f"https://www.youtube.com/watch?v={ytid}")
+
     try:
         result = subprocess.run(
-            [
-                sys.executable, "-m", "yt_dlp",
-                "--quiet", "--no-warnings",
-                "--no-playlist",
-                "-f", "bestaudio/best",
-                "--no-cache-dir",
-                "-o", str(audio_dir / f"{ytid}.%(ext)s"),
-                f"https://www.youtube.com/watch?v={ytid}",
-            ],
-            capture_output=True, text=True, timeout=300,
+            cmd, capture_output=True, text=True, timeout=300,
         )
         if result.returncode != 0:
             log.warning(f"yt-dlp failed for {ytid} (rc={result.returncode}): "
@@ -294,6 +303,7 @@ def process_entry(
     clips_dir: Path,
     skip_audio: bool,
     tasks: set[str],
+    browser: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Download audio + extract segment for one HookTheory entry.
@@ -341,7 +351,7 @@ def process_entry(
 
     if not skip_audio:
         # Download full YouTube audio if needed
-        audio_path = _download_youtube_audio(ytid, audio_dir)
+        audio_path = _download_youtube_audio(ytid, audio_dir, browser=browser)
         if audio_path is None:
             log.warning(f"  Skip {uid}: YouTube download failed ({ytid})")
             return None
@@ -464,10 +474,22 @@ def main():
         help="Skip yt-dlp downloads and only (re-)generate JSONL from existing clips.",
     )
     parser.add_argument(
+        "--browser", default=None,
+        metavar="BROWSER",
+        help=(
+            "Pass cookies from a browser to bypass YouTube bot detection "
+            "(e.g. --browser chrome, --browser edge, --browser firefox). "
+            "Open YouTube in that browser and be signed in to Google first."
+        ),
+    )
+    parser.add_argument(
         "--max-entries", type=int, default=None,
         help="Process at most N entries (for testing).",
     )
     args = parser.parse_args()
+
+    if args.browser:
+        log.info(f"Using cookies from browser: {args.browser}")
 
     data_dir  = Path(args.data_dir)
     audio_dir = data_dir / "audio"
@@ -505,7 +527,8 @@ def main():
 
     if args.workers <= 1 or args.skip_audio:
         for uid, entry in entries:
-            r = process_entry(uid, entry, audio_dir, clips_dir, args.skip_audio, tasks)
+            r = process_entry(uid, entry, audio_dir, clips_dir, args.skip_audio,
+                              tasks, args.browser)
             if r:
                 records.append(r)
             else:
@@ -514,7 +537,8 @@ def main():
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = {
                 pool.submit(
-                    process_entry, uid, entry, audio_dir, clips_dir, args.skip_audio, tasks
+                    process_entry, uid, entry, audio_dir, clips_dir,
+                    args.skip_audio, tasks, args.browser
                 ): uid
                 for uid, entry in entries
             }
