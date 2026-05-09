@@ -20,36 +20,72 @@ __gated_datasets__ = [
     "HookTheory",
 ]
 
-def extract_HookTheory(save_root: str):
-    # run data/HookTheoryUpload/extract.sh
-    import subprocess
-    script_path = os.path.join(save_root, "HookTheory", "extract.sh")
-    if not os.path.exists(script_path):
-        print(f"Error: Extraction script '{script_path}' does not exist. Please ensure you have the correct dataset structure.")
-        sys.exit(1)
-    print(f"Running extraction script '{script_path}'...")
-    try:
-        subprocess.run(["bash", script_path], check=True)
-        print("Extraction completed successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error during extraction: {e}", file=sys.stderr)
-        sys.exit(1)
+def extract_HookTheory(dataset_dir: str):
+    """
+    Extract pre-segmented clip archives from the HookTheory dataset.
+
+    The HuggingFace repo contains:
+      zips/hooktheory_clips/part_XXXXXX.tar  (~4.1 GB, 23 parts)  ← extracted here
+      zips/audio/part_XXXXXX.tar             (~104 GB, 79 parts)  ← skipped (not needed)
+
+    After extraction, MP3 clips land in:
+      <dataset_dir>/hooktheory_clips/<hooktheory_id>.mp3
+
+    The JSONL annotation files are already present at dataset_dir root
+    (snapshot_download placed them there directly):
+      HookTheoryKey.{train,val,test}.jsonl
+      HookTheoryStructure.{train,val,test}.jsonl
+
+    Uses Python's built-in tarfile module — no bash / system tar required,
+    so this works on Windows as well as macOS/Linux.
+    """
+    import tarfile
+    import glob
+
+    clips_dir = os.path.join(dataset_dir, "hooktheory_clips")
+    os.makedirs(clips_dir, exist_ok=True)
+
+    pattern = os.path.join(dataset_dir, "zips", "hooktheory_clips", "*.tar")
+    tar_paths = sorted(glob.glob(pattern))
+
+    if not tar_paths:
+        print(f"  Warning: no clip archives found at {pattern}")
+        print("  The download may be incomplete. Re-run: uv run python download.py HookTheory")
+        return
+
+    print(f"  Extracting {len(tar_paths)} clip archive(s) → {clips_dir}")
+    for tar_path in tar_paths:
+        name = os.path.basename(tar_path)
+        print(f"    {name} … ", end="", flush=True)
+        with tarfile.open(tar_path, "r") as tf:
+            tf.extractall(clips_dir)
+        print("done")
+
+    print("  Clips extracted successfully.")
 
 
 def download_dataset(dataset_name: str, save_root: str, max_retries: int = 5):
     """
     Download a single dataset from HuggingFace into save_root/<dataset_name>/.
 
-    Uses max_workers=2 to avoid the free-tier 5000-request/5-min rate limit
-    that fires when snapshot_download resolves hundreds of files in parallel.
+    Uses max_workers=2 to avoid the free-tier 5000-request/5-min rate limit.
     Retries up to max_retries times on 429 errors with exponential back-off.
-    Re-running this command is always safe — already-downloaded files are
-    skipped automatically by the HF cache logic.
+    Re-running is always safe — already-downloaded files are skipped.
+
+    HookTheory special handling:
+      - Skips zips/audio/* (104 GB full-song audio — not needed for probing).
+      - Downloads only zips/hooktheory_clips/* (~4.1 GB pre-segmented clips)
+        plus the ready-made JSONL annotation files (~7 MB).
+      - Extracts clips using Python tarfile (works on Windows).
     """
     repo_id = f"m-a-p/{dataset_name}"
     target_dir = os.path.join(save_root, dataset_name)
-    print(f"Starting download of '{dataset_name}' → '{target_dir}' ...")
     os.makedirs(target_dir, exist_ok=True)
+
+    # HookTheory: skip the 104 GB full-song audio tars — only clips are needed.
+    ignore_patterns = ["zips/audio/*"] if dataset_name == "HookTheory" else None
+    extra = " (clips + JSONL only, skipping 104 GB full audio)" if ignore_patterns else ""
+    print(f"Downloading '{dataset_name}'{extra} → '{target_dir}' …")
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -58,23 +94,23 @@ def download_dataset(dataset_name: str, save_root: str, max_retries: int = 5):
                 repo_type="dataset",
                 local_dir=target_dir,
                 local_dir_use_symlinks=False,
-                max_workers=2,   # throttle to avoid HF free-tier rate limit (429)
+                max_workers=2,
+                ignore_patterns=ignore_patterns,
             )
-            break  # success
+            break
         except HfHubHTTPError as e:
             if "429" in str(e) and attempt < max_retries:
-                wait = 60 * attempt   # 60s, 120s, 180s, 240s …
-                print(f"\n  Rate-limited by HuggingFace (attempt {attempt}/{max_retries}).")
-                print(f"  Waiting {wait}s before retrying … (re-running this command later also works)\n")
+                wait = 60 * attempt
+                print(f"\n  Rate-limited (attempt {attempt}/{max_retries}). "
+                      f"Waiting {wait}s … (re-running later also works)\n")
                 time.sleep(wait)
             else:
                 raise
 
-    print(f"Dataset '{dataset_name}' saved to '{target_dir}'.")
+    print(f"'{dataset_name}' downloaded to '{target_dir}'.")
 
     if dataset_name == "HookTheory":
-        print("HookTheory dataset requires extraction. Running extraction script...")
-        extract_HookTheory(save_root)
+        extract_HookTheory(target_dir)
 
 
 def main():
