@@ -18,20 +18,19 @@ Dataset
 
 Audio
 -----
-  Full songs are downloaded from YouTube as MP3 via yt-dlp.
-  The datamodule handles splitting into 30-second clips at load time.
+  Full songs are downloaded from YouTube in their native best-audio format
+  (usually .m4a or .webm/opus) via yt-dlp — no ffmpeg conversion needed at
+  download time.  torchaudio reads both formats at load time (uses its own
+  ffmpeg backend).  The datamodule handles splitting into 30-second clips.
 
 Prerequisites
 -------------
   yt-dlp is installed automatically by `uv sync`.
-  ffmpeg must be on PATH:
-    macOS:   brew install ffmpeg
-    Linux:   sudo apt install ffmpeg
-    Windows: winget install ffmpeg
+  No ffmpeg required for downloading (native format is kept as-is).
 
 Output
 ------
-  data/SHS100K/audio/            full-song MP3s, keyed by youtube_id
+  data/SHS100K/audio/            full-song audio files (m4a or webm), keyed by youtube_id
   data/SHS100K/SHS100K.test.jsonl
   data/SHS100K/SHS100K.val.jsonl   (only with --splits val)
   data/SHS100K/SHS100K.train.jsonl (only with --splits train)
@@ -64,6 +63,11 @@ from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+# Audio file extensions that torchaudio / ffmpeg can read.
+# yt-dlp downloads in the native YouTube format (m4a or webm/opus) — we
+# accept any of these rather than forcing an mp3 conversion via ffmpeg.
+_AUDIO_EXTS = {".mp3", ".m4a", ".webm", ".ogg", ".opus", ".flac", ".wav"}
 
 # ── CSV sources (branch 2025, not main) ──────────────────────────────────────
 _BASE = "https://raw.githubusercontent.com/second-hand-songs/shs-100k/2025"
@@ -108,21 +112,34 @@ def _audio_info(path: Path) -> tuple[int, int, int]:
         return 0, 0, 1
 
 
+def _find_existing(ytid: str, audio_dir: Path) -> Optional[Path]:
+    """Return an already-downloaded audio file for this ytid, or None."""
+    for f in audio_dir.glob(f"{ytid}.*"):
+        if f.suffix.lower() in _AUDIO_EXTS and f.stat().st_size > 10_000:
+            return f
+    return None
+
+
 def _download_audio(ytid: str, audio_dir: Path, skip: bool) -> Optional[Path]:
-    """Download a YouTube video as MP3. Returns path if successful, else None."""
-    out = audio_dir / f"{ytid}.mp3"
-    if out.exists() and out.stat().st_size > 10_000:
-        return out   # already downloaded
+    """
+    Download best-quality audio-only stream from YouTube.
+
+    Keeps the native container (m4a or webm/opus) — no ffmpeg conversion.
+    torchaudio.load() reads both formats via its built-in ffmpeg backend.
+    Returns the downloaded Path, or None on failure / unavailability.
+    """
+    existing = _find_existing(ytid, audio_dir)
+    if existing:
+        return existing
     if skip:
-        return out if out.exists() else None
+        return None
 
     try:
         result = subprocess.run(
             [
                 sys.executable, "-m", "yt_dlp",
                 "--quiet", "--no-warnings",
-                "--extract-audio", "--audio-format", "mp3",
-                "--audio-quality", "0",
+                "-f", "bestaudio/best",        # best audio-only; native container
                 "-o", str(audio_dir / f"{ytid}.%(ext)s"),
                 f"https://www.youtube.com/watch?v={ytid}",
             ],
@@ -131,7 +148,7 @@ def _download_audio(ytid: str, audio_dir: Path, skip: bool) -> Optional[Path]:
         if result.returncode != 0:
             log.debug(f"yt-dlp failed for {ytid}: {result.stderr[:200]}")
             return None
-        return out if out.exists() else None
+        return _find_existing(ytid, audio_dir)   # find whatever ext was used
     except subprocess.TimeoutExpired:
         log.warning(f"yt-dlp timeout for {ytid}")
         return None
@@ -144,7 +161,7 @@ def _process_row(row: dict, audio_dir: Path, skip_audio: bool) -> Optional[dict]
     """Download audio for one row and return a JSONL record, or None on failure."""
     ytid = row["youtube_id"]
     audio_path = _download_audio(ytid, audio_dir, skip=skip_audio)
-    if audio_path is None or not audio_path.exists():
+    if audio_path is None or not audio_path.exists() or audio_path.stat().st_size < 10_000:
         return None
 
     sr, n_samples, channels = _audio_info(audio_path)

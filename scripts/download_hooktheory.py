@@ -195,40 +195,53 @@ def _audio_info(path: Path) -> Optional[tuple]:
 
 # ─── Audio download / extraction ──────────────────────────────────────────────
 
+_AUDIO_EXTS = {".mp3", ".m4a", ".webm", ".ogg", ".opus", ".flac", ".wav"}
+
+
+def _find_existing_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
+    """Return an already-downloaded audio file for this ytid, or None."""
+    for f in audio_dir.glob(f"{ytid}.*"):
+        if f.suffix.lower() in _AUDIO_EXTS and f.stat().st_size > 10_000:
+            return f
+    return None
+
+
 def _download_youtube_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
     """
-    Download full YouTube audio as MP3 using yt-dlp.
-    Returns path to saved file, or None on failure.
-    """
-    out_path = audio_dir / f"{ytid}.mp3"
-    if out_path.exists() and out_path.stat().st_size > 10_000:
-        return out_path   # already downloaded
+    Download best-quality audio-only stream from YouTube (native container).
 
-    url = f"https://www.youtube.com/watch?v={ytid}"
-    cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "--extract-audio",
-        "--audio-format", "mp3",
-        "--audio-quality", "0",
-        "--no-cache-dir",
-        "-o", str(audio_dir / f"{ytid}.%(ext)s"),
-        url,
-    ]
+    Does NOT force mp3 conversion — keeps the native m4a or webm/opus format
+    so that ffmpeg is not required at download time.  The subsequent
+    _extract_segment call uses ffmpeg to extract and re-encode the clip.
+    Returns the downloaded Path, or None on failure.
+    """
+    existing = _find_existing_audio(ytid, audio_dir)
+    if existing:
+        return existing
+
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300
+            [
+                sys.executable, "-m", "yt_dlp",
+                "--quiet", "--no-warnings",
+                "--no-playlist",
+                "-f", "bestaudio/best",        # native container, no conversion
+                "--no-cache-dir",
+                "-o", str(audio_dir / f"{ytid}.%(ext)s"),
+                f"https://www.youtube.com/watch?v={ytid}",
+            ],
+            capture_output=True, text=True, timeout=300,
         )
         if result.returncode != 0:
             log.warning(f"yt-dlp failed for {ytid}: {result.stderr[:200]}")
             return None
-        return out_path if out_path.exists() else None
+        return _find_existing_audio(ytid, audio_dir)
     except subprocess.TimeoutExpired:
         log.warning(f"yt-dlp timeout for {ytid}")
         return None
-    except FileNotFoundError:
-        log.error("yt-dlp not found. Install with: pip install yt-dlp")
-        sys.exit(1)
+    except Exception as e:
+        log.error(f"yt-dlp error for {ytid}: {e}")
+        return None
 
 
 def _extract_segment(
@@ -320,16 +333,17 @@ def process_entry(
         return None
 
     # ── Audio paths ───────────────────────────────────────────────────────────
-    clip_path  = clips_dir / f"{uid}.mp3"
-    audio_path = audio_dir / f"{ytid}.mp3"
+    # Clips are always stored as mp3 (ffmpeg re-encodes during extraction).
+    # The source full-song file may be m4a or webm — we find it by glob.
+    clip_path = clips_dir / f"{uid}.mp3"
 
     if not skip_audio:
         # Download full YouTube audio if needed
-        result = _download_youtube_audio(ytid, audio_dir)
-        if result is None:
+        audio_path = _download_youtube_audio(ytid, audio_dir)
+        if audio_path is None:
             log.warning(f"  Skip {uid}: YouTube download failed ({ytid})")
             return None
-        # Extract segment
+        # Extract segment (ffmpeg converts to mp3 regardless of source format)
         if not _extract_segment(audio_path, clip_path, segment_start, segment_end):
             log.warning(f"  Skip {uid}: segment extraction failed")
             return None
