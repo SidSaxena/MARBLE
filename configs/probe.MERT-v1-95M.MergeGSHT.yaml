@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.HookTheoryKey.MERT-v1-95M"
+      group: "MergeGSHT"
+      tags: ["MERT-v1-95M", "MergeGSHT"]
+      job_type: "probe"
+      name: "MERT-v1-95M"
       save_dir: "./output/probe.MergeGSHT.MERT-v1-95M/"
 
 

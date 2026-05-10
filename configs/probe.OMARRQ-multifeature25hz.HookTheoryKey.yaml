@@ -34,7 +34,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.HookTheoryKey.OMARRQ-multifeature25hz"
+      group: "HookTheoryKey"
+      tags: ["OMARRQ-multifeature25hz", "HookTheoryKey"]
+      job_type: "probe"
+      name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.HookTheoryKey.OMARRQ-multifeature25hz/"
 
 

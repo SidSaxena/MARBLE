@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.GTZANBeatTracking.MuQ.100hz"
+      group: "GTZANBeatTracking"
+      tags: ["MuQ", "GTZANBeatTracking"]
+      job_type: "probe"
+      name: "MuQ [100hz]"
       save_dir: "./output/probe.GTZANBeatTracking.MuQ.100hz/"
 
 

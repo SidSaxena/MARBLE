@@ -32,7 +32,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.EMO.CLaMP3-layers"
+      group: "CLaMP3-layers / EMO"
+      tags: ["CLaMP3-layers", "EMO", "layer-sweep"]
+      job_type: "probe"
+      name: "CLaMP3-layers"
       save_dir: "./output/probe.EMO.CLaMP3-layers/"
 
 

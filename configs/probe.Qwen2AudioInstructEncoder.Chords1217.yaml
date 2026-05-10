@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.Chords1217.Qwen2AudioInstructEncoder"
+      group: "Chords1217"
+      tags: ["Qwen2AudioInstructEncoder", "Chords1217"]
+      job_type: "probe"
+      name: "Qwen2AudioInstructEncoder"
       save_dir: "./output/probe.Chords1217.Qwen2AudioInstructEncoder/"
 
 

@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.Chords1217.MuQ"
+      group: "Chords1217"
+      tags: ["MuQ", "Chords1217"]
+      job_type: "probe"
+      name: "MuQ"
       save_dir: "./output/probe.Chords1217.MuQ/"
 
 

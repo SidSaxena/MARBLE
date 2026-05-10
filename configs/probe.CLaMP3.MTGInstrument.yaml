@@ -35,7 +35,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGInstrument.CLaMP3"
+      group: "MTGInstrument"
+      tags: ["CLaMP3", "MTGInstrument"]
+      job_type: "probe"
+      name: "CLaMP3"
       save_dir: "./output/probe.MTGInstrument.CLaMP3/"
 
 

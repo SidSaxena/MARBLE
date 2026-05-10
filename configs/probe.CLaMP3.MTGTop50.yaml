@@ -34,7 +34,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGTop50.CLaMP3"
+      group: "MTGTop50"
+      tags: ["CLaMP3", "MTGTop50"]
+      job_type: "probe"
+      name: "CLaMP3"
       save_dir: "./output/probe.MTGTop50.CLaMP3/"
 
 

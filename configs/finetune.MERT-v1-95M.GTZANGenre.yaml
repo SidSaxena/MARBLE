@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "finetune.GTZANGenre.MERT-v1-95M"
+      group: "GTZANGenre"
+      tags: ["MERT-v1-95M", "GTZANGenre"]
+      job_type: "finetune"
+      name: "MERT-v1-95M"
       save_dir: "./output/finetune.GTZANGenre.MERT-v1-95M/"
 
 
