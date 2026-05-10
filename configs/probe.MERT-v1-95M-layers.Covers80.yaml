@@ -73,7 +73,7 @@ data:
         min_clip_ratio: 0.5
         channel_mode: mix
         jsonl: data/Covers80/Covers80.test.jsonl
-        backend: "ffmpeg"
+        backend: null
     val:
       class_path: marble.tasks.Covers80.datamodule.Covers80AudioDummy
       init_args:
@@ -83,7 +83,7 @@ data:
         min_clip_ratio: 0.5
         channel_mode: mix
         jsonl: data/Covers80/Covers80.test.jsonl
-        backend: "ffmpeg"
+        backend: null
     test:
       class_path: marble.tasks.Covers80.datamodule.Covers80AudioAll
       init_args:
@@ -93,7 +93,7 @@ data:
         min_clip_ratio: 0.5
         channel_mode: mix
         jsonl: data/Covers80/Covers80.test.jsonl
-        backend: "ffmpeg"
+        backend: null
 
 optimizer:
   class_path: torch.optim.Adam
