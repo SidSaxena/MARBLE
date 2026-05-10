@@ -25,32 +25,44 @@ Audio
 
 Prerequisites
 -------------
-  yt-dlp  — pip install yt-dlp  (or: uv sync, it's in project deps)
-  ffmpeg  — required for ffprobe:
+  yt-dlp  — must be up to date (outdated yt-dlp causes "No video formats found"):
+    python -m yt_dlp -U          # update in the current Python env
+    uv sync                      # reinstalls all deps including yt-dlp
+
+  ffmpeg  — required for ffprobe (audio metadata extraction):
     Windows : winget install Gyan.FFmpeg   (restart terminal after)
     macOS   : brew install ffmpeg
     Linux   : sudo apt install ffmpeg
 
 Usage
 -----
-  # Test split (community benchmark, ~7,100 tracks)
-  python scripts/download_shs100k.py
-
-  # With browser cookies to bypass YouTube bot-detection
+  # Test split (community benchmark, ~7,100 tracks) — recommended first run
   python scripts/download_shs100k.py --browser firefox
-  python scripts/download_shs100k.py --browser edge   # close Edge first
 
-  # With a pre-exported cookie file (safe for parallel workers)
-  #   Export once:
-  #   yt-dlp --cookies-from-browser firefox --cookies cookies.txt \\
-  #           --skip-download "https://youtube.com/watch?v=rblt2EtFfC4"
+  # RECOMMENDED for parallel workers: export cookies to file first, then use it.
+  # (parallel --cookies-from-browser access can cause Firefox DB lock errors)
+  python -m yt_dlp --cookies-from-browser firefox --cookies cookies.txt \\
+          --skip-download "https://youtube.com/watch?v=rblt2EtFfC4"
   python scripts/download_shs100k.py --cookies-file cookies.txt --workers 4
+
+  # Close Edge/Chrome before using them (Chromium locks the cookie DB)
+  python scripts/download_shs100k.py --browser edge --workers 2
 
   # Rebuild JSONL from already-downloaded files (no new downloads)
   python scripts/download_shs100k.py --skip-audio
 
-  # Quick smoke-test (10 tracks)
+  # Show all yt-dlp error messages (diagnose systematic failures)
+  python scripts/download_shs100k.py --browser firefox --verbose-errors
+
+  # Quick smoke-test
   python scripts/download_shs100k.py --max-entries 10 --browser firefox
+
+Troubleshooting: all downloads failing (ok=0)
+---------------------------------------------
+  1. Update yt-dlp:    python -m yt_dlp -U
+  2. Check auth:       run with --verbose-errors to see the actual yt-dlp errors
+  3. Export cookies:   see RECOMMENDED workflow above
+  4. Rate limits:      reduce --workers (try --workers 1 to test a single download)
 """
 
 import argparse
@@ -58,9 +70,12 @@ import csv
 import io
 import json
 import logging
+import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -75,6 +90,33 @@ _CSV_URLS = {
     "train": f"{_CSV_BASE}/train.csv",
 }
 _AUDIO_EXTS = {".m4a", ".webm", ".mp3", ".ogg", ".opus", ".flac", ".wav"}
+
+# ── Ctrl+C support ────────────────────────────────────────────────────────────
+# We track every live yt-dlp Popen object so the SIGINT handler can kill them
+# immediately rather than waiting up to 180 s for each to time out.
+
+_active_procs: list[subprocess.Popen] = []
+_proc_lock    = threading.Lock()
+_shutdown     = threading.Event()
+
+
+def _install_sigint_handler() -> None:
+    """Replace the default SIGINT handler with one that kills child processes."""
+    def _handler(sig, frame):
+        _shutdown.set()
+        log.warning("\nInterrupted — killing active yt-dlp processes ...")
+        with _proc_lock:
+            procs = list(_active_procs)
+        for p in procs:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        # os._exit bypasses Python's thread-join machinery so we exit
+        # immediately even if worker threads are still blocked in communicate().
+        os._exit(130)
+
+    signal.signal(signal.SIGINT, _handler)
 
 
 # ── CSV ───────────────────────────────────────────────────────────────────────
@@ -104,7 +146,7 @@ def _fetch_csv(split: str) -> list[dict]:
     return rows
 
 
-# ── Audio helpers ──────────────────────────────────────────────────────────────
+# ── Audio helpers ─────────────────────────────────────────────────────────────
 
 def _find_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
     """Return an existing audio file for this YouTube ID, or None."""
@@ -118,9 +160,7 @@ def _ffprobe_info(path: Path) -> tuple[int, int, int]:
     """
     Return (sample_rate, num_frames, channels) via ffprobe.
     Returns (0, 0, 1) on any failure.
-
-    Uses both -show_streams and -show_format so duration is found even for
-    formats (e.g. some webm) where the stream-level duration field is absent.
+    Uses both -show_streams and -show_format for reliable duration.
     """
     try:
         r = subprocess.run(
@@ -150,7 +190,6 @@ def _ffprobe_info(path: Path) -> tuple[int, int, int]:
         log.debug(f"ffprobe returned non-JSON for {path.name}")
         return 0, 0, 1
 
-    # Find the first audio stream
     sr = 0
     channels = 1
     stream_dur: Optional[str] = None
@@ -161,15 +200,14 @@ def _ffprobe_info(path: Path) -> tuple[int, int, int]:
             sr = int(stream["sample_rate"])
         except (KeyError, ValueError, TypeError):
             continue
-        channels = int(stream.get("channels") or 1)
+        channels   = int(stream.get("channels") or 1)
         stream_dur = stream.get("duration")
         break
 
     if sr == 0:
-        log.debug(f"No audio stream found by ffprobe: {path.name}")
+        log.debug(f"No audio stream found: {path.name}")
         return 0, 0, 1
 
-    # Duration: stream level → format level (both are in fractional seconds)
     dur = 0.0
     for raw in [stream_dur, data.get("format", {}).get("duration")]:
         if raw is None:
@@ -188,15 +226,23 @@ def _ffprobe_info(path: Path) -> tuple[int, int, int]:
     return sr, int(sr * dur), channels
 
 
-def _download(ytid: str, audio_dir: Path, cookie_args: list[str]) -> Optional[Path]:
+def _download(
+    ytid: str,
+    audio_dir: Path,
+    cookie_args: list[str],
+    verbose_errors: bool,
+) -> Optional[Path]:
     """
     Download audio for one YouTube video via yt-dlp.
 
-    Format selection: m4a (AAC) first; any audio-only stream as fallback.
+    Uses subprocess.Popen (not run) so the global SIGINT handler can kill
+    the process immediately on Ctrl+C.
+
     Returns the Path of the downloaded file, or None on failure.
-    Expected failures (private/deleted/geo-blocked) are logged at DEBUG.
-    Actionable failures (bot-check, network errors) are logged at WARNING.
     """
+    if _shutdown.is_set():
+        return None
+
     existing = _find_audio(ytid, audio_dir)
     if existing:
         return existing
@@ -210,31 +256,71 @@ def _download(ytid: str, audio_dir: Path, cookie_args: list[str]) -> Optional[Pa
     ] + cookie_args + [f"https://www.youtube.com/watch?v={ytid}"]
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        log.warning(f"[timeout] {ytid}: yt-dlp exceeded 180 s")
-        return None
-    except Exception as e:
-        log.warning(f"[error] {ytid}: {e}")
-        return None
-
-    if result.returncode == 0:
-        return _find_audio(ytid, audio_dir)
-
-    err = (result.stderr or result.stdout or "").strip()
-    if "Sign in" in err or "bot" in err.lower():
-        log.warning(
-            f"[bot-check] {ytid}: YouTube requires auth — "
-            "add --browser firefox (or export cookies with --cookies-file)."
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-    elif any(p in err for p in [
-        "unavailable", "private", "removed",
-        "not available", "does not exist", "account associated",
-    ]):
-        log.debug(f"[skip] {ytid}: private/deleted/geo-blocked")
-    else:
-        log.warning(f"[yt-dlp rc={result.returncode}] {ytid}: {err[:200]}")
-    return None
+    except Exception as e:
+        log.warning(f"[error] {ytid}: could not launch yt-dlp: {e}")
+        return None
+
+    with _proc_lock:
+        _active_procs.append(proc)
+
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=180)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            log.warning(f"[timeout] {ytid}: yt-dlp exceeded 180 s")
+            return None
+
+        if proc.returncode == 0:
+            return _find_audio(ytid, audio_dir)
+
+        err = (stderr or stdout or "").strip()
+
+        # ── Categorise failures ───────────────────────────────────────────────
+        if "Sign in" in err or "bot" in err.lower():
+            log.warning(
+                f"[bot-check] {ytid}: YouTube requires sign-in.\n"
+                "  Fix: export cookies once, then use --cookies-file:\n"
+                "    python -m yt_dlp --cookies-from-browser firefox "
+                "--cookies cookies.txt --skip-download "
+                "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
+                "    python scripts/download_shs100k.py --cookies-file cookies.txt"
+            )
+        elif "No video formats found" in err:
+            # Almost always means yt-dlp is outdated or auth is missing
+            log.warning(
+                f"[no-formats] {ytid}: yt-dlp could not find any downloadable "
+                "format.  Most likely causes:\n"
+                "  1. yt-dlp is outdated — run: python -m yt_dlp -U\n"
+                "  2. Missing auth — add --browser firefox or --cookies-file"
+            )
+        elif any(p in err for p in [
+            "unavailable", "private", "removed",
+            "not available", "does not exist", "account associated",
+            "members-only", "age-restricted",
+        ]):
+            if verbose_errors:
+                log.info(f"[skip] {ytid}: {err[:120]}")
+            else:
+                log.debug(f"[skip] {ytid}: private/deleted/geo-blocked/members-only")
+        else:
+            log.warning(f"[yt-dlp rc={proc.returncode}] {ytid}: {err[:200]}")
+
+        return None
+
+    finally:
+        with _proc_lock:
+            try:
+                _active_procs.remove(proc)
+            except ValueError:
+                pass
 
 
 def _process(
@@ -242,8 +328,12 @@ def _process(
     audio_dir: Path,
     skip_audio: bool,
     cookie_args: list[str],
+    verbose_errors: bool,
 ) -> Optional[dict]:
     """Download (or locate) one track and return its JSONL record, or None."""
+    if _shutdown.is_set():
+        return None
+
     ytid = row["youtube_id"]
 
     if skip_audio:
@@ -251,7 +341,7 @@ def _process(
         if path is None:
             return None
     else:
-        path = _download(ytid, audio_dir, cookie_args)
+        path = _download(ytid, audio_dir, cookie_args, verbose_errors)
         if path is None:
             return None
 
@@ -272,6 +362,29 @@ def _process(
         "channels":       channels,
         "duration":       round(n_frames / sr, 3),
     }
+
+
+# ── Startup checks ────────────────────────────────────────────────────────────
+
+def _check_ytdlp() -> None:
+    """Verify yt-dlp is installed and print its version."""
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "--version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            log.info(f"yt-dlp  : {r.stdout.strip()}")
+        else:
+            log.error(
+                "yt-dlp is not installed or not working.\n"
+                "  Install: pip install yt-dlp\n"
+                "  Update:  python -m yt_dlp -U"
+            )
+            sys.exit(1)
+    except FileNotFoundError:
+        log.error("Could not run yt-dlp. Install it: pip install yt-dlp")
+        sys.exit(1)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -303,9 +416,13 @@ def main():
                     help="Path to a Netscape-format cookie file.")
     ap.add_argument("--max-entries", type=int, default=None,
                     help="Process at most N entries per split (smoke-test).")
+    ap.add_argument("--verbose-errors", action="store_true",
+                    help="Show all yt-dlp error messages (helps diagnose ok=0 failures).")
     args = ap.parse_args()
 
-    # ── Verify ffprobe is reachable before doing any work ─────────────────────
+    _install_sigint_handler()
+
+    # ── Startup checks ────────────────────────────────────────────────────────
     ffprobe_path = shutil.which("ffprobe")
     if ffprobe_path is None:
         log.error(
@@ -316,6 +433,7 @@ def main():
         )
         sys.exit(1)
     log.info(f"ffprobe : {ffprobe_path}")
+    _check_ytdlp()
 
     # ── Cookie args ───────────────────────────────────────────────────────────
     cookie_args: list[str] = []
@@ -328,12 +446,22 @@ def main():
             log.error(f"--cookies-file not found: {cfile}")
             sys.exit(1)
         cookie_args = ["--cookies", str(cfile)]
-        log.info(f"Auth   : cookies file → {cfile}")
+        log.info(f"Auth    : cookies file → {cfile}")
     elif args.browser:
         cookie_args = ["--cookies-from-browser", args.browser]
-        log.info(f"Auth   : cookies from {args.browser}")
+        log.info(f"Auth    : cookies from {args.browser}")
+        if args.workers > 2:
+            log.warning(
+                f"Using --browser with {args.workers} workers can cause Firefox "
+                "cookie DB locking.  If you see cookie errors, export once:\n"
+                "  python -m yt_dlp --cookies-from-browser firefox "
+                "--cookies cookies.txt --skip-download "
+                "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
+                "  python scripts/download_shs100k.py --cookies-file cookies.txt "
+                f"--workers {args.workers}"
+            )
     else:
-        log.info("Auth   : none  (add --browser firefox if YouTube requires sign-in)")
+        log.info("Auth    : none  (add --browser firefox if YouTube blocks downloads)")
 
     # ── Per-split work ────────────────────────────────────────────────────────
     data_dir  = Path(args.data_dir)
@@ -347,14 +475,18 @@ def main():
         if args.max_entries:
             rows = rows[: args.max_entries]
 
-        records: list[dict] = []
-        n_failed = 0
-        n_done = 0
-        total = len(rows)
+        records:  list[dict] = []
+        n_failed  = 0
+        n_done    = 0
+        total     = len(rows)
+        _warned_systematic = False
 
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futs = {
-                pool.submit(_process, row, audio_dir, args.skip_audio, cookie_args): row
+                pool.submit(
+                    _process, row, audio_dir,
+                    args.skip_audio, cookie_args, args.verbose_errors,
+                ): row
                 for row in rows
             }
             for fut in as_completed(futs):
@@ -364,6 +496,29 @@ def main():
                     records.append(rec)
                 else:
                     n_failed += 1
+
+                # ── Early systematic-failure warning ─────────────────────────
+                # If nothing has downloaded after 20 attempts something is
+                # systemically wrong (auth, outdated yt-dlp, network).
+                if (not _warned_systematic
+                        and not args.skip_audio
+                        and n_done >= 20
+                        and len(records) == 0):
+                    _warned_systematic = True
+                    log.warning(
+                        "\n*** 0 successful downloads in the first %d attempts. ***\n"
+                        "This almost always means one of:\n"
+                        "  1. yt-dlp is outdated  →  run: python -m yt_dlp -U\n"
+                        "  2. Missing / expired auth  →  export fresh cookies:\n"
+                        "       python -m yt_dlp --cookies-from-browser firefox "
+                        "--cookies cookies.txt --skip-download "
+                        "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
+                        "       python scripts/download_shs100k.py "
+                        "--cookies-file cookies.txt\n"
+                        "  3. Add --verbose-errors to see the actual yt-dlp output.\n",
+                        n_done,
+                    )
+
                 if n_done % 100 == 0 or n_done == total:
                     pct = 100 * n_done // total
                     log.info(
@@ -383,7 +538,7 @@ def main():
         log.info(f"\n  ✓  {len(records):>6,} tracks  →  {out}")
         log.info(f"  ✗  {n_failed:>6,} unavailable / failed")
         if n_works:
-            log.info(f"  ⊕  {n_works:>6,} works  (avg {len(records)/n_works:.1f} versions)")
+            log.info(f"  ⊕  {n_works:>6,} works  (avg {len(records) / n_works:.1f} versions)")
 
     log.info("\nAll splits done.")
     log.info("Next: python scripts/run_all_sweeps.py")
