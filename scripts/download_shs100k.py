@@ -25,9 +25,12 @@ Audio
 
 Prerequisites
 -------------
-  yt-dlp  — must be up to date (outdated yt-dlp causes "No video formats found"):
+  yt-dlp  — must be up to date:
     python -m yt_dlp -U          # update in the current Python env
     uv sync                      # reinstalls all deps including yt-dlp
+
+  Node.js is NOT required.  The script uses yt-dlp's Android player client
+  which bypasses YouTube's JavaScript signature challenge entirely.
 
   ffmpeg  — required for ffprobe (audio metadata extraction):
     Windows : winget install Gyan.FFmpeg   (restart terminal after)
@@ -252,6 +255,10 @@ def _download(
         "--quiet", "--no-warnings",
         "--no-playlist",
         "-f", "bestaudio[ext=m4a]/bestaudio",
+        # Use the Android player client: bypasses YouTube's JavaScript signature
+        # challenge (the "Signature solving failed / EJS" warning) without
+        # requiring Node.js to be installed.
+        "--extractor-args", "youtube:player_client=android,web",
         "-o", str(audio_dir / f"{ytid}.%(ext)s"),
     ] + cookie_args + [f"https://www.youtube.com/watch?v={ytid}"]
 
@@ -293,13 +300,15 @@ def _download(
                 "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
                 "    python scripts/download_shs100k.py --cookies-file cookies.txt"
             )
-        elif "No video formats found" in err:
-            # Almost always means yt-dlp is outdated or auth is missing
+        elif "No video formats found" in err or "Signature solving failed" in err:
+            # "No video formats found" / "Signature solving failed" both
+            # indicate that the player client couldn't retrieve a usable
+            # stream.  The android client (set above) should prevent this;
+            # if it still occurs, update yt-dlp.
             log.warning(
-                f"[no-formats] {ytid}: yt-dlp could not find any downloadable "
-                "format.  Most likely causes:\n"
-                "  1. yt-dlp is outdated — run: python -m yt_dlp -U\n"
-                "  2. Missing auth — add --browser firefox or --cookies-file"
+                f"[no-formats] {ytid}: yt-dlp could not find a downloadable "
+                "audio stream.  Try:\n"
+                "  python -m yt_dlp -U   (update yt-dlp)"
             )
         elif any(p in err for p in [
             "unavailable", "private", "removed",
