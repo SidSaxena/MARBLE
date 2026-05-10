@@ -1,0 +1,181 @@
+seed_everything: 1234
+ckpt_path: null
+
+# GTZAN beat tracking — MERT-v1-95M per-layer sweep.
+# MERT token rate is 75 Hz (vs OMARRQ's 25 Hz) — all fps/label_freq set to 75.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  accumulate_grad_batches: 8
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 40
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 10
+  log_every_n_steps: 5
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "./output/probe.GTZANBeatTracking.MERT-v1-95M-layers/checkpoints/"
+        filename: "best"
+        save_top_k: 1
+        monitor: "val/beat_f1"
+        mode: "max"
+    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
+      init_args:
+        monitor: "val/beat_f1"
+        patience: 7
+        mode: "max"
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      name: "probe.GTZANBeatTracking.MERT-v1-95M-layers"
+      save_dir: "./output/probe.GTZANBeatTracking.MERT-v1-95M-layers/"
+
+
+model:
+  class_path: marble.tasks.GTZANBeatTracking.probe.ProbeAudioTask
+  init_args:
+    sample_rate: 24000
+    use_ema: false
+
+    encoder:
+      class_path: marble.encoders.MERT.model.MERT_v1_95M_Encoder
+      init_args:
+        pre_trained_folder: null
+        train_mode: freeze
+        force_half: false
+        preprocess_in_forward: false
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: [6]   # sweep replaces this
+      # No TimeAvgPool — frame-level task preserves time dimension
+
+    decoders:
+      - class_path: marble.tasks.GTZANBeatTracking.probe.BeatDownbeatTempoMultitaskDecoder
+        init_args:
+          fps: 75    # MERT token rate
+          use_ssl_for_tempo: false
+
+          joint_decoder:
+            class_path: marble.modules.decoders.MLPDecoderKeepTime
+            init_args:
+              in_dim: 768    # MERT-v1-95M hidden size
+              out_dim: 3     # beat, downbeat, tempo
+              hidden_layers: [256]
+              activation_fn:
+                class_path: torch.nn.ReLU
+              dropout: 0.2
+
+          tempo_decoder:
+            class_path: marble.tasks.GTZANBeatTracking.modules.FFTTempoEstimator
+            init_args:
+              label_fps: 75
+              freq_resolution: 4
+
+    losses:
+      - class_path: marble.tasks.GTZANBeatTracking.probe.CustomBCEWithLogitsLoss
+        init_args:
+          pos_weight: null
+          time_dim_mismatch_tol: 5
+      - class_path: marble.tasks.GTZANBeatTracking.probe.CustomBCEWithLogitsLoss
+        init_args:
+          pos_weight: null
+          time_dim_mismatch_tol: 5
+
+    metrics:
+      train:
+        beat_f1:
+          class_path: marble.tasks.GTZANBeatTracking.probe.BeatF1Score
+          init_args:
+            fps: 75
+            tol: 0.07
+      val:
+        beat_f1:
+          class_path: marble.tasks.GTZANBeatTracking.probe.BeatF1Score
+          init_args:
+            fps: 75
+            tol: 0.07
+      test:
+        beat_f1:
+          class_path: marble.tasks.GTZANBeatTracking.probe.BeatF1Score
+          init_args:
+            fps: 75
+            tol: 0.07
+
+data:
+  class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 8
+
+    audio_transforms:
+      train:
+        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+          init_args:
+            pre_trained_folder: null
+            squeeze: true
+      val:
+        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+          init_args:
+            pre_trained_folder: null
+            squeeze: true
+      test:
+        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+          init_args:
+            pre_trained_folder: null
+            squeeze: true
+
+    train:
+      class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingAudioTrain
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 10
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/GTZAN/GTZANBeatTracking.train.jsonl
+        label_freq: 75
+    val:
+      class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingAudioVal
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 10
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/GTZAN/GTZANBeatTracking.val.jsonl
+        label_freq: 75
+    test:
+      class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingAudioTest
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 10
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/GTZAN/GTZANBeatTracking.test.jsonl
+        label_freq: 75
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
+
+lr_scheduler:
+  class_path: lightning.pytorch.cli.ReduceLROnPlateau
+  init_args:
+    mode: "max"
+    factor: 0.5
+    patience: 5
+    monitor: "val/beat_f1"
