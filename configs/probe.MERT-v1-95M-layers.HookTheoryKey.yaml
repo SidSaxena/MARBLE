@@ -37,7 +37,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.HookTheoryKey.MERT-v1-95M-layers"
+      group: "MERT-v1-95M-layers / HookTheoryKey"
+      tags: ["MERT-v1-95M-layers", "HookTheoryKey", "layer-sweep"]
+      job_type: "probe"
+      name: "MERT-v1-95M-layers"
       save_dir: "./output/probe.HookTheoryKey.MERT-v1-95M-layers/"
 
 

@@ -32,7 +32,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.GS.OMARRQ-multifeature25hz"
+      group: "GS"
+      tags: ["OMARRQ-multifeature25hz", "GS"]
+      job_type: "probe"
+      name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.GS.OMARRQ-multifeature25hz/"
 
 

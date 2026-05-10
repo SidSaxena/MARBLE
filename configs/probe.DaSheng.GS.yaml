@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.GS.DaSheng"
+      group: "GS"
+      tags: ["DaSheng", "GS"]
+      job_type: "probe"
+      name: "DaSheng"
       save_dir: "./output/probe.GS.DaSheng/"
 
 

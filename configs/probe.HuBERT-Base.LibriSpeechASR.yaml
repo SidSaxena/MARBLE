@@ -39,7 +39,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "asr.hubert_ctc"
+      group: "LibriSpeechASR"
+      tags: ["HuBERT-Base", "LibriSpeechASR"]
+      job_type: "probe"
+      name: "HuBERT-Base"
       save_dir: "./output/asr.hubert_ctc/"
 
 model:

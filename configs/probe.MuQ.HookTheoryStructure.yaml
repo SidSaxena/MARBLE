@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.HookTheoryStructure.MuQ"
+      group: "HookTheoryStructure"
+      tags: ["MuQ", "HookTheoryStructure"]
+      job_type: "probe"
+      name: "MuQ"
       save_dir: "./output/probe.HookTheoryStructure.MuQ/"
 
 

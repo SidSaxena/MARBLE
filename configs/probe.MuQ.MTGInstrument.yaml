@@ -34,7 +34,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGInstrument.MuQ"
+      group: "MTGInstrument"
+      tags: ["MuQ", "MTGInstrument"]
+      job_type: "probe"
+      name: "MuQ"
       save_dir: "./output/probe.MTGInstrument.MuQ/"
 
 

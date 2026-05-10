@@ -35,7 +35,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTT.MusicFM"
+      group: "MTT"
+      tags: ["MusicFM", "MTT"]
+      job_type: "probe"
+      name: "MusicFM"
       save_dir: "./output/probe.MTT.MusicFM/"
 
 

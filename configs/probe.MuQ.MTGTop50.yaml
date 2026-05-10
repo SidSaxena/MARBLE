@@ -34,7 +34,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGTop50.MuQ"
+      group: "MTGTop50"
+      tags: ["MuQ", "MTGTop50"]
+      job_type: "probe"
+      name: "MuQ"
       save_dir: "./output/probe.MTGTop50.MuQ/"
 
 

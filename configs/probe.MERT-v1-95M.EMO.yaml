@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.EMO.MERT-v1-95M"
+      group: "EMO"
+      tags: ["MERT-v1-95M", "EMO"]
+      job_type: "probe"
+      name: "MERT-v1-95M"
       save_dir: "./output/probe.EMO.MERT-v1-95M/"
 
 

@@ -20,7 +20,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.Covers80.OMARRQ-multifeature25hz"
+      group: "Covers80"
+      tags: ["OMARRQ-multifeature25hz", "Covers80"]
+      job_type: "probe"
+      name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.Covers80.OMARRQ-multifeature25hz/"
 
 

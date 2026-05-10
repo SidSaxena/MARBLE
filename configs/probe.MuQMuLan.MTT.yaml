@@ -35,7 +35,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTT.MuQMuLan"
+      group: "MTT"
+      tags: ["MuQMuLan", "MTT"]
+      job_type: "probe"
+      name: "MuQMuLan"
       save_dir: "./output/probe.MTT.MuQMuLan/"
 
 

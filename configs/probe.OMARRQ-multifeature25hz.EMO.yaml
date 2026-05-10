@@ -32,7 +32,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.EMO.OMARRQ-multifeature25hz"
+      group: "EMO"
+      tags: ["OMARRQ-multifeature25hz", "EMO"]
+      job_type: "probe"
+      name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.EMO.OMARRQ-multifeature25hz/"
 
 

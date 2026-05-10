@@ -35,7 +35,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.GS.MERT-v1-95M-layers"
+      group: "MERT-v1-95M-layers / GS"
+      tags: ["MERT-v1-95M-layers", "GS", "layer-sweep"]
+      job_type: "probe"
+      name: "MERT-v1-95M-layers"
       save_dir: "./output/probe.GS.MERT-v1-95M-layers/"
 
 

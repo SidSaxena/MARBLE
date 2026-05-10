@@ -7,7 +7,12 @@ Generate one YAML config per transformer layer for a MARBLE layer sweep.
 For each layer N it:
   1. Copies the base config verbatim
   2. Patches  `layers: [N]`  inside the LayerSelector init_args block
-  3. Patches checkpoint dirpath and WandB name / save_dir to include ".layerN"
+  3. Patches checkpoint dirpath and WandB save_dir to include ".layerN"
+  4. Sets WandB run name → "layer-N"
+  5. Injects WandB group / tags / job_type for organised W&B workspace:
+       group    : "{model_tag} / {task_tag}"   (all layers of one sweep)
+       tags     : ["{model_tag}", "{task_tag}", "layer-sweep"]
+       job_type : "probe"
 
 Usage
 -----
@@ -20,7 +25,6 @@ python scripts/gen_sweep_configs.py \\
 """
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
@@ -32,22 +36,39 @@ def patch_layers(text: str, layer: int) -> str:
     return re.sub(r'(?<!\w)layers:\s*\[.*?\]', f'layers: [{layer}]', text)
 
 
-def patch_dirpath(text: str, original_tag: str, new_tag: str) -> str:
-    """Patch ModelCheckpoint dirpath."""
+def patch_wandb_name(text: str, layer: int) -> str:
+    """Set WandB run name to "layer-N" (short; group carries model×task context)."""
     return re.sub(
-        r'(dirpath:\s*["\']?)(.*?)(' + re.escape(original_tag) + r')(.*?["\']?)',
-        lambda m: m.group(1) + m.group(2) + new_tag + m.group(4),
+        r'(?<!\w)(name:\s*")([^"\n]+)(")',
+        lambda m: f'{m.group(1)}layer-{layer}{m.group(3)}',
         text,
     )
 
 
-def patch_wandb(text: str, original_tag: str, new_tag: str) -> str:
-    """Patch WandB name and save_dir."""
-    return re.sub(
-        r'((?:name|save_dir):\s*["\']?)(.*?)(' + re.escape(original_tag) + r')(/?["\']?)',
-        lambda m: m.group(1) + m.group(2) + new_tag + m.group(4),
-        text,
-    )
+def inject_wandb_group_tags(text: str, group: str, tags: list[str]) -> str:
+    """
+    Insert group, tags, and job_type lines immediately after the
+    ``project: "marble"`` line in the WandB logger init_args block.
+
+    Indentation is inferred from the project: line so the YAML stays valid
+    regardless of how deeply nested the logger block is.
+    Idempotent: skips injection if ``group:`` is already present.
+    """
+    if 'group:' in text:
+        return text  # already injected (e.g. on re-run)
+
+    tags_yaml = "[" + ", ".join(f'"{t}"' for t in tags) + "]"
+
+    def replacer(m: re.Match) -> str:
+        indent = m.group(1)   # whitespace that precedes "project:"
+        return (
+            f'{m.group(0)}\n'
+            f'{indent}group: "{group}"\n'
+            f'{indent}tags: {tags_yaml}\n'
+            f'{indent}job_type: "probe"'
+        )
+
+    return re.sub(r'([ \t]+)project:\s*"[^"]*"', replacer, text)
 
 
 def main():
@@ -72,38 +93,35 @@ def main():
     base_text = base_path.read_text()
     layers = args.layers if args.layers is not None else list(range(args.num_layers))
 
-    # Derive the "base tag" that appears in dirpath / wandb name from the base config stem
-    # e.g.  probe.OMARRQ-multifeature25hz.Chords1217  →  base_tag
-    base_tag = base_path.stem  # e.g. "probe.OMARRQ-multifeature25hz.Chords1217"
+    # W&B group groups all layers of one model×task sweep together
+    group    = f"{args.model_tag} / {args.task_tag}"
+    tags     = [args.model_tag, args.task_tag, "layer-sweep"]
 
     for layer in layers:
-        layer_tag = f"{base_tag}.layer{layer}"
         text = base_text
 
-        # 1. Patch LayerSelector
+        # 1. LayerSelector index
         text = patch_layers(text, layer)
 
-        # 2. Patch checkpoint dirpath:
-        #    Match the FIRST path segment after "output/" (no slashes allowed),
-        #    append ".layerN", and leave the rest of the path unchanged.
+        # 2. Checkpoint dirpath  (output/<base>  →  output/<base>.layerN)
         text = re.sub(
             r'(dirpath:\s*"?\.?/?)output/([^/\n"\']+)',
             lambda m: f'{m.group(1)}output/{m.group(2)}.layer{layer}',
             text,
         )
 
-        # 3. Patch WandB logger name and save_dir
-        #    Use negative lookbehind to avoid matching "filename: ..." (where "name" is a suffix).
-        text = re.sub(
-            r'(?<!\w)(name:\s*")([^"\n]+)(")',
-            lambda m: f'{m.group(1)}{m.group(2)}.layer{layer}{m.group(3)}',
-            text,
-        )
+        # 3. WandB save_dir  (same pattern)
         text = re.sub(
             r'(save_dir:\s*"?\.?/?)output/([^/\n"\']+)',
             lambda m: f'{m.group(1)}output/{m.group(2)}.layer{layer}',
             text,
         )
+
+        # 4. WandB run name → "layer-N"
+        text = patch_wandb_name(text, layer)
+
+        # 5. Inject group / tags / job_type into WandB init_args
+        text = inject_wandb_group_tags(text, group, tags)
 
         out_path = out_dir / f"sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
         out_path.write_text(text)

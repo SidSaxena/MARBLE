@@ -33,7 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.Chords1217.ChromaTA"
+      group: "Chords1217"
+      tags: ["ChromaTA", "Chords1217"]
+      job_type: "probe"
+      name: "ChromaTA [lstm]"
       save_dir: "./output/probe.Chords1217.ChromaTA/"
 
 

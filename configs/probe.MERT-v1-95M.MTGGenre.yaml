@@ -35,7 +35,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      name: "probe.MTGGenre.MERT-v1-95M"
+      group: "MTGGenre"
+      tags: ["MERT-v1-95M", "MTGGenre"]
+      job_type: "probe"
+      name: "MERT-v1-95M"
       save_dir: "./output/probe.MTGGenre.MERT-v1-95M/"
 
 
