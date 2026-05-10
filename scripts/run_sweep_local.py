@@ -76,16 +76,32 @@ def _format_metrics(metrics: dict[str, float]) -> str:
     return "  ".join(f"{k.split('/')[-1]}={v:.4f}" for k, v in sorted(metrics.items()))
 
 
-def _checkpoint_exists(task_tag: str, model_tag: str, layer: int) -> bool:
-    """Look for best.ckpt in the output directory for this layer's sweep config."""
-    # Directory is built by gen_sweep_configs: output/<base_stem>.layer<N>/checkpoints/
-    # base_stem = probe.<task_tag>.<model_tag>  (matches dirpath in base config)
-    candidates = list(Path("output").glob(
-        f"*{model_tag}*{task_tag}*layer{layer}*/checkpoints/best.ckpt"
-    )) + list(Path("output").glob(
-        f"*{task_tag}*{model_tag}*layer{layer}*/checkpoints/best.ckpt"
-    ))
-    return bool(candidates)
+def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
+    """
+    Return True if this layer's fit+test cycle has already completed.
+
+    Two signals are accepted:
+      • Supervised tasks  → checkpoints/best.ckpt exists
+      • Zero-shot tasks   → a WandB run directory exists inside the output dir
+        (WandB creates  output/<dir>/wandb/run-*/  the moment test begins)
+
+    Either signal means the full layer run is done and can be safely skipped.
+    """
+    patterns = [
+        f"*{model_tag}*{task_tag}*layer{layer}",
+        f"*{task_tag}*{model_tag}*layer{layer}",
+    ]
+    for pat in patterns:
+        for d in Path("output").glob(pat):
+            if not d.is_dir():
+                continue
+            # Supervised: best checkpoint saved
+            if list(d.glob("checkpoints/best.ckpt")):
+                return True
+            # Zero-shot: WandB logged at least one completed test run
+            if list(d.glob("wandb/run-*/")):
+                return True
+    return False
 
 
 # ──────────────────────────────────────────────
@@ -107,7 +123,11 @@ def main():
     parser.add_argument("--layers", type=int, nargs="*",
                         help="Subset of layer indices to run (default: all 0..num_layers-1)")
     parser.add_argument("--no-skip", action="store_true",
-                        help="Re-run fit even if a checkpoint already exists (default: skip)")
+                        help="Ignore completion markers; re-run fit+test for every layer.")
+    parser.add_argument("--retest", action="store_true",
+                        help="For already-completed layers: skip fit but re-run test. "
+                             "Useful when you want fresh WandB test logs without retraining. "
+                             "Default (without this flag) is to skip both fit and test.")
     parser.add_argument("--accelerator", default=None,
                         help="Override trainer accelerator (gpu/mps/cpu). Defaults to config value.")
     args = parser.parse_args()
@@ -138,17 +158,25 @@ def main():
 
         t_layer_start = time.time()
 
-        # Optionally skip layers that already have a checkpoint
-        skip_fit = (not args.no_skip) and _checkpoint_exists(args.task_tag, args.model_tag, layer)
-        if skip_fit:
-            print(f"  ✓ Checkpoint found — skipping fit, running test only.")
+        already_done = (not args.no_skip) and _layer_done(args.task_tag, args.model_tag, layer)
+
+        if already_done and not args.retest:
+            # ── Fully skip: no fit, no test, no new WandB run ─────────────────
+            print(f"  ✓ Already complete — skipping."
+                  f"  (--retest to re-run test, --no-skip to redo everything)")
+            results[layer] = {"metrics": {}, "elapsed": 0.0, "skipped": True}
+            continue
+
+        # ── Fit ───────────────────────────────────────────────────────────────
+        if already_done:
+            print(f"  ✓ Already complete — skipping fit, re-running test (--retest).")
         else:
             fit_cmd = [PYTHON, "cli.py", "fit", "-c", cfg]
             if args.accelerator:
                 fit_cmd += [f"--trainer.accelerator={args.accelerator}"]
             _run(fit_cmd)
 
-        # Always run test (loads best checkpoint via LoadLatestCheckpointCallback)
+        # ── Test ──────────────────────────────────────────────────────────────
         test_cmd = [PYTHON, "cli.py", "test", "-c", cfg]
         if args.accelerator:
             test_cmd += [f"--trainer.accelerator={args.accelerator}"]
@@ -171,9 +199,12 @@ def main():
     print(f"{'='*60}")
     for layer in run_layers:
         r = results.get(layer, {})
-        m_str = _format_metrics(r.get("metrics", {}))
-        t_str = f"{r.get('elapsed', 0)/60:.1f}m"
-        print(f"  layer {layer:2d}  [{t_str:>5}]  {m_str}")
+        if r.get("skipped"):
+            print(f"  layer {layer:2d}  [------]  (skipped — already complete)")
+        else:
+            m_str = _format_metrics(r.get("metrics", {}))
+            t_str = f"{r.get('elapsed', 0)/60:.1f}m"
+            print(f"  layer {layer:2d}  [{t_str:>5}]  {m_str}")
 
     # ── 4. Best layer ─────────────────────────────────────────────────────────
     # Rank by the first test metric found (works for both weighted_score and r2)
