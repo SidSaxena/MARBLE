@@ -23,7 +23,7 @@ Download:  python scripts/download_covers80.py
 
 import json
 import random
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 import torchaudio
@@ -75,6 +75,7 @@ class _Covers80AudioBase(Dataset):
         clip_seconds: float = DEFAULT_CLIP_SECONDS,
         min_clip_ratio: float = DEFAULT_MIN_CLIP_RATIO,
         channel_mode: str = "mix",
+        backend: Optional[str] = None,
     ):
         self.sample_rate     = int(sample_rate)
         self.channels        = channels
@@ -82,6 +83,7 @@ class _Covers80AudioBase(Dataset):
         self.clip_len_target = int(clip_seconds * self.sample_rate)
         self.min_clip_ratio  = min_clip_ratio
         self.channel_mode    = channel_mode
+        self.backend         = backend
 
         with open(jsonl) as f:
             self.meta: List[dict] = [json.loads(line) for line in f]
@@ -132,6 +134,7 @@ class _Covers80AudioBase(Dataset):
             path,
             frame_offset=offset,
             num_frames=orig_clip_frames,
+            backend=self.backend,
         )  # (C, T)
 
         # ── channel handling ──────────────────────────────────────────────────
