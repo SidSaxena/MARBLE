@@ -29,8 +29,13 @@ Prerequisites
     python -m yt_dlp -U          # update in the current Python env
     uv sync                      # reinstalls all deps including yt-dlp
 
-  Node.js is NOT required.  The script uses yt-dlp's Android player client
-  which bypasses YouTube's JavaScript signature challenge entirely.
+  No JavaScript runtime is required.  The script uses yt-dlp's `android_vr`
+  player client, which per the yt-dlp wiki is the only YouTube client that
+  needs neither a JS solver (deno/node/bun/quickjs) nor a GVS PO Token to
+  return playable audio formats.  Cookies are also optional — `android_vr`
+  serves audio without authentication.  The only carve-out is "Made for
+  kids" videos, which the client cannot access; those will be skipped like
+  any other unavailable video.
 
   ffmpeg  — required for ffprobe (audio metadata extraction):
     Windows : winget install Gyan.FFmpeg   (restart terminal after)
@@ -255,10 +260,13 @@ def _download(
         "--quiet", "--no-warnings",
         "--no-playlist",
         "-f", "bestaudio[ext=m4a]/bestaudio",
-        # Use the Android player client: bypasses YouTube's JavaScript signature
-        # challenge (the "Signature solving failed / EJS" warning) without
-        # requiring Node.js to be installed.
-        "--extractor-args", "youtube:player_client=android,web",
+        # Use the android_vr player client.  Per the yt-dlp wiki this is the
+        # only YouTube client that needs NEITHER a GVS PO token NOR a JS
+        # runtime (deno/node/bun/quickjs) to return playable audio formats.
+        # Tested on yt-dlp 2026.03.17: returns m4a 140 (129 kbps AAC 44.1kHz).
+        # The only carve-out is "Made for kids" videos which it cannot access
+        # — those will fail and be skipped, same as private/deleted videos.
+        "--extractor-args", "youtube:player_client=android_vr",
         "-o", str(audio_dir / f"{ytid}.%(ext)s"),
     ] + cookie_args + [f"https://www.youtube.com/watch?v={ytid}"]
 
