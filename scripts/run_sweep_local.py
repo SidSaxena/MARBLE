@@ -37,6 +37,7 @@ python scripts/run_sweep_local.py \\
 """
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -76,16 +77,40 @@ def _format_metrics(metrics: dict[str, float]) -> str:
     return "  ".join(f"{k.split('/')[-1]}={v:.4f}" for k, v in sorted(metrics.items()))
 
 
+def _has_test_metrics(summary_path: Path) -> bool:
+    """True if a WandB summary file contains at least one ``test/...`` key.
+
+    This is the only reliable completion signal for both supervised and
+    zero-shot sweeps:
+      - A run killed before/during test will have a wandb-summary.json
+        (created at run start) but no `test/...` entries.
+      - A run that ran Trainer.test() to completion will have at least one
+        `test/<metric>` entry (e.g. `test/weighted_score`, `test/MAP`).
+    """
+    try:
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return any(k.startswith("test/") for k in data.keys())
+
+
 def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
     """
-    Return True if this layer's fit+test cycle has already completed.
+    Return True if this layer's test stage has already completed successfully.
 
-    Two signals are accepted:
-      • Supervised tasks  → checkpoints/best.ckpt exists
-      • Zero-shot tasks   → a WandB run directory exists inside the output dir
-        (WandB creates  output/<dir>/wandb/run-*/  the moment test begins)
+    Completion is detected by inspecting WandB run summaries inside the
+    layer's output directory.  A summary that contains any ``test/...`` key
+    proves Trainer.test() finished and logged metrics, which is the only
+    state we want to treat as "skippable" on resume.
 
-    Either signal means the full layer run is done and can be safely skipped.
+    Notes
+    -----
+    * Works identically for supervised (fit + test) and zero-shot
+      (max_epochs=0, just test) sweeps.
+    * Runs killed mid-fit or mid-test correctly fail the check, so re-running
+      the sweep will pick them up again.
+    * The previous "wandb/run-*/ directory exists" heuristic was wrong:
+      WandB creates that directory at run startup, before test runs.
     """
     patterns = [
         f"*{model_tag}*{task_tag}*layer{layer}",
@@ -95,12 +120,9 @@ def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
         for d in Path("output").glob(pat):
             if not d.is_dir():
                 continue
-            # Supervised: best checkpoint saved
-            if list(d.glob("checkpoints/best.ckpt")):
-                return True
-            # Zero-shot: WandB logged at least one completed test run
-            if list(d.glob("wandb/run-*/")):
-                return True
+            for summary in d.glob("wandb/run-*/files/wandb-summary.json"):
+                if _has_test_metrics(summary):
+                    return True
     return False
 
 
