@@ -246,6 +246,7 @@ def _download(
     audio_dir: Path,
     cookie_args: list[str],
     verbose_errors: bool,
+    sleep_args: list[str] = (),
 ) -> Optional[Path]:
     """
     Download audio for one YouTube video via yt-dlp.
@@ -288,7 +289,7 @@ def _download(
         "--extractor-args",
         "youtube:player_client=android_vr,tv,web_safari,web_embedded",
         "-o", str(audio_dir / f"{ytid}.%(ext)s"),
-    ] + cookie_args + [f"https://www.youtube.com/watch?v={ytid}"]
+    ] + list(sleep_args) + cookie_args + [f"https://www.youtube.com/watch?v={ytid}"]
 
     try:
         proc = subprocess.Popen(
@@ -373,6 +374,7 @@ def _process(
     skip_audio: bool,
     cookie_args: list[str],
     verbose_errors: bool,
+    sleep_args: list[str] = (),
 ) -> Optional[dict]:
     """Download (or locate) one track and return its JSONL record, or None."""
     if _shutdown.is_set():
@@ -385,7 +387,8 @@ def _process(
         if path is None:
             return None
     else:
-        path = _download(ytid, audio_dir, cookie_args, verbose_errors)
+        path = _download(ytid, audio_dir, cookie_args, verbose_errors,
+                         sleep_args=sleep_args)
         if path is None:
             return None
 
@@ -469,6 +472,13 @@ def main():
                     help="Process at most N entries per split (smoke-test).")
     ap.add_argument("--verbose-errors", action="store_true",
                     help="Show all yt-dlp error messages (helps diagnose ok=0 failures).")
+    ap.add_argument("--sleep-requests", type=float, default=0.0, metavar="SEC",
+                    help="Pass --sleep-requests SEC to yt-dlp: pause this many "
+                         "seconds between metadata requests.  Use 1-3 to avoid "
+                         "YouTube rate-limiting on long runs (default: 0).")
+    ap.add_argument("--sleep-interval", type=float, default=0.0, metavar="SEC",
+                    help="Pass --sleep-interval SEC to yt-dlp: minimum delay "
+                         "before each actual audio download (default: 0).")
     args = ap.parse_args()
 
     _install_sigint_handler()
@@ -514,6 +524,15 @@ def main():
     else:
         log.info("Auth    : none  (add --browser firefox if YouTube blocks downloads)")
 
+    # ── Sleep args (rate-limit avoidance) ─────────────────────────────────────
+    sleep_args: list[str] = []
+    if args.sleep_requests > 0:
+        sleep_args += ["--sleep-requests", str(args.sleep_requests)]
+    if args.sleep_interval > 0:
+        sleep_args += ["--sleep-interval", str(args.sleep_interval)]
+    if sleep_args:
+        log.info(f"Throttle : {' '.join(sleep_args)} (per yt-dlp call)")
+
     # ── Per-split work ────────────────────────────────────────────────────────
     data_dir  = Path(args.data_dir)
     audio_dir = Path(args.audio_dir) if args.audio_dir else data_dir / "audio"
@@ -540,6 +559,7 @@ def main():
                 pool.submit(
                     _process, row, audio_dir,
                     args.skip_audio, cookie_args, args.verbose_errors,
+                    sleep_args,
                 ): row
                 for row in rows
             }
