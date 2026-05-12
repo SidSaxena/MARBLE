@@ -190,16 +190,27 @@ def main():
             continue
 
         # ── Fit ───────────────────────────────────────────────────────────────
+        # Override WandB run name / job_type at the command line so the fit
+        # process and the test process end up as distinct, clearly-labelled
+        # WandB runs (instead of two indistinguishable "layer-N" entries).
         if already_done:
             print(f"  ✓ Already complete — skipping fit, re-running test (--retest).")
         else:
-            fit_cmd = [PYTHON, "cli.py", "fit", "-c", cfg]
+            fit_cmd = [
+                PYTHON, "cli.py", "fit", "-c", cfg,
+                f"--trainer.logger.init_args.name=layer-{layer}-fit",
+                "--trainer.logger.init_args.job_type=fit",
+            ]
             if args.accelerator:
                 fit_cmd += [f"--trainer.accelerator={args.accelerator}"]
             _run(fit_cmd)
 
         # ── Test ──────────────────────────────────────────────────────────────
-        test_cmd = [PYTHON, "cli.py", "test", "-c", cfg]
+        test_cmd = [
+            PYTHON, "cli.py", "test", "-c", cfg,
+            f"--trainer.logger.init_args.name=layer-{layer}-test",
+            "--trainer.logger.init_args.job_type=test",
+        ]
         if args.accelerator:
             test_cmd += [f"--trainer.accelerator={args.accelerator}"]
 
