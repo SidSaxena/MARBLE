@@ -59,6 +59,13 @@ Usage
   # Rebuild JSONL from already-downloaded files (no new downloads)
   python scripts/download_shs100k.py --skip-audio
 
+  # Put audio on an external drive (keeps the JSONL inside the project).
+  # The JSONL's audio_path entries will point at the external drive.
+  python scripts/download_shs100k.py --audio-dir /Volumes/MyDrive/SHS100K
+
+  # Later, on a different machine, rebuild JSONL with the new audio location
+  python scripts/download_shs100k.py --skip-audio --audio-dir D:/SHS100K
+
   # Show all yt-dlp error messages (diagnose systematic failures)
   python scripts/download_shs100k.py --browser firefox --verbose-errors
 
@@ -439,7 +446,14 @@ def main():
         epilog=__doc__,
     )
     ap.add_argument("--data-dir", default="data/SHS100K",
-                    help="Root data directory (default: data/SHS100K).")
+                    help="Where JSONL split files are written "
+                         "(default: data/SHS100K).")
+    ap.add_argument("--audio-dir", default=None, metavar="DIR",
+                    help="Where audio files are stored (default: "
+                         "<data-dir>/audio).  Use this to put audio on an "
+                         "external drive while keeping the JSONL inside the "
+                         "project, e.g. --audio-dir /Volumes/MyDrive/SHS100K. "
+                         "Audio paths inside the JSONL will point here.")
     ap.add_argument("--splits", nargs="+", default=["test"],
                     choices=["train", "val", "test"],
                     help="Which splits to download (default: test).")
@@ -502,8 +516,11 @@ def main():
 
     # ── Per-split work ────────────────────────────────────────────────────────
     data_dir  = Path(args.data_dir)
-    audio_dir = data_dir / "audio"
+    audio_dir = Path(args.audio_dir) if args.audio_dir else data_dir / "audio"
+    data_dir.mkdir(parents=True, exist_ok=True)
     audio_dir.mkdir(parents=True, exist_ok=True)
+    log.info(f"JSONL output : {data_dir}")
+    log.info(f"Audio output : {audio_dir}")
 
     for split in args.splits:
         log.info(f"\n{'='*60}\nSplit : {split}\n{'='*60}")
