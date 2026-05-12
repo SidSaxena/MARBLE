@@ -259,14 +259,27 @@ def _download(
         sys.executable, "-m", "yt_dlp",
         "--quiet", "--no-warnings",
         "--no-playlist",
-        "-f", "bestaudio[ext=m4a]/bestaudio",
-        # Use the android_vr player client.  Per the yt-dlp wiki this is the
-        # only YouTube client that needs NEITHER a GVS PO token NOR a JS
-        # runtime (deno/node/bun/quickjs) to return playable audio formats.
-        # Tested on yt-dlp 2026.03.17: returns m4a 140 (129 kbps AAC 44.1kHz).
-        # The only carve-out is "Made for kids" videos which it cannot access
-        # — those will fail and be skipped, same as private/deleted videos.
-        "--extractor-args", "youtube:player_client=android_vr",
+        # Multi-tier format selector: prefer m4a audio-only, fall back to any
+        # audio-only stream (webm/opus also works), finally any merged format
+        # such as 18 (mp4 360p with mpeg audio).  More permissive than the
+        # previous "bestaudio[ext=m4a]/bestaudio" which errored "Requested
+        # format is not available" whenever a specific client variant did not
+        # surface an audio-only stream.
+        "-f", "bestaudio[ext=m4a]/bestaudio/best",
+        # Multi-client fallback chain.  yt-dlp queries each client and
+        # *unions* the resulting format lists, so a video failing one client
+        # (e.g. YouTube enforcing PO Token for android_vr in some regions)
+        # is still recoverable via another.  Order matters — earlier clients
+        # are preferred for selection ties.
+        #
+        #   android_vr   — no PO Token, no JS runtime required (primary)
+        #   tv           — no PO Token, no JS; cookies remove DRM gating
+        #   web_safari   — alternative web variant, sometimes less restricted
+        #   web_embedded — works for embeddable videos; needs deno/node, but
+        #                  if missing it just fails silently and the others
+        #                  in the chain still provide formats
+        "--extractor-args",
+        "youtube:player_client=android_vr,tv,web_safari,web_embedded",
         "-o", str(audio_dir / f"{ytid}.%(ext)s"),
     ] + cookie_args + [f"https://www.youtube.com/watch?v={ytid}"]
 
@@ -309,18 +322,25 @@ def _download(
                 "    python scripts/download_shs100k.py --cookies-file cookies.txt"
             )
         elif "No video formats found" in err or "Signature solving failed" in err:
-            # "No video formats found" / "Signature solving failed" both
-            # indicate that the player client couldn't retrieve a usable
-            # stream.  The android client (set above) should prevent this;
-            # if it still occurs, update yt-dlp.
-            log.warning(
-                f"[no-formats] {ytid}: yt-dlp could not find a downloadable "
-                "audio stream.  Try:\n"
-                "  python -m yt_dlp -U   (update yt-dlp)"
-            )
+            # The video exists but the player clients we use could not surface
+            # any downloadable audio format.  Even with the multi-client
+            # fallback this still happens occasionally for region-locked or
+            # token-gated videos.  Treat as "format-gated" rather than
+            # "private/deleted" so the user can see them distinctly.
+            if verbose_errors:
+                log.info(f"[format-gated] {ytid}: no usable audio stream from any client")
+            else:
+                log.debug(f"[format-gated] {ytid}")
+        elif "Requested format is not available" in err:
+            # Same root cause as above: the format selector did not match any
+            # of the formats returned by the active player clients.
+            if verbose_errors:
+                log.info(f"[format-gated] {ytid}: client returned no audio stream matching the format selector")
+            else:
+                log.debug(f"[format-gated] {ytid}")
         elif any(p in err for p in [
             "unavailable", "private", "removed",
-            "not available", "does not exist", "account associated",
+            "does not exist", "account associated",
             "members-only", "age-restricted",
         ]):
             if verbose_errors:
