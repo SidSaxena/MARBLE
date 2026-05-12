@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "HookTheoryStructure"
-      tags: ["MuQ", "HookTheoryStructure"]
+      tags: ["MuQ", "HookTheoryStructure", "probe"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.HookTheoryStructure.MuQ/"

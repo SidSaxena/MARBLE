@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANGenre"
-      tags: ["Xcodec", "GTZANGenre"]
+      tags: ["Xcodec", "GTZANGenre", "probe"]
       job_type: "probe"
       name: "Xcodec"
       save_dir: "./output/probe.GTZANGenre.Xcodec/"

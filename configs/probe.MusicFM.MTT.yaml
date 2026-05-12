@@ -36,7 +36,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MTT"
-      tags: ["MusicFM", "MTT"]
+      tags: ["MusicFM", "MTT", "probe"]
       job_type: "probe"
       name: "MusicFM"
       save_dir: "./output/probe.MTT.MusicFM/"

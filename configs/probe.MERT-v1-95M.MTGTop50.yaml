@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MTGTop50"
-      tags: ["MERT-v1-95M", "MTGTop50"]
+      tags: ["MERT-v1-95M", "MTGTop50", "probe"]
       job_type: "probe"
       name: "MERT-v1-95M"
       save_dir: "./output/probe.MTGTop50.MERT-v1-95M/"

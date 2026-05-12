@@ -37,8 +37,8 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "MERT-v1-95M-layers / GTZANBeatTracking"
-      tags: ["MERT-v1-95M-layers", "GTZANBeatTracking", "layer-sweep"]
+      group: "MERT-v1-95M / GTZANBeatTracking"
+      tags: ["MERT-v1-95M", "GTZANBeatTracking", "layer-sweep", "probe"]
       job_type: "probe"
       name: "MERT-v1-95M-layers"
       save_dir: "./output/probe.GTZANBeatTracking.MERT-v1-95M-layers/"

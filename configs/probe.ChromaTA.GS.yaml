@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GS"
-      tags: ["ChromaTA", "GS"]
+      tags: ["ChromaTA", "GS", "probe"]
       job_type: "probe"
       name: "ChromaTA"
       save_dir: "./output/probe.GS.ChromaTA/"

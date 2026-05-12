@@ -45,6 +45,25 @@ def patch_wandb_name(text: str, layer: int) -> str:
     )
 
 
+def append_layer_tag(text: str, layer: int) -> str:
+    """Append ``layer-N`` to the existing WandB tags array if not present.
+
+    Runs unconditionally (independent of inject_wandb_group_tags) so the
+    per-layer tag is always added even when the base config already had
+    group/tags injected by an earlier migration.
+    """
+    layer_tag = f'"layer-{layer}"'
+
+    def replacer(m: re.Match) -> str:
+        existing = m.group(2).strip()
+        if layer_tag in existing:
+            return m.group(0)
+        new_inner = f"{existing}, {layer_tag}" if existing else layer_tag
+        return f"{m.group(1)}[{new_inner}]"
+
+    return re.sub(r'(tags:\s*)\[([^\]\n]*)\]', replacer, text, count=1)
+
+
 def inject_wandb_group_tags(text: str, group: str, tags: list[str]) -> str:
     """
     Insert group, tags, and job_type lines immediately after the
@@ -93,9 +112,15 @@ def main():
     base_text = base_path.read_text()
     layers = args.layers if args.layers is not None else list(range(args.num_layers))
 
-    # W&B group groups all layers of one model×task sweep together
-    group    = f"{args.model_tag} / {args.task_tag}"
-    tags     = [args.model_tag, args.task_tag, "layer-sweep"]
+    # Strip the "-layers" suffix so the WandB tags / group name unify
+    # layer-sweep runs with any single-best-layer probe of the same model.
+    # e.g.  "CLaMP3-layers"      →  "CLaMP3"
+    #       "MERT-v1-95M-layers" →  "MERT-v1-95M"
+    model_base = args.model_tag.removesuffix("-layers")
+
+    # WandB group: groups all layers of one model×task sweep together
+    group     = f"{model_base} / {args.task_tag}"
+    base_tags = [model_base, args.task_tag, "layer-sweep", "probe"]
 
     for layer in layers:
         text = base_text
@@ -117,11 +142,16 @@ def main():
             text,
         )
 
-        # 4. WandB run name → "layer-N"
+        # 4. WandB run name → "layer-N"  (fit/test suffix is added at runtime
+        #    via --trainer.logger.init_args.name override in run_sweep_local)
         text = patch_wandb_name(text, layer)
 
-        # 5. Inject group / tags / job_type into WandB init_args
-        text = inject_wandb_group_tags(text, group, tags)
+        # 5. Inject group / tags / job_type into WandB init_args.
+        #    inject_wandb_group_tags is idempotent — it no-ops if the base
+        #    config has already been migrated.  For per-layer enrichment we
+        #    always append the layer-specific tag separately.
+        text = inject_wandb_group_tags(text, group, base_tags)
+        text = append_layer_tag(text, layer)
 
         out_path = out_dir / f"sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
         out_path.write_text(text)

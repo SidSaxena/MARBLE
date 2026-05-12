@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANGenre"
-      tags: ["MERT-v1-95M", "GTZANGenre"]
+      tags: ["MERT-v1-95M", "GTZANGenre", "finetune"]
       job_type: "finetune"
       name: "MERT-v1-95M"
       save_dir: "./output/finetune.GTZANGenre.MERT-v1-95M/"

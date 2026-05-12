@@ -18,8 +18,8 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "CLaMP3-layers / Covers80"
-      tags: ["CLaMP3-layers", "Covers80", "layer-sweep"]
+      group: "CLaMP3 / Covers80"
+      tags: ["CLaMP3", "Covers80", "layer-sweep", "probe"]
       job_type: "probe"
       name: "CLaMP3-layers"
       save_dir: "./output/probe.Covers80.CLaMP3-layers/"

@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MTGInstrument"
-      tags: ["MuQ", "MTGInstrument"]
+      tags: ["MuQ", "MTGInstrument", "probe"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.MTGInstrument.MuQ/"

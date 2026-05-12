@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "Chords1217"
-      tags: ["MuQ", "Chords1217"]
+      tags: ["MuQ", "Chords1217", "probe"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.Chords1217.MuQ/"

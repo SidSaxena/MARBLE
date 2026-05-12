@@ -33,8 +33,8 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "CLaMP3-layers / GTZANGenre"
-      tags: ["CLaMP3-layers", "GTZANGenre", "layer-sweep"]
+      group: "CLaMP3 / GTZANGenre"
+      tags: ["CLaMP3", "GTZANGenre", "layer-sweep", "probe"]
       job_type: "probe"
       name: "CLaMP3-layers"
       save_dir: "./output/probe.GTZANGenre.CLaMP3-layers/"

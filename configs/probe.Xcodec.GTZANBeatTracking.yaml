@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANBeatTracking"
-      tags: ["Xcodec", "GTZANBeatTracking"]
+      tags: ["Xcodec", "GTZANBeatTracking", "probe"]
       job_type: "probe"
       name: "Xcodec"
       save_dir: "./output/probe.GTZANBeatTracking.Xcodec/"

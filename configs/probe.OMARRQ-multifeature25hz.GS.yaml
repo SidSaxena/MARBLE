@@ -33,7 +33,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GS"
-      tags: ["OMARRQ-multifeature25hz", "GS"]
+      tags: ["OMARRQ-multifeature25hz", "GS", "probe"]
       job_type: "probe"
       name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.GS.OMARRQ-multifeature25hz/"

@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "NSynth"
-      tags: ["OMARRQ-multifeature25hz", "NSynth"]
+      tags: ["OMARRQ-multifeature25hz", "NSynth", "probe"]
       job_type: "probe"
       name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.NSynth.OMARRQ-multifeature25hz/"

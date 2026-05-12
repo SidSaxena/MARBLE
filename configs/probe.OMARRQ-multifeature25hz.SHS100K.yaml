@@ -20,7 +20,7 @@ trainer:
     init_args:
       project: "marble"
       group: "SHS100K"
-      tags: ["OMARRQ-multifeature25hz", "SHS100K"]
+      tags: ["OMARRQ-multifeature25hz", "SHS100K", "probe"]
       job_type: "probe"
       name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.SHS100K.OMARRQ-multifeature25hz/"

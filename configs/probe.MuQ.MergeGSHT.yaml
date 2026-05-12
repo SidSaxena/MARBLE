@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MergeGSHT"
-      tags: ["MuQ", "MergeGSHT"]
+      tags: ["MuQ", "MergeGSHT", "probe"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.MergeGSHT.MuQ/"

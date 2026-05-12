@@ -34,8 +34,8 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "CLaMP3-layers / HookTheoryStructure"
-      tags: ["CLaMP3-layers", "HookTheoryStructure", "layer-sweep"]
+      group: "CLaMP3 / HookTheoryStructure"
+      tags: ["CLaMP3", "HookTheoryStructure", "layer-sweep", "probe"]
       job_type: "probe"
       name: "CLaMP3-layers"
       save_dir: "./output/probe.HookTheoryStructure.CLaMP3-layers/"

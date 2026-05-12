@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "HookTheoryKey"
-      tags: ["Qwen2AudioInstructEncoder", "HookTheoryKey"]
+      tags: ["Qwen2AudioInstructEncoder", "HookTheoryKey", "probe"]
       job_type: "probe"
       name: "Qwen2AudioInstructEncoder"
       save_dir: "./output/probe.HookTheoryKey.Qwen2AudioInstructEncoder/"
