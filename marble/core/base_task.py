@@ -79,16 +79,24 @@ class BaseTask(LightningModule, ABC):
         x, y, uids_or_paths = batch
         logits = self(x)
 
+        # Explicit batch_size for self.log so Lightning's epoch-end averaging is
+        # exact instead of inferred — silences the "ambiguous collection"
+        # warning that fires whenever the batch is a (Tensor, Tensor, list[str])
+        # tuple and the last (partial) batch has a different size.
+        bs = x.size(0)
+
         # compute and log loss
         losses = [fn(logits, y) for fn in self.loss_fns]
         loss = sum(losses)
-        self.log(f"{split}/loss", loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+        self.log(f"{split}/loss", loss, prog_bar=True, on_step=False,
+                 on_epoch=True, sync_dist=True, batch_size=bs)
 
         # compute and log metrics
         mc: MetricCollection = getattr(self, f"{split}_metrics", None)
         if mc is not None:
             metrics_out = mc(logits, y)
-            self.log_dict(metrics_out, prog_bar=(split == "val"), on_step=False, on_epoch=True, sync_dist=True)
+            self.log_dict(metrics_out, prog_bar=(split == "val"), on_step=False,
+                          on_epoch=True, sync_dist=True, batch_size=bs)
 
         return loss
 
@@ -255,6 +263,7 @@ class BaseFewShotTask(LightningModule, ABC):
             prog_bar=True,
             on_epoch=True,
             sync_dist=True,
+            batch_size=x.size(0),
         )
         
         
@@ -299,6 +308,7 @@ class BaseFewShotTask(LightningModule, ABC):
             prog_bar=True,
             on_epoch=True,
             sync_dist=True,
+            batch_size=x.size(0),
         )
     
     def configure_optimizers(self):
