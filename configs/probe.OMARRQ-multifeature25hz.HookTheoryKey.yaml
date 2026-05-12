@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "HookTheoryKey"
-      tags: ["OMARRQ-multifeature25hz", "HookTheoryKey"]
+      tags: ["OMARRQ-multifeature25hz", "HookTheoryKey", "probe"]
       job_type: "probe"
       name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.HookTheoryKey.OMARRQ-multifeature25hz/"

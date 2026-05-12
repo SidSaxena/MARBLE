@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANGenre"
-      tags: ["Qwen2AudioInstructEncoder", "GTZANGenre"]
+      tags: ["Qwen2AudioInstructEncoder", "GTZANGenre", "probe"]
       job_type: "probe"
       name: "Qwen2AudioInstructEncoder"
       save_dir: "./output/probe.GTZANGenre.Qwen2AudioInstructEncoder/"

@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANGenre"
-      tags: ["OMARRQ-multifeature25hz", "GTZANGenre"]
+      tags: ["OMARRQ-multifeature25hz", "GTZANGenre", "probe"]
       job_type: "probe"
       name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.GTZANGenre.OMARRQ-multifeature25hz/"

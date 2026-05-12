@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "Chords1217"
-      tags: ["ChromaTA", "Chords1217"]
+      tags: ["ChromaTA", "Chords1217", "probe"]
       job_type: "probe"
       name: "ChromaTA [lstm]"
       save_dir: "./output/probe.Chords1217.ChromaTA/"

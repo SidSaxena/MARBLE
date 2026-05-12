@@ -21,7 +21,7 @@ trainer:
     init_args:
       project: "marble"
       group: "Covers80"
-      tags: ["OMARRQ-multifeature25hz", "Covers80"]
+      tags: ["OMARRQ-multifeature25hz", "Covers80", "probe"]
       job_type: "probe"
       name: "OMARRQ-multifeature25hz"
       save_dir: "./output/probe.Covers80.OMARRQ-multifeature25hz/"

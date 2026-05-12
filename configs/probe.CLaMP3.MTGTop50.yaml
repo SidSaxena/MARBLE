@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MTGTop50"
-      tags: ["CLaMP3", "MTGTop50"]
+      tags: ["CLaMP3", "MTGTop50", "probe"]
       job_type: "probe"
       name: "CLaMP3"
       save_dir: "./output/probe.MTGTop50.CLaMP3/"

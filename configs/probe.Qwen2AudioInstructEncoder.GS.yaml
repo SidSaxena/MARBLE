@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GS"
-      tags: ["Qwen2AudioInstructEncoder", "GS"]
+      tags: ["Qwen2AudioInstructEncoder", "GS", "probe"]
       job_type: "probe"
       name: "Qwen2AudioInstructEncoder"
       save_dir: "./output/probe.GS.Qwen2AudioInstructEncoder/"

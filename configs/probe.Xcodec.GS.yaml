@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GS"
-      tags: ["Xcodec", "GS"]
+      tags: ["Xcodec", "GS", "probe"]
       job_type: "probe"
       name: "Xcodec"
       save_dir: "./output/probe.GS.Xcodec/"

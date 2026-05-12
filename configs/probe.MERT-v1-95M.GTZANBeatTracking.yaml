@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANBeatTracking"
-      tags: ["MERT-v1-95M", "GTZANBeatTracking"]
+      tags: ["MERT-v1-95M", "GTZANBeatTracking", "probe"]
       job_type: "probe"
       name: "MERT-v1-95M"
       save_dir: "./output/probe.GTZANBeatTracking.MERT-v1-95M/"

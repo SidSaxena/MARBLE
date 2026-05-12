@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANBeatTracking"
-      tags: ["MuQ", "GTZANBeatTracking"]
+      tags: ["MuQ", "GTZANBeatTracking", "probe"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.GTZANBeatTracking.MuQ/"

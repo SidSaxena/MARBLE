@@ -34,8 +34,8 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "CLaMP3-layers / NSynth"
-      tags: ["CLaMP3-layers", "NSynth", "layer-sweep"]
+      group: "CLaMP3 / NSynth"
+      tags: ["CLaMP3", "NSynth", "layer-sweep", "probe"]
       job_type: "probe"
       name: "CLaMP3-layers"
       save_dir: "./output/probe.NSynth.CLaMP3-layers/"

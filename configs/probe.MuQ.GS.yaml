@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GS"
-      tags: ["MuQ", "GS"]
+      tags: ["MuQ", "GS", "probe"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.GS.MuQ/"

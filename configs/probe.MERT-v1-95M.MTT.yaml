@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MTT"
-      tags: ["MERT-v1-95M", "MTT"]
+      tags: ["MERT-v1-95M", "MTT", "probe"]
       job_type: "probe"
       name: "MERT-v1-95M"
       save_dir: "./output/probe.MTT.MERT-v1-95M/"

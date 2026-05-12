@@ -26,7 +26,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANGenre"
-      tags: ["MERT-v1-95M", "GTZANGenre"]
+      tags: ["MERT-v1-95M", "GTZANGenre", "fewshot"]
       job_type: "fewshot"
       name: "MERT-v1-95M"
       save_dir: "./output/fewshot.GTZANGenre.MERT-v1-95M/"

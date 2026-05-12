@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANGenre"
-      tags: ["CLaMP3", "GTZANGenre"]
+      tags: ["CLaMP3", "GTZANGenre", "probe"]
       job_type: "probe"
       name: "CLaMP3"
       save_dir: "./output/probe.GTZANGenre.CLaMP3/"

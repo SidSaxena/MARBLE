@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "Chords1217"
-      tags: ["MERT-v1-95M", "Chords1217"]
+      tags: ["MERT-v1-95M", "Chords1217", "probe"]
       job_type: "probe"
       name: "MERT-v1-95M"
       save_dir: "./output/probe.Chords1217.MERT-v1-95M/"

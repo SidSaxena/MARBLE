@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANGenre"
-      tags: ["DaSheng", "GTZANGenre"]
+      tags: ["DaSheng", "GTZANGenre", "probe"]
       job_type: "probe"
       name: "DaSheng"
       save_dir: "./output/probe.GTZANGenre.DaSheng/"
