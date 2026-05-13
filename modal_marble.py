@@ -481,12 +481,22 @@ def run_sweep(
         print(f" Layer {layer}/{num_layers-1}  [{model_tag} | {task_tag}]")
         print(f"{'='*60}")
 
+        # WandB naming overrides (same convention as run_sweep_local.py)
+        fit_overrides = [
+            f"--trainer.logger.init_args.name=layer-{layer}-fit",
+            "--trainer.logger.init_args.job_type=fit",
+        ]
+        test_overrides = [
+            f"--trainer.logger.init_args.name=layer-{layer}-test",
+            "--trainer.logger.init_args.job_type=test",
+        ]
+
         # fit
-        _run(["python", "cli.py", "fit", "-c", cfg])
+        _run(["python", "cli.py", "fit", "-c", cfg, *fit_overrides])
 
         # test
         res = subprocess.run(
-            ["python", "cli.py", "test", "-c", cfg],
+            ["python", "cli.py", "test", "-c", cfg, *test_overrides],
             capture_output=True, text=True, cwd=WORK_DIR,
         )
         print(res.stdout)
@@ -551,11 +561,22 @@ def run_one_layer(
 
     print(f"\n{'='*60}\n Layer {layer}/{num_layers-1}  [{model_tag} | {task_tag}]\n{'='*60}")
 
+    # Match the WandB naming convention used by run_sweep_local.py so fit and
+    # test land as distinct, clearly-labelled runs (group/name/tags/job_type).
+    name_overrides_fit = [
+        f"--trainer.logger.init_args.name=layer-{layer}-fit",
+        "--trainer.logger.init_args.job_type=fit",
+    ]
+    name_overrides_test = [
+        f"--trainer.logger.init_args.name=layer-{layer}-test",
+        "--trainer.logger.init_args.job_type=test",
+    ]
+
     if not retest_only:
-        _run(["python", "cli.py", "fit", "-c", cfg])
+        _run(["python", "cli.py", "fit", "-c", cfg, *name_overrides_fit])
 
     res = subprocess.run(
-        ["python", "cli.py", "test", "-c", cfg],
+        ["python", "cli.py", "test", "-c", cfg, *name_overrides_test],
         capture_output=True, text=True, cwd=WORK_DIR,
     )
     print(res.stdout)
