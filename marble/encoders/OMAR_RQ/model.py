@@ -107,6 +107,10 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
                 "OMARRQ_Multifeature25hz_Encoder. Only 'freeze' is available."
             )
 
+    # Upstream documents "up to 30 s" of audio per forward. Past that the
+    # vit_tokenization assertions are silent on what happens — guard here.
+    MAX_INPUT_SECONDS = 30.0
+
     @torch.no_grad()
     def forward(
         self,
@@ -118,6 +122,8 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
         ----------
         x : torch.Tensor
             Raw waveform of shape ``(B, T)`` or ``(B, 1, T)`` at 24 kHz.
+            Pre-conditioned to mono (1 channel) by the dataloader's
+            ``OMARRQ_FeatureExtractor``.
         input_len : torch.Tensor, optional
             Not used; kept for API compatibility.
 
@@ -125,15 +131,29 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
         -------
         tuple of torch.Tensor
             24-element tuple; each element has shape ``(B, T_tokens, 1024)``.
+            T_tokens = ⌊T / 960⌋ since the model patches at 40 ms (25 Hz).
         """
         # Squeeze optional channel dim: (B, 1, T) → (B, T)
         if x.dim() == 3:
             x = x.squeeze(1)
 
+        # Guard against >30 s inputs (upstream silently misbehaves).
+        # T = x.shape[-1] samples at 24 kHz.
+        max_samples = int(self.SAMPLING_RATE * self.MAX_INPUT_SECONDS)
+        if x.shape[-1] > max_samples:
+            raise ValueError(
+                f"OMAR-RQ accepts up to {self.MAX_INPUT_SECONDS:.0f} s; "
+                f"got {x.shape[-1] / self.SAMPLING_RATE:.1f} s "
+                f"({x.shape[-1]} samples)."
+            )
+
         # extract_embeddings returns a tensor of shape (L, B, T_tokens, C)
-        # where L = N_TRANSFORMER_LAYERS = 24, C = 1024
-        layer_indices = list(range(self.N_TRANSFORMER_LAYERS))
+        # where L = N_TRANSFORMER_LAYERS = 24, C = 1024.
+        # The upstream API takes a `set` (it coerces lists, but spec is a set).
+        # Layers are returned in INSERTION ORDER (conformer.py:447) so output
+        # index 0 == first conformer block, index 23 == last.
+        layer_indices = set(range(self.N_TRANSFORMER_LAYERS))
         embeddings = self.model.extract_embeddings(x, layers=layer_indices)
-        # embeddings: (L, B, T_tokens, 512)
+        # embeddings: (L=24, B, T_tokens, C=1024)
 
         return tuple(embeddings[i] for i in range(self.N_TRANSFORMER_LAYERS))

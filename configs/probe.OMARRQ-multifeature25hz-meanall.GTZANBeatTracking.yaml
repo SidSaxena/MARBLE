@@ -1,0 +1,202 @@
+seed_everything: 1234
+ckpt_path: null
+
+# OMAR-RQ × GTZANBeatTracking — multi-layer mean aggregation experiment.
+# Replaces the single-layer probe with mean(L0..L23) of the Conformer
+# stack, matching the upstream OMAR-RQ probing convention
+# (omar_rq/probe/data/nsynth_pitch.py:133 uses `embeddings.mean(dim=0)`).
+#
+# Hypothesis: the paper's reported Beat F1 = 0.855 may have used
+# multi-layer aggregation. Our single-layer best is currently 0.36.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  accumulate_grad_batches: 8
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 60
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 10
+  log_every_n_steps: 5
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "./output/probe.GTZANBeatTracking.OMARRQ-multifeature25hz-meanall/checkpoints/"
+        filename: "best"
+        save_top_k: 1
+    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
+      init_args:
+        monitor: "val/beat_f1"
+        patience: 7
+        mode: "max"
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "OMARRQ-multifeature25hz-meanall / GTZANBeatTracking"
+      tags: ["OMARRQ-multifeature25hz", "GTZANBeatTracking", "mean-agg", "probe"]
+      job_type: "probe"
+      name: "meanall-fit"
+      save_dir: "./output/probe.GTZANBeatTracking.OMARRQ-multifeature25hz-meanall/"
+
+
+model:
+  class_path: marble.tasks.GTZANBeatTracking.probe.ProbeAudioTask
+  init_args:
+    sample_rate: 24000
+    fps: 25
+    use_ema: false
+    loss_weights: [1.0, 1.0, 0.0]
+
+    encoder:
+      class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
+
+    emb_transforms:
+      # Mean-aggregate ALL 24 Conformer layers. Output: (B, 1, T, 1024)
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: ["0..23"]
+          mode: mean
+
+    decoders:
+      - class_path: marble.tasks.GTZANBeatTracking.probe.BeatDownbeatTempoMultitaskDecoder
+        init_args:
+          fps: 25
+          use_ssl_for_tempo: false
+
+          joint_decoder:
+            class_path: marble.modules.decoders.MLPDecoderKeepTime
+            init_args:
+              in_dim: 1024
+              out_dim: 3
+              hidden_layers: [256]
+              activation_fn:
+                class_path: torch.nn.ReLU
+              dropout: 0.2
+
+          tempo_decoder:
+            class_path: marble.tasks.GTZANBeatTracking.modules.FFTTempoEstimator
+            init_args:
+              label_fps: 25
+              freq_resolution: 4
+
+    losses:
+      - class_path: marble.tasks.GTZANBeatTracking.probe.CustomBCEWithLogitsLoss
+        init_args:
+          pos_weight: null
+          time_dim_mismatch_tol: 5
+      - class_path: marble.tasks.GTZANBeatTracking.probe.CustomBCEWithLogitsLoss
+        init_args:
+          pos_weight: null
+          time_dim_mismatch_tol: 5
+      - class_path: torch.nn.MSELoss
+        init_args:
+          reduction: mean
+
+    metrics:
+      val:
+        beat_f1:
+          class_path: marble.tasks.GTZANBeatTracking.metrics.TimeEventFMeasure
+          init_args:
+            label_freq: 25
+            tol: 0.07
+            threshold: 0.99
+        downbeat_f1:
+          class_path: marble.tasks.GTZANBeatTracking.metrics.TimeEventFMeasure
+          init_args:
+            label_freq: 25
+            tol: 0.07
+            threshold: 0.99
+        tempo_mae:
+          class_path: marble.tasks.GTZANBeatTracking.metrics.TempoMAE
+        tempo_acc:
+          class_path: marble.tasks.GTZANBeatTracking.metrics.TempoAccuracy
+          init_args:
+            tol: 0.04
+      test:
+        beat_f1:
+          class_path: marble.tasks.GTZANBeatTracking.metrics.TimeEventFMeasure
+          init_args:
+            label_freq: 25
+            tol: 0.07
+            threshold: 0.99
+        downbeat_f1:
+          class_path: marble.tasks.GTZANBeatTracking.metrics.TimeEventFMeasure
+          init_args:
+            label_freq: 25
+            tol: 0.07
+            threshold: 0.99
+        tempo_mae:
+          class_path: marble.tasks.GTZANBeatTracking.metrics.TempoMAE
+        tempo_acc:
+          class_path: marble.tasks.GTZANBeatTracking.metrics.TempoAccuracy
+          init_args:
+            tol: 0.04
+
+data:
+  class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 8
+
+    audio_transforms:
+      train:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      val:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      test:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+
+    train:
+      class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingAudioTrain
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 10
+        min_clip_ratio: 0.8
+        channel_mode: first
+        jsonl: data/GTZAN/GTZANBeatTracking.train.jsonl
+        label_freq: 25
+        num_neighbors: 2
+    val:
+      class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingAudioVal
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 10
+        min_clip_ratio: 0.8
+        channel_mode: first
+        jsonl: data/GTZAN/GTZANBeatTracking.val.jsonl
+        label_freq: 25
+        num_neighbors: 0
+    test:
+      class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingAudioTest
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 10
+        min_clip_ratio: 0.8
+        channel_mode: first
+        jsonl: data/GTZAN/GTZANBeatTracking.test.jsonl
+        label_freq: 25
+        num_neighbors: 0
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
+
+lr_scheduler:
+  class_path: lightning.pytorch.cli.ReduceLROnPlateau
+  init_args:
+    mode: "max"
+    factor: 0.5
+    patience: 5
+    monitor: "val/beat_f1"
