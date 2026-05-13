@@ -429,6 +429,133 @@ class CLaMP3_Encoder(BaseEncoder):
             return (output.unsqueeze(1),) # Return shape (B, 1, H)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Symbolic-music encoder (M3 path)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
+    """CLaMP3 encoder that consumes pre-tokenised MIDI patches instead of audio.
+
+    Shape contract
+    --------------
+    Input  : Tensor ``(B, P, PATCH_SIZE)`` of int64 patch token IDs.  Padding
+             rows must be filled with the patchiliser's ``pad_token_id`` (0)
+             so the attention mask can be inferred at forward time.
+    Output : tuple of 13 tensors, each ``(B, 1, H=768)`` — one per BERT
+             hidden state (embedding layer + 12 transformer layers).  Same
+             contract as the audio path, so ``LayerSelector`` and
+             ``TimeAvgPool`` work unchanged.
+
+    Notes
+    -----
+    * MIDI → patches conversion is the dataset's responsibility (see
+      ``marble.tasks.VGMIDITVar.datamodule.VGMIDITVarSymbolic*``).  This
+      encoder is concerned only with mapping patches → embeddings.
+    * Segments longer than ``CLaMP3Config.PATCH_LENGTH`` (default 512) are
+      chunked and length-weighted, mirroring the audio path's behaviour.
+    """
+
+    @torch.no_grad()
+    def forward(self, patches: torch.Tensor) -> tuple:    # type: ignore[override]
+        device = patches.device
+        self.model.to(device)
+
+        pad_id = self.patchilizer.pad_token_id
+        batch_outputs = []
+
+        for b in range(patches.size(0)):
+            item = patches[b]                        # (P, PATCH_SIZE)
+
+            # Drop fully-padded trailing rows so we only feed real patches.
+            non_pad_mask = (item != pad_id).any(dim=-1)   # (P,)
+            real_len = int(non_pad_mask.sum().item())
+            if real_len == 0:
+                # All padding → use a single all-pad segment so the model
+                # still runs and returns zero-ish embeddings.
+                real_len = 1
+            real = item[:real_len].to(device)              # (real_len, PATCH_SIZE)
+
+            layer_embeds = self._get_symbolic_layer_embeddings(real, device)
+            batch_outputs.append(layer_embeds)             # (13, H)
+
+        stacked = torch.stack(batch_outputs, dim=0)        # (B, 13, H)
+        return tuple(stacked[:, l, :].unsqueeze(1) for l in range(stacked.size(1)))
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    def _get_symbolic_layer_embeddings(
+        self,
+        patches: torch.Tensor,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Return per-layer pooled embeddings for one item's symbolic patches.
+
+        Mirrors ``_get_layer_embeddings_from_segments`` (the audio helper)
+        but uses the symbolic_model's *inner* BertModel directly so we can
+        request ``output_hidden_states=True``.  We replicate the
+        one-hot → linear patch embedding step that ``M3PatchEncoder.forward``
+        normally performs before BERT.
+        """
+        sym = self.model.symbolic_model           # M3PatchEncoder
+        bert = sym.base                            # HF BertModel
+        patch_embed = sym.patch_embedding          # Linear(PATCH_SIZE*128 → H)
+        H = self.config.M3_HIDDEN_SIZE
+
+        max_len = self.config.PATCH_LENGTH
+        segments = self._prepare_segments(patches, max_len)
+
+        per_layer_accum = None
+        total_weight = 0.0
+
+        for segment in segments:
+            seg_len = segment.size(0)
+            pad_len = max_len - seg_len
+
+            # Token-level mask: 1 for real patches, 0 for padding.
+            mask = F.pad(
+                torch.ones(seg_len, device=device),
+                (0, pad_len),
+                value=0.0,
+            )
+            pad_token = torch.full(
+                (pad_len, self.config.PATCH_SIZE),
+                self.patchilizer.pad_token_id,
+                dtype=segment.dtype,
+                device=device,
+            )
+            seg_padded = torch.cat((segment.to(device), pad_token), dim=0).long()
+            # → (P, PATCH_SIZE) of int patch token IDs in [0, 128)
+
+            # One-hot → linear projection, same as M3PatchEncoder.forward.
+            oh   = F.one_hot(seg_padded, num_classes=128).float()  # (P, PS, 128)
+            flat = oh.reshape(seg_padded.size(0), -1)              # (P, PS*128)
+            emb  = patch_embed(flat).unsqueeze(0)                   # (1, P, H)
+
+            bert_out = bert(
+                inputs_embeds=emb,
+                attention_mask=mask.unsqueeze(0),
+                output_hidden_states=True,
+            )
+            # bert_out.hidden_states: tuple of 13 × (1, P, H)
+            # Weighted-mean each layer over the real (mask==1) positions.
+            mask_b = mask.unsqueeze(0).unsqueeze(-1)       # (1, P, 1)
+            denom = mask_b.sum().clamp_min(1.0)
+            pooled = [
+                (hs * mask_b).sum(dim=1).squeeze(0) / denom
+                for hs in bert_out.hidden_states
+            ]
+            stacked = torch.stack(pooled, dim=0)            # (13, H)
+
+            weight = float(seg_len)
+            if per_layer_accum is None:
+                per_layer_accum = stacked * weight
+            else:
+                per_layer_accum = per_layer_accum + stacked * weight
+            total_weight += weight
+
+        return per_layer_accum / total_weight              # (13, H)
+
+
 if __name__ == '__main__':
     # --- GTZAN Demo for Verification ---
     print("--- Running GTZAN Demo with CLaMP3_Encoder ---")

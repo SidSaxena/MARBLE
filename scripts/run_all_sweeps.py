@@ -171,6 +171,16 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Theme→variation | MAP | zero-shot | MIDI-rendered | OMARRQ 24 layers",
     ),
+    # CLaMP3 SYMBOLIC path — feeds MIDI directly into CLaMP3's M3 encoder
+    # (no MIDI→audio rendering).  Probes a different sub-network than the
+    # audio CLaMP3 config above.
+    SweepDef(
+        model="CLaMP3-symbolic",
+        task="VGMIDITVar",
+        base_config="configs/probe.CLaMP3-symbolic-layers.VGMIDITVar.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | MIDI-native | CLaMP3-symbolic 13 layers",
+    ),
 
     # ══════════════════════════════════════════════════════════════════════════
     # FAST supervised — small datasets, clip-level (single prediction per clip)

@@ -212,3 +212,129 @@ class VGMIDITVarAudioDummy(_VGMIDITVarAudioBase):
 class VGMIDITVarDataModule(BaseDataModule):
     """Thin wrapper — all logic is in BaseDataModule."""
     pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Symbolic path (CLaMP3 native MIDI encoder)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Returns pre-tokenised CLaMP3 M3 patches instead of waveforms.  Same
+# (input, work_id, path) contract so the existing CoverRetrievalTask works
+# unchanged — only the encoder differs (CLaMP3_Symbolic_Encoder).
+#
+# Each item:
+#   patches : LongTensor (MAX_PATCHES, PATCH_SIZE)   — padded with pad_token_id
+#   work_id : int
+#   midi_path : str
+#
+# Padding to a fixed MAX_PATCHES lets PyTorch's default_collate batch items
+# without a custom collate_fn.  PATCH_LENGTH=512 from CLaMP3Config — for
+# theme-length MIDI (a few seconds each) this is comfortably enough.
+
+
+class _VGMIDITVarSymbolicBase(Dataset):
+    """Dataset returning CLaMP3 M3 patches for each MIDI file.
+
+    Args
+    ----
+    jsonl       : MARBLE JSONL.  Each row must include either
+                  ``midi_path`` directly OR ``audio_path`` from which the
+                  MIDI path is derived by replacing the audio extension
+                  with ``.mid``.  In the VGMIDI-TVar build, MIDIs sit
+                  alongside the audio renders under  ``<data-dir>/midi/<split>/``,
+                  so the dataset will look there if ``midi_path`` is absent.
+    split       : optional split filter (``"train"`` / ``"test"``).
+    max_patches : sequence-length cap.  Defaults to CLaMP3Config.PATCH_LENGTH (512).
+    """
+
+    def __init__(
+        self,
+        jsonl: str,
+        split: Optional[str] = None,
+        max_patches: Optional[int] = None,
+        midi_dir: Optional[str] = None,
+    ):
+        # Local import keeps the audio path's import-time independent of CLaMP3.
+        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+        from marble.encoders.CLaMP3.midi_util  import midi_to_mtf
+        from marble.encoders.CLaMP3.model      import CLaMP3Config
+        from pathlib import Path as _Path
+
+        self._midi_to_mtf = midi_to_mtf
+        self.patchilizer  = M3Patchilizer()
+        self.max_patches  = max_patches or CLaMP3Config.PATCH_LENGTH
+        self.patch_size   = CLaMP3Config.PATCH_SIZE
+        self.pad_token_id = self.patchilizer.pad_token_id
+        self.midi_dir     = _Path(midi_dir) if midi_dir else None
+
+        with open(jsonl, encoding="utf-8") as f:
+            self.meta: List[dict] = [json.loads(line) for line in f]
+        if split is not None:
+            self.meta = [m for m in self.meta if m.get("split") == split]
+
+    def _resolve_midi_path(self, entry: dict) -> str:
+        if "midi_path" in entry:
+            return entry["midi_path"]
+        # Fall back: replace audio extension with .mid; if a midi_dir is
+        # given, also try <midi_dir>/<split>/<stem>.mid (matches the layout
+        # build_vgmiditvar_dataset.py produces).
+        from pathlib import Path as _Path
+        audio_path = _Path(entry["audio_path"])
+        candidate  = audio_path.with_suffix(".mid")
+        if candidate.exists():
+            return str(candidate)
+        if self.midi_dir is not None:
+            cand = self.midi_dir / entry.get("split", "") / (audio_path.stem + ".mid")
+            if cand.exists():
+                return str(cand)
+        raise FileNotFoundError(
+            f"Could not find MIDI for {audio_path.stem}; tried {candidate} "
+            f"and {self.midi_dir}"
+        )
+
+    def __len__(self) -> int:
+        return len(self.meta)
+
+    def __getitem__(self, idx: int):
+        entry = self.meta[idx]
+        midi_path = self._resolve_midi_path(entry)
+        mtf = self._midi_to_mtf(midi_path)
+
+        # Encode → list of patches; each patch is a list of int tokens.
+        patches_list = self.patchilizer.encode(
+            mtf, patch_size=self.patch_size, add_special_patches=True
+        )
+        # Truncate to max_patches and stack to a LongTensor.
+        patches_list = patches_list[: self.max_patches]
+        patches_t = torch.tensor(patches_list, dtype=torch.long)  # (P, patch_size)
+
+        # Pad to (max_patches, patch_size) so default_collate can batch.
+        if patches_t.size(0) < self.max_patches:
+            pad_rows = self.max_patches - patches_t.size(0)
+            pad_block = torch.full(
+                (pad_rows, self.patch_size),
+                self.pad_token_id,
+                dtype=torch.long,
+            )
+            patches_t = torch.cat([patches_t, pad_block], dim=0)
+
+        work_id = int(entry["work_id"])
+        return patches_t, work_id, midi_path
+
+
+class VGMIDITVarSymbolicAll(_VGMIDITVarSymbolicBase):
+    """All MIDI files — zero-shot symbolic retrieval evaluation."""
+    pass
+
+
+class VGMIDITVarSymbolicTest(_VGMIDITVarSymbolicBase):
+    """Test-split MIDI files only."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs["split"] = "test"
+        super().__init__(*args, **kwargs)
+
+
+class VGMIDITVarSymbolicDummy(_VGMIDITVarSymbolicBase):
+    """Placeholder dataset for the train / val loaders under max_epochs=0."""
+    pass
