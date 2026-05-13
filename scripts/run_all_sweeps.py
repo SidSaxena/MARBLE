@@ -371,6 +371,10 @@ def _data_present(task: str) -> bool:
         # HookTheory: requires download_hooktheory.py (YouTube audio via yt-dlp)
         "HookTheoryKey":       "data/HookTheory/HookTheoryKey.train.jsonl",
         "HookTheoryStructure": "data/HookTheory/HookTheoryStructure.train.jsonl",
+        # HookTheoryMelody needs the rich raw schema + full-song audio:
+        # build with `scripts/build_hooktheory_melody_jsonl.py` after a
+        # full HookTheory download (zips/audio/*.tar, ~104 GB).
+        "HookTheoryMelody":    "data/HookTheory/HookTheory.train.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()

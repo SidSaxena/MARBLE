@@ -1,7 +1,7 @@
 # Modal parallel layer sweeps
 
-Runbook for executing the slow MARBLE layer sweeps on Modal in parallel —
-one container per layer — while the PC handles the rest.
+Runbook for executing MARBLE layer sweeps on Modal in parallel —
+one container per layer — alongside sweeps running on the PC.
 
 ## Why Modal (and the cost reality)
 
@@ -9,215 +9,254 @@ Same total GPU-hours as running sequentially on one machine, but
 wall-clock collapses from N × single-layer-time to ~single-layer-time
 by spawning N containers in parallel via `run_one_layer.starmap()`.
 
-A10G ≈ $1.10/hr. For a 24-layer OMARRQ sweep at ~1–2 h/layer:
+Default GPU: **L4** (24 GB, Ada Lovelace, bf16 native), $0.80/hr —
+chosen over A10G ($1.10/hr) on price/perf grounds. L4 is ~5% faster than
+A10G for our workload (frozen encoder + small MLP probe, ~5–6 GB VRAM
+per layer) and 27% cheaper. To override, edit the `gpu="L4"` line in
+[modal_marble.py:`run_one_layer`](../modal_marble.py).
 
-- Sequential on PC: 24–48 h wall-clock
-- Sequential on Modal: 24–48 h × $1.10 ≈ $30–55
-- **Parallel on Modal: 1–2 h wall-clock, ~$30–55** (same cost, way less waiting)
+### Cost estimates (L4 spot, parallel)
 
-The 5 migrated sweeps total ~9 h wall-clock and ~$190 spend.
+Each 13-layer MERT/CLaMP3 sweep ≈ 1.5–2.5 h wall-clock at ~$10–15.
+Each 24-layer OMARRQ sweep ≈ 1.5–2.5 h wall-clock at ~$18–28.
+
+Priority-ordered plan (Tier 1 = MERT first, Tier 2 = CLaMP3, Tier 3 =
+OMARRQ deferred; GS skipped):
+
+| Tier | Sweep | Layers | Est. wall | Est. cost |
+|---|---|---:|---:|---:|
+| 1 | MERT × SHS100K | 13 | ~0.5 h | ~$5 (zero-shot) |
+| 1 | MERT × HookTheoryMelody | 13 | ~2 h | ~$15 |
+| 1 | MERT × HookTheoryStructure | 13 | ~1.5 h | ~$12 |
+| 1 | MERT × HookTheoryKey | 13 | ~1.5 h | ~$12 |
+| 1 | MERT × GTZANBeatTracking | 13 | ~2 h | ~$15 |
+| 1 | MERT × Chords1217 | 13 | ~2.5 h | ~$20 |
+| 1 | MERT × NSynth | 13 | ~2.5 h | ~$20 |
+| 2 | CLaMP3 × SHS100K | 13 | ~0.5 h | ~$5 |
+| 2 | CLaMP3 × HookTheoryKey | 13 | ~1.5 h | ~$12 |
+| 2 | CLaMP3 × HookTheoryStructure | 13 | ~1.5 h | ~$12 |
+| 2 | CLaMP3 × NSynth | 13 | ~2.5 h | ~$20 |
+| 3 | OMARRQ × … (5 sweeps) | 24 ea. | ~12 h | ~$120 |
+
+Tier 1+2 ≈ ~$150. Tier 3 adds ~$120. Full plan ≈ $270.
 
 ---
 
-## Phase 0 — One-time setup
+## Phase 0 — Secrets & volumes (one-time)
 
 ```bash
-# Secrets — both must exist before any Modal sweep can run
+# Secrets — both must exist before any sweep
 modal secret create wandb-secret WANDB_API_KEY=<your-key>
-modal secret create huggingface HF_TOKEN=hf_...   # only if not already there
+modal secret create huggingface HF_TOKEN=hf_...
 modal secret list
 
-# Volumes (auto-created on first use, but verify)
+# Volumes (auto-created on first use, verify state)
 modal volume ls marble-data /
 modal volume ls marble-output /
 ```
 
-If `wandb-secret` already exists with a different name, either rename it
-or update the `Secret.from_name("wandb-secret")` references in
-`modal_marble.py`.
+### Current Modal volume state (as of last audit)
 
-### Verify datasets are on `marble-data`
-
-The 5 migrated sweeps need:
-
-| Dataset | Path on `marble-data` | Used by |
+| Dataset | Path | Status |
 |---|---|---|
-| NSynth | `NSynth/{train,valid,test}.jsonl` + audio | OMARRQ/MERT × NSynth |
-| Chords1217 | `Chords1217/Chords1217.{train,val,test}.jsonl` + audio | OMARRQ/MERT × Chords1217 |
-| GTZAN | `GTZAN/GTZANBeatTracking.{train,val,test}.jsonl` + audio | OMARRQ × GTZANBeatTracking |
+| SHS100K audio | `/SHS100K/audio/` | ✓ 6905 .m4a files |
+| SHS100K JSONL | `/SHS100K/SHS100K.test.jsonl` | ✗ needs upload + rebuild (Phase 1.1) |
+| HookTheory | `/HookTheory/` | ✗ not present (Phase 1.2) |
+| NSynth | `/NSynth/` | ✗ not present (Phase 1.3) |
+| GTZAN | `/GTZAN/` | ✗ not present (Phase 1.3) |
+| Chords1217 | `/Chords1217/` | ✗ not present (Phase 1.3) |
 
-To check:
+---
+
+## Phase 1 — Per-dataset data setup
+
+### 1.1 SHS100K — rewrite JSONL on Modal (~15 min)
+
+Audio is already on the volume. We need a clean JSONL that points at the
+Modal mount path, with missing/corrupt entries dropped.
 
 ```bash
-modal volume ls marble-data NSynth | head
-modal volume ls marble-data Chords1217 | head
-modal volume ls marble-data GTZAN | head
+# 1. One-time: upload the local SHS100K.test.jsonl
+modal volume put marble-data \
+    data/SHS100K/SHS100K.test.jsonl \
+    SHS100K/SHS100K.test.jsonl
+
+# 2. Rewrite + verify on Modal (uses scripts/verify_shs100k.py --rewrite
+#    against the mounted audio dir)
+modal run modal_marble.py::setup_shs100k_jsonl
 ```
 
-If anything is missing, populate via:
+What happens: the function loads the uploaded JSONL, rewrites each
+`audio_path` to `data/SHS100K/audio/<ytid>.m4a` (Modal mount), runs
+`torchaudio.info` on each file, drops failures, commits the cleaned
+JSONL back to the volume.
+
+### 1.2 HookTheory — full download + Melody JSONL build (~3–6 h, ~110 GB)
 
 ```bash
-modal run modal_marble.py::download   # GTZAN + Chords1217 + GS + EMO + Covers80
-# NSynth has its own path — upload manually if needed:
-modal volume put marble-data /path/to/local/NSynth NSynth
+# Downloads m-a-p/HookTheory complete (clips + 104 GB full audio), extracts,
+# then builds HookTheory.{train,val,test}.jsonl for the Melody task.
+modal run modal_marble.py::setup_hooktheory_full
+```
+
+This is the heavy one. The function uses `huggingface_hub.snapshot_download`
+which is restart-safe — if it dies mid-download, re-running picks up where
+it left off.
+
+Prerequisite: your HF account must have accepted the m-a-p/HookTheory terms
+(check at https://huggingface.co/datasets/m-a-p/HookTheory).
+
+### 1.3 Other datasets — download via existing scripts
+
+For NSynth / GTZAN / Chords1217:
+
+```bash
+# Reuse the existing dataset-download function for the m-a-p/* repos
+modal run modal_marble.py::download_gs_emo                       # (GS, EMO)
+modal run modal_marble.py::download_gtzan_only                   # GTZAN, EMO, MTG, MTT, GS
+modal run modal_marble.py::download                              # GTZAN + Chords1217 + GS + EMO + Covers80
+# NSynth doesn't have an m-a-p/* repo — see download_nsynth.py for the path.
 ```
 
 ---
 
-## Phase 1 — Smoke test (~$2, ~45 min)
+## Phase 2 — Smoke test (~$5, ~30 min)
 
-Before kicking off the 5-sweep migration, validate the parallel path on
-the cheapest sweep:
+After Phase 1.1, kick off SHS100K as the smoke test. It's zero-shot
+retrieval (`max_epochs=0`) so test-only, fast, cheap:
 
 ```bash
-# 1. One layer to verify image + secrets + data path
 modal run scripts/modal_sweep.py \
-    --base-config configs/probe.CLaMP3-layers.GS.yaml \
+    --base-config configs/probe.MERT-v1-95M-layers.SHS100K.yaml \
     --num-layers 13 \
-    --model-tag CLaMP3 \
-    --task-tag GS \
-    --layers 0
-
-# Expected: ~30 min, ~$0.50, WandB shows a CLaMP3/GS run with `test/*` metrics.
-
-# 2. Four layers in parallel — confirm 4 simultaneous A10G containers
-modal run scripts/modal_sweep.py \
-    --base-config configs/probe.CLaMP3-layers.GS.yaml \
-    --num-layers 13 \
-    --model-tag CLaMP3 \
-    --task-tag GS \
-    --layers 0,1,2,3
-
-# Expected: 4 containers up at once in the Modal dashboard; total wall-clock
-# ≈ one layer's time; ~$2 cost.
-
-# 3. Resume test — every layer should report "skipped"
-modal run scripts/modal_sweep.py \
-    --base-config configs/probe.CLaMP3-layers.GS.yaml \
-    --num-layers 13 --model-tag CLaMP3 --task-tag GS --layers 0,1,2,3
+    --model-tag MERT-v1-95M \
+    --task-tag SHS100K
 ```
 
 Pass criteria:
 
-- WandB project `marble` shows the 4 runs with `test/weighted_score` and
-  the group/tags from `gen_sweep_configs.py` (look for `CLaMP3 / GS` group).
-- `marble-output` volume contains
-  `output/probe.GS.CLaMP3-layers/layer-*/wandb/run-*/files/wandb-summary.json`.
-- Step 3 prints all `skipped`, no fit/test was re-run.
+- 13 L4 containers spin up in parallel (visible in Modal dashboard).
+- WandB project `marble` shows 13 runs in group `MERT-v1-95M / SHS100K`,
+  each with `test/MAP` and `test/MRR`.
+- `marble-output` volume has
+  `output/probe.SHS100K.MERT-v1-95M-layers/layer-{0..12}/wandb-summary.json`.
+
+If smoke test passes, proceed to Phase 3.
 
 ---
 
-## Phase 2 — Migration: 5 long sweeps
+## Phase 3 — Tier-1 + Tier-2 sweeps (MERT + CLaMP3, ~$150)
 
 ```bash
-# All 5, sequential between sweeps, parallel within each
-modal run scripts/modal_run_all_sweeps.py
+# All MERT sweeps (~7 sweeps, ~$100)
+modal run scripts/modal_run_all_sweeps.py --tier 1
 
-# Or pick one
-modal run scripts/modal_run_all_sweeps.py --only OMARRQ-NSynth
+# All CLaMP3 sweeps (~4 sweeps, ~$50)
+modal run scripts/modal_run_all_sweeps.py --tier 2
 
-# Or skip ones already done elsewhere
-modal run scripts/modal_run_all_sweeps.py --skip MERT-NSynth,MERT-Chords1217
+# Or one at a time
+modal run scripts/modal_run_all_sweeps.py --only MERT-NSynth
 ```
 
-Watch from the Modal dashboard: each sweep spawns 13 or 24 A10G containers
-all at once, all finish within ~the slowest layer's time. With Modal's
-default concurrency (≥1000), we never hit the cap.
-
-Recommended order if running interactively (cheapest → most expensive so
-you can stop and assess after each):
-
-1. `MERT-Chords1217` (~$28, ~2 h)
-2. `MERT-NSynth` (~$33, ~2.5 h)
-3. `OMARRQ-GTZANBeatTracking` (~$33, ~1.5 h)
-4. `OMARRQ-Chords1217` (~$44, ~2 h)
-5. `OMARRQ-NSynth` (~$55, ~2.5 h)
+Resume-safe: re-running a finished sweep is free — `_layer_done`
+detects completion via the wandb-summary on the output volume and
+prints `skipped`.
 
 ---
 
-## Phase 3 — Retrieve results
+## Phase 4 — Tier-3 OMARRQ (deferred decision point, ~$120)
 
-WandB metrics flow online automatically (since `WANDB_API_KEY` is bound).
-For the offline artifacts (checkpoints, raw test outputs):
+After Tier 1+2 results are in, decide whether to spend on OMARRQ:
 
 ```bash
-# Pull just the wandb summaries (small)
-modal volume get marble-output \
-    output/probe.NSynth.OMARRQ-multifeature25hz-layers \
-    ./output/probe.NSynth.OMARRQ-multifeature25hz-layers \
-    --recursive
+modal run scripts/modal_run_all_sweeps.py --tier 3
+```
 
-# To download every result:
+Each OMARRQ sweep is 24 layers (vs 13 for MERT/CLaMP3), so cost
+scales accordingly.
+
+---
+
+## Phase 5 — Result retrieval
+
+WandB metrics flow online automatically (since `WANDB_API_KEY` is bound).
+For artifacts:
+
+```bash
+# All output dirs
 modal volume get marble-output output ./output --recursive
+
+# Or per-sweep
+modal volume get marble-output \
+    output/probe.NSynth.MERT-v1-95M-layers \
+    ./output/probe.NSynth.MERT-v1-95M-layers \
+    --recursive
 ```
 
 ---
 
 ## Resume behaviour
 
-Both `modal_sweep.py` and `modal_run_all_sweeps.py` re-running the same
-sweep is a no-op for completed layers — the `_layer_done` check (mirrored
-from `scripts/run_sweep_local.py:97`) looks at the WandB summary JSON on
-the `marble-output` volume.
+Re-running a completed sweep is a no-op for finished layers — the
+`_layer_done` check (mirrored from
+[scripts/run_sweep_local.py:97](../scripts/run_sweep_local.py)) inspects
+the WandB summary JSON on the `marble-output` volume. `output_vol.reload()`
+runs at the top of each container so cross-container visibility is
+consistent.
 
-The volume is reloaded inside each container before the check, so:
-
-- If the PC also ran some layers and synced outputs to the volume, Modal
-  will skip them.
-- Conversely, if Modal completed layers and you pull `output/` to the
-  PC, `run_sweep_local.py` on the PC will also skip them.
-
-To force re-run, delete the per-layer output dir before re-submitting.
+To force re-run: delete the per-layer output dir before re-submitting.
 
 ---
 
 ## Cost guardrails
 
 - **Set a hard cap** in Modal dashboard → Settings → Usage → spending
-  limit. Recommend $250 for the 5-sweep migration ($190 expected +
-  30% buffer).
-- **Per-layer timeout**: 4 h, set in `run_one_layer`. Any hung container
-  gets terminated; Modal stops billing once terminated.
-- **Retries**: `max_retries=2, backoff=2.0` on `run_one_layer` for
-  transient image-pull / OOM errors.
+  limit. Recommend $300 for the full Tier 1+2+3 plan.
+- **Per-layer timeout**: 4 h, set in `run_one_layer`. Hung containers
+  get terminated.
+- **Retries**: `max_retries=2, backoff=2.0` for transient image-pull /
+  OOM errors.
 
 ---
 
-## Switching to a cheaper SKU (optional)
+## Switching to an even cheaper SKU (optional)
 
-If $190 is more than you want to spend, edit `modal_marble.py`'s
-`run_one_layer` decorator: change `gpu="A10G"` → `gpu="T4"`. T4 is
-~40% cheaper but ~1.6× slower per layer. T4 doesn't support bf16, so
-you'd also need to inject `--trainer.precision=16-mixed` into the fit
-and test commands inside `run_one_layer`. Expected: ~$110 total,
-~14 h wall-clock instead of ~9 h.
+If you want to trade speed for cost, change `gpu="L4"` → `gpu="T4"` in
+[modal_marble.py:`run_one_layer`](../modal_marble.py). T4 (Turing) is
+$0.59/hr (~26% cheaper than L4) but ~1.6× slower per layer and **does
+not support bf16** — you'd need to inject
+`--trainer.precision=16-mixed` into the fit/test commands.
+
+Per-sweep cost roughly:
+- L4: $10–15 (13 layers) / $18–28 (24 layers) — recommended default
+- T4: $7–11 / $13–20 — cheaper but slower; needs fp16 patch
+- A10G: $14–22 / $25–40 — original default; bf16 native; redundant given L4
+- A100 40GB: $25–40 / $45–70 — overkill
 
 ---
 
 ## Risks & known gotchas
 
-1. **HF gated terms** — Chords1217 and HookTheory require accepting the
-   m-a-p org terms on HuggingFace. Do this in your HF account *before*
-   running OMARRQ × Chords1217 etc., or the dataset download silently
-   fails inside the container.
+1. **HF gated terms** — Chords1217, HookTheory, NSynth require accepting
+   the m-a-p org terms on HuggingFace before snapshot_download will work
+   (you've confirmed this is done).
 
-2. **Volume eventual consistency** — `output_vol.reload()` at the start of
-   `run_one_layer` handles cross-container visibility, but back-to-back
-   re-submissions within seconds of a prior completion may still race.
-   Wait 30 s between submissions if you see false skip misses.
+2. **HookTheory full audio download is long** — ~104 GB at Modal's HF
+   bandwidth (~200 MB/s) ≈ 9 min just for transfer, plus extraction.
+   Budget 30–60 min for `setup_hooktheory_full`.
 
-3. **PyTorch version skew** — Modal image pins `torch==2.6.0`;
+3. **Volume eventual consistency** — `output_vol.reload()` at the start
+   of `run_one_layer` handles cross-container visibility. Back-to-back
+   re-submissions within seconds of a prior completion may still race —
+   wait 30 s between submissions if you see false skip misses.
+
+4. **PyTorch version skew** — Modal image pins `torch==2.6.0`;
    `pyproject.toml` (PC) pins `torch==2.7.0` for Blackwell support.
    For frozen-encoder probes the numerical drift is below 1e-4 — fine
-   for layer-rank comparisons. If exact-match is required, bump the
-   Modal image to 2.7.0 + cu124 wheels.
+   for layer-rank comparisons.
 
-4. **`omar-rq` floating ref** — `modal_marble.py` installs
-   `git+https://github.com/MTG/omar-rq.git` without a commit pin.
-   Modal caches the image so a rebuild is rare, but if you bump the
-   image for any reason the omar-rq install could pick up an
-   incompatible upstream commit. Pin a sha when this becomes a
-   problem.
+5. **L4 quota** — Modal supports L4 broadly but in tight regions it
+   may queue. If you see "no capacity" errors, fall back to A10G.
 
 ---
 
@@ -225,8 +264,9 @@ and test commands inside `run_one_layer`. Expected: ~$110 total,
 
 | File | Role |
 |---|---|
-| `modal_marble.py` | Modal app definition + `run_one_layer` (parallel unit) + `run_parallel_sweep` (orchestrator) |
-| `scripts/modal_sweep.py` | CLI bridge — `modal run` wrapper around `run_parallel_sweep` |
-| `scripts/modal_run_all_sweeps.py` | Orchestrator for the 5 migrated sweeps |
-| `scripts/run_sweep_local.py` | PC equivalent — runs the other 17 sweeps |
-| `scripts/run_all_sweeps.py` | PC orchestrator for all 22 (use `--skip` for the Modal 5) |
+| [modal_marble.py](../modal_marble.py) | Modal app + `run_one_layer` (parallel unit) + `run_parallel_sweep` + data-setup functions |
+| [scripts/modal_sweep.py](../scripts/modal_sweep.py) | CLI bridge — `modal run` wrapper around `run_parallel_sweep` |
+| [scripts/modal_run_all_sweeps.py](../scripts/modal_run_all_sweeps.py) | Tier-prioritized orchestrator for the full migration |
+| [scripts/build_hooktheory_melody_jsonl.py](../scripts/build_hooktheory_melody_jsonl.py) | Builds `HookTheory.{train,val,test}.jsonl` from upstream raw data |
+| [scripts/verify_shs100k.py](../scripts/verify_shs100k.py) | SHS100K audit (`--rewrite` mode drops bad entries + repoints audio paths) |
+| [download.py](../download.py) | HF dataset download — `download_dataset(..., with_full_audio=True)` for HookTheoryMelody |

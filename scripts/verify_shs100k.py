@@ -210,6 +210,14 @@ def main():
                          "Updates the JSONL audio_path entries to point at the new files.")
     ap.add_argument("--show-first", type=int, default=20,
                     help="Print at most this many problem entries (default: 20)")
+    ap.add_argument("--rewrite", action="store_true",
+                    help="Write a cleaned JSONL with only ok+mismatch records "
+                         "(missing/empty/corrupt are dropped). Combine with "
+                         "--audio-dir to repoint audio_path to a different "
+                         "directory before verifying.")
+    ap.add_argument("--rewrite-out", type=Path, default=None,
+                    help="Output path for the rewritten JSONL (default: "
+                         "overwrite --jsonl in place).")
     args = ap.parse_args()
 
     # ── Load JSONL ────────────────────────────────────────────────────────────
@@ -237,6 +245,16 @@ def main():
     else:
         audio_dir = Path(records[0]["audio_path"]).parent
     log.info(f"Audio dir: {audio_dir}")
+
+    # Rewrite audio_path entries to point at the explicit --audio-dir before
+    # any check — supports repointing a JSONL produced on one machine to
+    # the equivalent files on another (e.g. local SSD path → Modal volume
+    # mount path). Preserves the extension on each original audio_path.
+    if args.rewrite and args.audio_dir:
+        for rec in records:
+            ext = Path(rec["audio_path"]).suffix or ".m4a"
+            rec["audio_path"] = str(audio_dir / f"{rec['youtube_id']}{ext}")
+        log.info(f"Rewrote {len(records):,} audio_path entries to {audio_dir}/<ytid>.<ext>")
 
     # ── Tool availability ────────────────────────────────────────────────────
     if args.ffprobe or args.convert_mp4:
@@ -392,7 +410,38 @@ def main():
         for p in orphans[:args.show_first]:
             print(f"  {p.name}")
 
+    # ── Optional: rewrite cleaned JSONL ──────────────────────────────────────
+    if args.rewrite:
+        # Refresh metadata on records that ffprobe checked successfully
+        keep_records: list[dict] = []
+        ffprobe_meta = {}
+        for res in by_status["ok"] + by_status["mismatch"]:
+            rec = res["rec"]
+            keep_records.append(rec)
+            # If --ffprobe was on, the verification call already populated
+            # the by_status entries; refresh metadata from ffprobe to align
+            # JSONL with reality.
+            if args.ffprobe:
+                meta = _ffprobe(Path(rec["audio_path"]))
+                if meta is not None:
+                    rec["sample_rate"] = meta["sample_rate"]
+                    rec["channels"]    = meta["channels"]
+                    rec["duration"]    = meta["duration"]
+                    rec["num_samples"] = int(round(meta["duration"] *
+                                                   meta["sample_rate"]))
+        out_path = args.rewrite_out or jsonl
+        with open(out_path, "w", encoding="utf-8") as f:
+            for rec in keep_records:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        log.info(
+            f"Rewrote {out_path}  ({len(keep_records):,} kept, "
+            f"{total - len(keep_records):,} dropped)"
+        )
+
     # ── Exit code: 0 if clean, 1 if anything failed ──────────────────────────
+    if args.rewrite:
+        # In rewrite mode, "success" is having at least one kept record.
+        sys.exit(0 if keep_records else 1)
     sys.exit(0 if (n_missing + n_empty + n_corrupt) == 0 else 1)
 
 

@@ -290,6 +290,101 @@ def _download_covers80():
 
 
 # ──────────────────────────────────────────────
+# SHS100K JSONL setup (run once before SHS100K sweeps)
+# ──────────────────────────────────────────────
+
+@app.function(
+    image=image,
+    volumes=VOL,
+    timeout=30 * 60,
+)
+def setup_shs100k_jsonl(use_torchaudio: bool = True):
+    """One-time setup: rewrite SHS100K.test.jsonl on the marble-data volume
+    to point at the Modal-mounted audio dir, dropping entries whose audio
+    file is missing or unreadable.
+
+    Prerequisite (one-time, from your laptop):
+        modal volume put marble-data \\
+            data/SHS100K/SHS100K.test.jsonl \\
+            SHS100K/SHS100K.test.jsonl
+
+    After this runs, the JSONL on the volume references
+    `data/SHS100K/audio/<ytid>.m4a` and only includes entries whose audio
+    actually exists on the volume.
+    """
+    _chdir()
+    data_vol.reload()
+
+    jsonl = f"{WORK_DIR}/data/SHS100K/SHS100K.test.jsonl"
+    audio_dir = f"{WORK_DIR}/data/SHS100K/audio"
+
+    if not os.path.exists(jsonl):
+        raise FileNotFoundError(
+            f"{jsonl} not found on marble-data volume.\n"
+            f"  Upload it first:\n"
+            f"    modal volume put marble-data "
+            f"data/SHS100K/SHS100K.test.jsonl SHS100K/SHS100K.test.jsonl"
+        )
+
+    cmd = [
+        "python", "scripts/verify_shs100k.py",
+        "--jsonl", jsonl,
+        "--audio-dir", audio_dir,
+        "--rewrite",
+    ]
+    if use_torchaudio:
+        cmd.append("--torchaudio")
+    _run(cmd)
+    data_vol.commit()
+    print(f"SHS100K JSONL rebuilt and committed to marble-data:/SHS100K/")
+
+
+# ──────────────────────────────────────────────
+# HookTheory full setup (for HookTheoryMelody)
+# ──────────────────────────────────────────────
+
+@app.function(
+    image=image,
+    volumes=VOL,
+    timeout=8 * 60 * 60,    # 8 h — 104 GB download + extract + JSONL build
+    secrets=[modal.Secret.from_name("huggingface")],
+)
+def setup_hooktheory_full():
+    """One-time setup for HookTheoryMelody:
+      1. Downloads m-a-p/HookTheory complete (clips + 104 GB full audio).
+      2. Extracts the audio tars into data/HookTheory/audio/<ytid>.mp3.
+      3. Builds data/HookTheory/HookTheory.{train,val,test}.jsonl from the
+         raw annotation tree, filtered to entries whose audio exists.
+
+    Idempotent: huggingface_hub.snapshot_download skips already-downloaded
+    files; the JSONL build always rewrites the three files.
+
+    Disk needed on marble-data: ~110 GB after extraction.
+    """
+    _chdir()
+    data_vol.reload()
+    sys.path.insert(0, WORK_DIR)
+    from download import download_dataset
+
+    download_dataset("HookTheory", f"{WORK_DIR}/data", with_full_audio=True)
+    data_vol.commit()   # flush the heavy bits before the JSONL build
+
+    # Build the Melody JSONL using the volume's audio dir for the filter.
+    audio_dir = f"{WORK_DIR}/data/HookTheory/audio"
+    out_dir = f"{WORK_DIR}/data/HookTheory"
+    _run([
+        "python", "scripts/build_hooktheory_melody_jsonl.py",
+        "--out-dir", out_dir,
+        "--audio-dir", audio_dir,
+        "--filter-by-audio",
+        # Land the HF cache on the data volume to survive container restarts
+        "--hf-cache-dir", f"{WORK_DIR}/data/.hf_cache",
+    ])
+    data_vol.commit()
+    print(f"HookTheoryMelody ready on marble-data:/HookTheory/")
+
+
+# ──────────────────────────────────────────────
 # Core probe runner
 # ──────────────────────────────────────────────
 
@@ -410,7 +505,7 @@ def run_sweep(
 
 @app.function(
     image=image,
-    gpu="A10G",
+    gpu="L4",          # L4 (Ada, 24 GB, bf16): best price/perf vs A10G — ~30% cheaper at ~1.05× speed
     volumes=VOL,
     timeout=4 * 3600,   # 4 h cap per layer
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0),
