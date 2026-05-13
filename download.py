@@ -20,51 +20,50 @@ __gated_datasets__ = [
     "HookTheory",
 ]
 
-def extract_HookTheory(dataset_dir: str):
+def extract_HookTheory(dataset_dir: str, include_full_audio: bool = False):
     """
-    Extract pre-segmented clip archives from the HookTheory dataset.
+    Extract clip archives (and optionally full-song audio) from the
+    HookTheory dataset.
 
     The HuggingFace repo contains:
-      zips/hooktheory_clips/part_XXXXXX.tar  (~4.1 GB, 23 parts)  ← extracted here
-      zips/audio/part_XXXXXX.tar             (~104 GB, 79 parts)  ← skipped (not needed)
+      zips/hooktheory_clips/part_XXXXXX.tar  (~4.1 GB, 23 parts)
+      zips/audio/part_XXXXXX.tar             (~104 GB, 79 parts)
 
-    After extraction, MP3 clips land in:
+    Clip extraction (always):
       <dataset_dir>/hooktheory_clips/<hooktheory_id>.mp3
+        — used by HookTheoryKey + HookTheoryStructure tasks.
 
-    The JSONL annotation files are already present at dataset_dir root
-    (snapshot_download placed them there directly):
-      HookTheoryKey.{train,val,test}.jsonl
-      HookTheoryStructure.{train,val,test}.jsonl
-
-    Uses Python's built-in tarfile module — no bash / system tar required,
-    so this works on Windows as well as macOS/Linux.
+    Full-audio extraction (only when include_full_audio=True):
+      <dataset_dir>/audio/<youtube_id>.mp3
+        — used by HookTheoryMelody (notes are aligned to song-relative
+        beats, so per-song full audio is required).
     """
     import tarfile
     import glob
 
-    clips_dir = os.path.join(dataset_dir, "hooktheory_clips")
-    os.makedirs(clips_dir, exist_ok=True)
+    def _extract(label: str, src_dir: str, dst_dir: str):
+        os.makedirs(dst_dir, exist_ok=True)
+        pattern = os.path.join(dataset_dir, "zips", src_dir, "*.tar")
+        tar_paths = sorted(glob.glob(pattern))
+        if not tar_paths:
+            print(f"  Warning: no {label} archives found at {pattern}")
+            return
+        print(f"  Extracting {len(tar_paths)} {label} archive(s) → {dst_dir}")
+        for tar_path in tar_paths:
+            name = os.path.basename(tar_path)
+            print(f"    {name} … ", end="", flush=True)
+            with tarfile.open(tar_path, "r") as tf:
+                tf.extractall(dst_dir)
+            print("done")
 
-    pattern = os.path.join(dataset_dir, "zips", "hooktheory_clips", "*.tar")
-    tar_paths = sorted(glob.glob(pattern))
-
-    if not tar_paths:
-        print(f"  Warning: no clip archives found at {pattern}")
-        print("  The download may be incomplete. Re-run: uv run python download.py HookTheory")
-        return
-
-    print(f"  Extracting {len(tar_paths)} clip archive(s) → {clips_dir}")
-    for tar_path in tar_paths:
-        name = os.path.basename(tar_path)
-        print(f"    {name} … ", end="", flush=True)
-        with tarfile.open(tar_path, "r") as tf:
-            tf.extractall(clips_dir)
-        print("done")
-
-    print("  Clips extracted successfully.")
+    _extract("clip", "hooktheory_clips", os.path.join(dataset_dir, "hooktheory_clips"))
+    if include_full_audio:
+        _extract("full-audio", "audio", os.path.join(dataset_dir, "audio"))
 
 
-def download_dataset(dataset_name: str, save_root: str, max_retries: int = 5):
+def download_dataset(dataset_name: str, save_root: str,
+                     max_retries: int = 5,
+                     with_full_audio: bool = False):
     """
     Download a single dataset from HuggingFace into save_root/<dataset_name>/.
 
@@ -73,18 +72,22 @@ def download_dataset(dataset_name: str, save_root: str, max_retries: int = 5):
     Re-running is always safe — already-downloaded files are skipped.
 
     HookTheory special handling:
-      - Skips zips/audio/* (104 GB full-song audio — not needed for probing).
-      - Downloads only zips/hooktheory_clips/* (~4.1 GB pre-segmented clips)
-        plus the ready-made JSONL annotation files (~7 MB).
-      - Extracts clips using Python tarfile (works on Windows).
+      - By default, skips zips/audio/* (104 GB full-song audio).
+      - Set with_full_audio=True to pull the full audio too — required for
+        HookTheoryMelody, optional for Key/Structure.
+      - Always extracts the pre-segmented clips (~4.1 GB).
     """
     repo_id = f"m-a-p/{dataset_name}"
     target_dir = os.path.join(save_root, dataset_name)
     os.makedirs(target_dir, exist_ok=True)
 
-    # HookTheory: skip the 104 GB full-song audio tars — only clips are needed.
-    ignore_patterns = ["zips/audio/*"] if dataset_name == "HookTheory" else None
-    extra = " (clips + JSONL only, skipping 104 GB full audio)" if ignore_patterns else ""
+    # HookTheory: skip the 104 GB full-song audio tars by default.
+    if dataset_name == "HookTheory" and not with_full_audio:
+        ignore_patterns = ["zips/audio/*"]
+        extra = " (clips + JSONL only, skipping 104 GB full audio)"
+    else:
+        ignore_patterns = None
+        extra = " (with full audio, ~108 GB total)" if dataset_name == "HookTheory" else ""
     print(f"Downloading '{dataset_name}'{extra} → '{target_dir}' …")
 
     for attempt in range(1, max_retries + 1):
@@ -110,7 +113,7 @@ def download_dataset(dataset_name: str, save_root: str, max_retries: int = 5):
     print(f"'{dataset_name}' downloaded to '{target_dir}'.")
 
     if dataset_name == "HookTheory":
-        extract_HookTheory(target_dir)
+        extract_HookTheory(target_dir, include_full_audio=with_full_audio)
 
 
 def main():
