@@ -257,6 +257,23 @@ SWEEPS: list[SweepDef] = [
         note="Chord recog.   | 25 classes | frame-level 25Hz | OMARRQ 24 layers",
     ),
 
+    # ── HookTheory melody pitch transcription (frame-level) ──────────────────
+    # 128 MIDI classes; -1 sentinel for silent frames; metrics: RPA + RCA.
+    SweepDef(
+        model="MERT-v1-95M",
+        task="HookTheoryMelody",
+        base_config="configs/probe.MERT-v1-95M-layers.HookTheoryMelody.yaml",
+        num_layers=13,
+        note="Melody pitch   | 128 MIDI  | frame-level 75Hz | MERT 13 layers",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="HookTheoryMelody",
+        base_config="configs/probe.OMARRQ-multifeature25hz.HookTheoryMelody.yaml",
+        num_layers=24,
+        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ 24 layers",
+    ),
+
     # ══════════════════════════════════════════════════════════════════════════
     # LONG — NSynth pitch classification (50K train cap, still multi-hour/layer)
     # ══════════════════════════════════════════════════════════════════════════
