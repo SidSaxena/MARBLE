@@ -207,7 +207,14 @@ class CLaMP3_Encoder(BaseEncoder):
         print(f"Loading CLaMP3 Checkpoint from Epoch {checkpoint['epoch']} with loss {checkpoint['min_eval_loss']}")
         self.model.load_state_dict(checkpoint['model'])
 
-        # 5. Set training mode
+        # 5. Patchiliser for symbolic input (MIDI → M3 patches).  Used by both
+        #    the symbolic forward path (CLaMP3_Symbolic_Encoder) and the
+        #    cross-modal embed_symbolic helper.  Stateless and cheap to
+        #    construct, so eager init is fine.
+        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+        self.patchilizer = M3Patchilizer()
+
+        # 6. Set training mode
         if train_mode == "freeze":
             for param in self.model.parameters():
                 param.requires_grad = False
@@ -507,10 +514,6 @@ class CLaMP3CrossModalMixin:
         device = patches.device
         self.model.to(device)
 
-        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
-        if not hasattr(self, "patchilizer"):
-            self.patchilizer = M3Patchilizer()
-
         embeddings = []
         for b in range(patches.size(0)):
             item = patches[b].to(device).long()
@@ -591,9 +594,21 @@ class CLaMP3CrossModalMixin:
         return F.normalize(out, dim=-1)
 
 
-# Attach the cross-modal helpers to CLaMP3_Encoder directly so they're
-# available on both the audio wrapper and its CLaMP3_Symbolic_Encoder
-# subclass without resorting to MRO surgery.
+# Attach the cross-modal helpers to CLaMP3_Encoder directly.
+#
+# Why attribute assignment instead of multiple inheritance:
+#   CLaMP3_Encoder already extends BaseEncoder, and changing its MRO to
+#   include CLaMP3CrossModalMixin would require touching the parent
+#   class declaration — invasive, and risky given BaseEncoder's own
+#   subclass conventions used elsewhere in marble/encoders/.
+#   Attaching the methods as class attributes here is equivalent
+#   functionally: Python's descriptor protocol binds `self` to the
+#   instance the same way it would for an inherited method.  Both
+#   CLaMP3_Encoder and its CLaMP3_Symbolic_Encoder subclass pick them up.
+#
+# Do NOT "clean up" by moving these methods inline into CLaMP3_Encoder's
+# class body — keeping them in the mixin keeps the cross-modal API
+# discoverable as a single coherent group.
 CLaMP3_Encoder.embed_audio    = CLaMP3CrossModalMixin.embed_audio
 CLaMP3_Encoder.embed_symbolic = CLaMP3CrossModalMixin.embed_symbolic
 CLaMP3_Encoder.embed_text     = CLaMP3CrossModalMixin.embed_text
@@ -621,14 +636,9 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
       chunked and length-weighted, mirroring the audio path's behaviour.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # CLaMP3_Encoder (audio path) doesn't instantiate the patchilizer;
-        # the symbolic path needs it for the pad_token_id sentinel.  Match
-        # M3Patchilizer's constants directly so we don't rely on the
-        # CLaMP3Model's instance.
-        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
-        self.patchilizer = M3Patchilizer()
+    # No __init__ override needed — CLaMP3_Encoder.__init__ now eagerly
+    # instantiates self.patchilizer.  This subclass only adds a new
+    # forward() that consumes pre-tokenised patches instead of audio.
 
     @torch.no_grad()
     def forward(self, patches: torch.Tensor) -> tuple:    # type: ignore[override]
@@ -645,12 +655,16 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
             non_pad_mask = (item != pad_id).any(dim=-1)   # (P,)
             real_len = int(non_pad_mask.sum().item())
             if real_len == 0:
-                # All padding → use a single all-pad segment so the model
-                # still runs and returns zero-ish embeddings.
-                real_len = 1
-            real = item[:real_len].to(device)              # (real_len, PATCH_SIZE)
-
-            layer_embeds = self._get_symbolic_layer_embeddings(real, device)
+                # All padding → return zeros for every layer.  Skips BERT
+                # entirely so downstream cosine similarities can't see
+                # phantom matches from an all-pad input that happens to
+                # produce a non-zero embedding in BERT.
+                H = self.config.M3_HIDDEN_SIZE
+                n_layers = self.config.PATCH_NUM_LAYERS + 1
+                layer_embeds = torch.zeros(n_layers, H, device=device)
+            else:
+                real = item[:real_len].to(device)            # (real_len, PATCH_SIZE)
+                layer_embeds = self._get_symbolic_layer_embeddings(real, device)
             batch_outputs.append(layer_embeds)             # (13, H)
 
         stacked = torch.stack(batch_outputs, dim=0)        # (B, 13, H)

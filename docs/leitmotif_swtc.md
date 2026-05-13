@@ -561,7 +561,12 @@ commercial OSTs + manual OST→film timing map.
 
 ### 7.2 Computational cost
 
-| Operation | Time on M-series Mac (CPU) | Time on Modal T4 |
+Mac column is measured (see §14.2 of `leitmotif_clamp3.md`).
+Modal T4 column is **projected** from the Mac numbers assuming ~4×
+speedup on a T4 — replace with measured values once you've run a sweep
+on Modal.
+
+| Operation | Time on M-series Mac (CPU, measured) | Time on Modal T4 (projected) |
 |---|---|---|
 | Embed one theme (symbolic) | ~0.2 s | ~0.05 s |
 | Embed one 5-sec audio window | ~0.3 s | ~0.05 s |
@@ -569,7 +574,7 @@ commercial OSTs + manual OST→film timing map.
 | Pairwise similarity 67 × N_windows | <1 s | <1 s |
 
 For Path A on local CPU, ~2 hours of inference per OST. Path B on
-Modal: ~20 min per OST.
+Modal: projected ~20 min per OST (re-benchmark after first real run).
 
 ### 7.3 Hybrid for sub-second timing
 
