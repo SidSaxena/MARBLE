@@ -129,6 +129,36 @@ def _gen_sweep_configs(base_config: str, num_layers: int,
     return sweep_dir
 
 
+def _has_test_metrics(summary_path: Path) -> bool:
+    """True if a WandB summary file contains at least one `test/...` key.
+    Mirrors scripts/run_sweep_local.py:80 — the only reliable completion
+    signal for both supervised and zero-shot sweeps."""
+    import json
+    try:
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return any(k.startswith("test/") for k in data.keys())
+
+
+def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
+    """Port of scripts/run_sweep_local.py:97 — checks output/.../wandb/run-*/
+    files/wandb-summary.json for `test/*` keys. Used for resume-skip both
+    locally and inside Modal containers (volume mounts the same path)."""
+    patterns = [
+        f"*{model_tag}*{task_tag}*layer{layer}",
+        f"*{task_tag}*{model_tag}*layer{layer}",
+    ]
+    for pat in patterns:
+        for d in Path("output").glob(pat):
+            if not d.is_dir():
+                continue
+            for summary in d.glob("wandb/run-*/files/wandb-summary.json"):
+                if _has_test_metrics(summary):
+                    return True
+    return False
+
+
 # ──────────────────────────────────────────────
 # Dataset downloads
 # ──────────────────────────────────────────────
@@ -268,7 +298,10 @@ def _download_covers80():
     gpu="A10G",
     volumes=VOL,
     timeout=4 * 3600,   # 4 h max per run
-    secrets=[modal.Secret.from_name("huggingface")],
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb-secret"),
+    ],
 )
 def run_probe(config: str, skip_if_done: bool = True):
     """
@@ -315,7 +348,10 @@ def run_probe(config: str, skip_if_done: bool = True):
     gpu="A10G",
     volumes=VOL,
     timeout=24 * 3600,   # up to 24 h for a full 12-layer sweep
-    secrets=[modal.Secret.from_name("huggingface")],
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb-secret"),
+    ],
 )
 def run_sweep(
     base_config: str,
@@ -365,6 +401,104 @@ def run_sweep(
         acc_line = next((l for l in out.splitlines() if "acc" in l.lower()), "")
         print(f"  layer {layer:2d}: {acc_line.strip()}")
 
+    return results
+
+
+# ──────────────────────────────────────────────
+# Layer sweep runner  (parallel — one container per layer)
+# ──────────────────────────────────────────────
+
+@app.function(
+    image=image,
+    gpu="A10G",
+    volumes=VOL,
+    timeout=4 * 3600,   # 4 h cap per layer
+    retries=modal.Retries(max_retries=2, backoff_coefficient=2.0),
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb-secret"),
+    ],
+)
+def run_one_layer(
+    base_config: str,
+    model_tag: str,
+    task_tag: str,
+    num_layers: int,
+    layer: int,
+    retest_only: bool = False,
+) -> dict:
+    """Run fit+test for a single layer of a sweep — designed to be invoked
+    via `.starmap()` N times in parallel by `run_parallel_sweep`.
+
+    Resume-safe: checks the wandb-summary marker on `marble-output` volume
+    and skips if `test/*` keys are already present.
+    """
+    _chdir()
+
+    if os.environ.get("WANDB_API_KEY"):
+        os.environ.pop("WANDB_MODE", None)
+
+    # Reload volume so we see completion markers committed by parallel siblings
+    # or by prior sequential PC runs syncing to the same volume.
+    output_vol.reload()
+
+    sweep_dir = _gen_sweep_configs(base_config, num_layers, model_tag, task_tag)
+    cfg = f"{sweep_dir}/sweep.{model_tag}.{task_tag}.layer{layer}.yaml"
+
+    if not retest_only and _layer_done(task_tag, model_tag, layer):
+        print(f"Layer {layer}: already done — skipping.")
+        return {"layer": layer, "status": "skipped"}
+
+    print(f"\n{'='*60}\n Layer {layer}/{num_layers-1}  [{model_tag} | {task_tag}]\n{'='*60}")
+
+    if not retest_only:
+        _run(["python", "cli.py", "fit", "-c", cfg])
+
+    res = subprocess.run(
+        ["python", "cli.py", "test", "-c", cfg],
+        capture_output=True, text=True, cwd=WORK_DIR,
+    )
+    print(res.stdout)
+    if res.returncode != 0:
+        print("STDERR:", res.stderr, file=sys.stderr)
+        output_vol.commit()
+        res.check_returncode()
+
+    output_vol.commit()
+    return {"layer": layer, "status": "completed", "stdout_tail": res.stdout[-2000:]}
+
+
+@app.function(
+    image=image,
+    volumes=VOL,
+    timeout=24 * 3600,
+)
+def run_parallel_sweep(
+    base_config: str,
+    num_layers: int,
+    model_tag: str,
+    task_tag: str,
+    layers: list[int] | None = None,
+    retest_only: bool = False,
+) -> list[dict]:
+    """Spawn N parallel `run_one_layer` containers via `.starmap()`.
+
+    Same wall-clock as a single layer (≈ 1-2 h for a probe sweep) instead of
+    the sequential N × that. Cost is identical — N GPUs × 1 hr = 1 GPU × N hr.
+    """
+    targets = layers if layers is not None else list(range(num_layers))
+    print(f"Spawning {len(targets)} parallel layer jobs for "
+          f"{model_tag} × {task_tag} ...")
+
+    args = [
+        (base_config, model_tag, task_tag, num_layers, lyr, retest_only)
+        for lyr in targets
+    ]
+    results = list(run_one_layer.starmap(args))
+
+    print("\n=== Parallel sweep complete ===")
+    for r in results:
+        print(f"  layer {r['layer']:2d}: {r['status']}")
     return results
 
 
