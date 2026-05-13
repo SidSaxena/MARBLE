@@ -127,10 +127,24 @@ def _summarise(results: list[dict]) -> dict:
     return {"counts": counts, "worst": drifts[:10]}
 
 
-def _rewrite_jsonl(jsonl: Path, results: list[dict]):
-    """Overwrite the JSONL with torchaudio-derived num_samples values."""
+def _rewrite_jsonl(jsonl: Path, results: list[dict], keep_drifted: bool):
+    """Overwrite the JSONL with torchaudio-derived num_samples values.
+
+    Entries are filtered out when they're unsalvageable:
+      - status == 'missing'        → file not on disk
+      - status == 'unreadable'     → torchaudio.info() failed
+      - status == 'large-drift'    → file content doesn't match JSONL
+                                     (kept only when --keep-drifted is set)
+
+    Entries with status 'ok' / 'minor-drift' / 'no-jsonl-ns' are kept and
+    their num_samples / sample_rate / channels / duration are refreshed
+    from torchaudio.info() so the index_map agrees with the decoder.
+    """
     by_path = {r["path"]: r for r in results}
     out_lines: list[str] = []
+    n_kept = n_dropped = 0
+    drop_counts: dict[str, int] = {}
+
     with open(jsonl, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -138,13 +152,29 @@ def _rewrite_jsonl(jsonl: Path, results: list[dict]):
                 continue
             rec = json.loads(line)
             audit = by_path.get(rec["audio_path"])
-            if audit and audit.get("found") is not None:
+            if audit is None:
+                # Shouldn't happen, but if it does, keep the entry unchanged
+                out_lines.append(json.dumps(rec, ensure_ascii=False))
+                n_kept += 1
+                continue
+
+            status = audit["status"]
+            unsalvageable = status in ("missing", "unreadable") or (
+                status == "large-drift" and not keep_drifted
+            )
+            if unsalvageable:
+                drop_counts[status] = drop_counts.get(status, 0) + 1
+                n_dropped += 1
+                continue
+
+            if audit.get("found") is not None:
                 rec["num_samples"] = audit["found"]
                 rec["sample_rate"] = audit["found_sr"]
                 rec["channels"]    = audit["found_channels"]
-                # Refresh duration too (some tools rely on it)
-                rec["duration"] = round(audit["found"] / audit["found_sr"], 3)
+                rec["duration"]    = round(audit["found"] / audit["found_sr"], 3)
             out_lines.append(json.dumps(rec, ensure_ascii=False))
+            n_kept += 1
+
     backup = jsonl.with_suffix(jsonl.suffix + ".bak")
     if not backup.exists():
         jsonl.rename(backup)
@@ -152,7 +182,10 @@ def _rewrite_jsonl(jsonl: Path, results: list[dict]):
     with open(jsonl, "w", encoding="utf-8") as f:
         for line in out_lines:
             f.write(line + "\n")
-    log.info(f"    rewrote {jsonl.name} with torchaudio-derived num_samples")
+    msg = f"    rewrote {jsonl.name}: kept {n_kept:,}, dropped {n_dropped:,}"
+    if drop_counts:
+        msg += "  (" + ", ".join(f"{k}={v}" for k, v in drop_counts.items()) + ")"
+    log.info(msg)
 
 
 def main():
@@ -171,7 +204,16 @@ def main():
     ap.add_argument("--workers",  type=int, default=8)
     ap.add_argument("--rewrite",  action="store_true",
                     help="Overwrite JSONLs with torchaudio frame counts "
-                         "(creates a .bak first).")
+                         "(creates a .bak first).  Drops 'missing', "
+                         "'unreadable', and 'large-drift' entries — the "
+                         "audio either isn't on disk or doesn't match "
+                         "the JSONL's stated content.")
+    ap.add_argument("--keep-drifted", action="store_true",
+                    help="With --rewrite, keep 'large-drift' entries "
+                         "instead of dropping them.  Their content "
+                         "doesn't match the JSONL but they may still be "
+                         "usable if the label still applies to the "
+                         "actual audio.")
     args = ap.parse_args()
 
     if args.jsonl_dir:
@@ -199,7 +241,7 @@ def main():
         print()
 
         if args.rewrite:
-            _rewrite_jsonl(jp, results)
+            _rewrite_jsonl(jp, results, keep_drifted=args.keep_drifted)
             print()
 
 
