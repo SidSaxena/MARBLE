@@ -50,9 +50,14 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+# Serializes prefixed-line writes from multiple concurrent _run_one_layer
+# threads so one layer's output doesn't tear another's.
+_CONSOLE_LOCK = threading.Lock()
 
 # Use the same Python interpreter that is running this script so that the
 # correct venv is used on all platforms (important on Windows where "python"
@@ -137,6 +142,56 @@ def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
 
 
 # ──────────────────────────────────────────────
+# Live-streaming subprocess helper
+# ──────────────────────────────────────────────
+
+def _stream_subprocess(
+    cmd: list[str],
+    layer_idx: int,
+    log_file,
+    *,
+    quiet: bool = False,
+) -> tuple[int, str]:
+    """Run cmd, tee stdout/stderr to `log_file` and (unless quiet) prefix
+    each line with `[L{N}]` and write to the global console under a lock.
+
+    Returns (returncode, full_captured_text). The caller usually only
+    needs the captured text for metric extraction (test phase).
+    """
+    captured: list[str] = []
+    prefix = f"[L{layer_idx}] "
+    log_file.write(f"$ {' '.join(cmd)}\n")
+    log_file.flush()
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,   # merge into one stream
+        text=True,
+        bufsize=1,                  # line-buffered
+    )
+    try:
+        for line in proc.stdout:
+            captured.append(line)
+            log_file.write(line)
+            log_file.flush()
+            if not quiet:
+                with _CONSOLE_LOCK:
+                    sys.stdout.write(f"{prefix}{line}")
+                    sys.stdout.flush()
+    finally:
+        rc = proc.wait()
+    return rc, "".join(captured)
+
+
+def _layer_log_path(model_tag: str, task_tag: str, layer: int) -> Path:
+    """Predictable, flat per-layer log path so users can `tail -f` easily."""
+    d = Path("output") / "logs" / f"{model_tag}.{task_tag}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"layer-{layer}.log"
+
+
+# ──────────────────────────────────────────────
 # Per-layer worker
 # ──────────────────────────────────────────────
 
@@ -152,11 +207,12 @@ def _run_one_layer(
 
     stream_fit=True  → fit output streams to console as it runs (sequential
                        mode preserves the original behavior bit-for-bit).
-    stream_fit=False → fit output is captured and returned in result["log"]
-                       (parallel mode — caller prints on completion to avoid
-                       interleaved tqdm progress bars from N concurrent fits).
-
-    Test output is always captured (matches the original behavior).
+                       Test is captured-then-printed by the caller.
+    stream_fit=False → both fit and test stream LIVE to the console with
+                       a `[L{N}]` prefix (under a global lock) AND are
+                       tee'd to a per-layer log file at
+                       `output/logs/{model}.{task}/layer-{N}.log`. The
+                       caller doesn't reprint on completion.
     """
     cfg = f"{sweep_dir}/sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
     t0 = time.time()
@@ -181,61 +237,75 @@ def _run_one_layer(
         )
 
     log_parts: list[str] = []
+    log_file = None
+    if not stream_fit:
+        log_file = open(
+            _layer_log_path(args.model_tag, args.task_tag, layer),
+            "w", encoding="utf-8",
+        )
 
-    # ── Fit ──────────────────────────────────────────────────────────────────
-    if already_done:
-        msg = "  ✓ Already complete — skipping fit, re-running test (--retest)."
-        if stream_fit:
-            print(msg)
+    try:
+        # ── Fit ──────────────────────────────────────────────────────────────
+        if already_done:
+            msg = "  ✓ Already complete — skipping fit, re-running test (--retest)."
+            if stream_fit:
+                print(msg)
+            else:
+                log_file.write(msg + "\n")
+                log_file.flush()
+                with _CONSOLE_LOCK:
+                    sys.stdout.write(f"[L{layer}] {msg}\n")
+                    sys.stdout.flush()
         else:
-            log_parts.append(msg)
-    else:
-        fit_cmd = [
-            PYTHON, "cli.py", "fit", "-c", cfg,
-            f"--trainer.logger.init_args.name=layer-{layer}-fit",
-            "--trainer.logger.init_args.job_type=fit",
+            fit_cmd = [
+                PYTHON, "cli.py", "fit", "-c", cfg,
+                f"--trainer.logger.init_args.name=layer-{layer}-fit",
+                "--trainer.logger.init_args.job_type=fit",
+            ] + common_overrides
+            if stream_fit:
+                print(f"$ {' '.join(fit_cmd)}", flush=True)
+                subprocess.run(fit_cmd, check=True)
+            else:
+                rc, _ = _stream_subprocess(fit_cmd, layer, log_file)
+                if rc != 0:
+                    raise subprocess.CalledProcessError(rc, fit_cmd)
+
+        # ── Test ─────────────────────────────────────────────────────────────
+        test_cmd = [
+            PYTHON, "cli.py", "test", "-c", cfg,
+            f"--trainer.logger.init_args.name=layer-{layer}-test",
+            "--trainer.logger.init_args.job_type=test",
         ] + common_overrides
+
         if stream_fit:
-            print(f"$ {' '.join(fit_cmd)}", flush=True)
-            subprocess.run(fit_cmd, check=True)
-        else:
-            r = subprocess.run(fit_cmd, capture_output=True, text=True)
-            log_parts.append(f"$ {' '.join(fit_cmd)}")
+            # Sequential mode — original behavior: capture, print, parse.
+            r = subprocess.run(test_cmd, capture_output=True, text=True)
             log_parts.append(r.stdout)
             if r.returncode != 0:
                 log_parts.append(f"STDERR:\n{r.stderr}")
-                raise subprocess.CalledProcessError(
-                    r.returncode, fit_cmd, output=r.stdout, stderr=r.stderr
-                )
+            test_stdout = r.stdout
+            test_returncode = r.returncode
+            test_stderr = r.stderr if r.returncode != 0 else ""
+        else:
+            # Parallel mode — live stream, tee to log file.
+            test_returncode, test_stdout = _stream_subprocess(test_cmd, layer, log_file)
+            test_stderr = ""   # merged into stdout via stderr=STDOUT
 
-    # ── Test ─────────────────────────────────────────────────────────────────
-    test_cmd = [
-        PYTHON, "cli.py", "test", "-c", cfg,
-        f"--trainer.logger.init_args.name=layer-{layer}-test",
-        "--trainer.logger.init_args.job_type=test",
-    ] + common_overrides
+        metrics = _extract_test_metrics(test_stdout)
+        elapsed = time.time() - t0
 
-    if not stream_fit:
-        log_parts.append(f"$ {' '.join(test_cmd)}")
-    r = subprocess.run(test_cmd, capture_output=True, text=True)
-    log_parts.append(r.stdout)
-    if r.returncode != 0:
-        # Match original behavior: log stderr but don't raise — test errors
-        # are recorded and the sweep continues.
-        log_parts.append(f"STDERR:\n{r.stderr}")
-
-    metrics = _extract_test_metrics(r.stdout)
-    elapsed = time.time() - t0
-
-    return {
-        "layer": layer,
-        "skipped": False,
-        "elapsed": elapsed,
-        "metrics": metrics,
-        "log": "\n".join(log_parts),
-        "test_returncode": r.returncode,
-        "test_stderr": r.stderr if r.returncode != 0 else "",
-    }
+        return {
+            "layer": layer,
+            "skipped": False,
+            "elapsed": elapsed,
+            "metrics": metrics,
+            "log": "\n".join(log_parts),   # only populated in stream_fit=True
+            "test_returncode": test_returncode,
+            "test_stderr": test_stderr,
+        }
+    finally:
+        if log_file is not None:
+            log_file.close()
 
 
 # ──────────────────────────────────────────────
