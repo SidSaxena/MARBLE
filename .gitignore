@@ -375,8 +375,8 @@ $RECYCLE.BIN/
 ########
 ## Starting custom gitignore rules.
 ########
-# Don't track our data folder.
-data
+# Don't track our top-level data folder (datasets, not docs/data/).
+/data
 !benchmark/models/jukebox/data
 
 playground.ipynb
