@@ -148,6 +148,15 @@ class _HookTheoryStructureAudioBase(Dataset):
             num_frames=orig_clip
         )  # (orig_channels, orig_clip)
 
+        # Defensive: if the JSONL's num_samples is stale (file got
+        # re-encoded / truncated since metadata was probed) the load may
+        # return a (orig_channels, 0) tensor.  Downstream resample then
+        # blows up on the empty dim with "cannot reshape tensor of 0
+        # elements into shape [-1, 0]".  Fall back to silent audio so the
+        # batch still flows through.
+        if waveform.size(1) == 0:
+            waveform = torch.zeros(orig_channels, orig_clip, dtype=waveform.dtype)
+
         # Channel alignment / downmixing
         if orig_channels >= self.channels:
             if self.channels == 1:
