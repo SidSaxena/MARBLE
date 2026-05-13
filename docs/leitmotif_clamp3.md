@@ -1145,9 +1145,18 @@ truth about what's actually shipped in the repository.
 | `CLaMP3_Encoder.embed_symbolic(patches)` | `marble/encoders/CLaMP3/model.py` | ✓ Returns L2-normalised `(B, 768)` |
 | `CLaMP3_Encoder.embed_text(strs)` | `marble/encoders/CLaMP3/model.py` | ✓ Returns L2-normalised `(B, 768)` |
 
-All three are inherited by `CLaMP3_Symbolic_Encoder`.  Cosine similarity
-across modalities returns sane values in `[-1, +1]` — a confirmed
-cross-modal verification was run with audio, MIDI, and text inputs.
+All three are inherited by `CLaMP3_Symbolic_Encoder`.
+
+**What's verified:** all three methods return `(B, 768)` tensors that are
+L2-normalised (norm = 1.0 within float tolerance) and produce cosine
+similarities in `[-1, +1]` on random / synthetic inputs.
+
+**What's NOT yet verified end-to-end:** *semantic* alignment —
+whether same-content pairs (a MIDI and its rendered audio) actually
+score higher than unrelated pairs.  A pass/fail test for this exists at
+`scripts/test_clamp3_crossmodal_semantic.py` and runs against any
+rendered VGMIDI-TVar dataset (see §14.4.1).  Run it on real data
+before drawing conclusions from cross-modal similarity scores.
 
 ### 14.2 Symbolic CLaMP3 encoder (§13)
 
@@ -1209,6 +1218,37 @@ scripts/
 All four sweeps are registered in `scripts/run_all_sweeps.py`.  Each
 verified to parse via `cli.py --print_config` and appear in
 `run_all_sweeps.py --dry-run --tasks VGMIDITVar`.
+
+**Dataset build (NOT done on this Mac due to disk).**  The renderer
+itself is verified: it ran end-to-end on a 6-MIDI smoke subset
+(extracted from the VGMIDI-TVar zip at
+`/Users/sid/Developer/UPF/SMC/Datasets/Leitmotifs/VGMIDI-TVar.zip`)
+using FluidR3_GM.sf2 at `~/.local/share/sf2/FluidR3_GM.sf2` — 6/6
+rendered, valid 44.1 kHz stereo WAVs, JSONL parsed cleanly,
+`VGMIDITVarAudioAll` loaded and returned correctly-shaped waveforms.
+The full 12,870-MIDI render is deferred until run on a machine with
+adequate disk (~15–20 GB free for raw WAV).  Standalone runbook:
+[`docs/vgmiditvar_setup.md`](./vgmiditvar_setup.md).
+
+### 14.4.1 Cross-modal semantic test
+
+**Status: script committed at `scripts/test_clamp3_crossmodal_semantic.py`;
+result pending the full dataset render.**
+
+Validates whether `embed_audio` / `embed_symbolic` produce embeddings
+that actually cluster same-content pairs above different-content pairs.
+Procedure: pick K MIDI/audio pairs from the rendered VGMIDI-TVar set,
+embed each via both branches, build a K×K cosine similarity matrix,
+pass if ≥4/5 audio rows have their own MIDI ranked #1.
+
+Run after the dataset is built:
+
+```bash
+python scripts/test_clamp3_crossmodal_semantic.py \
+    --jsonl data/VGMIDITVar/VGMIDITVar.jsonl \
+    --midi-dir data/VGMIDITVar/midi \
+    --num-pairs 5
+```
 
 ### 14.5 SuperMario Structure (§12.2)
 
