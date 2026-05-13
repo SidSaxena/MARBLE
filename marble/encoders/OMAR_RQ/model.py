@@ -97,6 +97,24 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
 
         self.model = get_model(model_id=hf_id, device="cpu")
 
+        # Read actual metadata from the loaded module instead of trusting
+        # the class-level defaults. Lets a single class wrap ANY OMAR-RQ
+        # variant (multifeature, multifeature-25hz, multifeature-25hz-fsq, ...)
+        # which differ in sample rate, token rate, and possibly layer count.
+        self.sampling_rate = int(self.model.sr)
+        self.token_rate    = float(self.model.eps)
+        self.num_features  = int(self.model.net.embed_dim)
+        self.n_transformer_layers = len(self.model.net.layers)
+
+        # Sanity-warn when the loaded variant differs from the class defaults
+        # so a misconfigured probe head (in_dim mismatch) is loud upfront.
+        if self.num_features != self.NUM_FEATURES:
+            print(f"  ! OMAR-RQ variant feature dim = {self.num_features} "
+                  f"(class default {self.NUM_FEATURES}); update probe in_dim")
+        if abs(self.token_rate - self.TOKEN_RATE) > 0.1:
+            print(f"  ! OMAR-RQ variant token rate = {self.token_rate:.2f} Hz "
+                  f"(class default {self.TOKEN_RATE} Hz); update fps/label_freq")
+
         if train_mode == "freeze":
             for param in self.model.parameters():
                 param.requires_grad = False
@@ -138,22 +156,19 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
             x = x.squeeze(1)
 
         # Guard against >30 s inputs (upstream silently misbehaves).
-        # T = x.shape[-1] samples at 24 kHz.
-        max_samples = int(self.SAMPLING_RATE * self.MAX_INPUT_SECONDS)
+        max_samples = int(self.sampling_rate * self.MAX_INPUT_SECONDS)
         if x.shape[-1] > max_samples:
             raise ValueError(
                 f"OMAR-RQ accepts up to {self.MAX_INPUT_SECONDS:.0f} s; "
-                f"got {x.shape[-1] / self.SAMPLING_RATE:.1f} s "
+                f"got {x.shape[-1] / self.sampling_rate:.1f} s "
                 f"({x.shape[-1]} samples)."
             )
 
-        # extract_embeddings returns a tensor of shape (L, B, T_tokens, C)
-        # where L = N_TRANSFORMER_LAYERS = 24, C = 1024.
-        # The upstream API takes a `set` (it coerces lists, but spec is a set).
-        # Layers are returned in INSERTION ORDER (conformer.py:447) so output
-        # index 0 == first conformer block, index 23 == last.
-        layer_indices = set(range(self.N_TRANSFORMER_LAYERS))
+        # extract_embeddings returns (L, B, T_tokens, C). The upstream API
+        # takes a `set` (it coerces lists, but spec is a set). Layers are
+        # returned in INSERTION ORDER (conformer.py:447) so output index 0
+        # is the first conformer block, n_layers-1 is the last.
+        layer_indices = set(range(self.n_transformer_layers))
         embeddings = self.model.extract_embeddings(x, layers=layer_indices)
-        # embeddings: (L=24, B, T_tokens, C=1024)
 
-        return tuple(embeddings[i] for i in range(self.N_TRANSFORMER_LAYERS))
+        return tuple(embeddings[i] for i in range(self.n_transformer_layers))

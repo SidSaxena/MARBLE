@@ -1,0 +1,98 @@
+seed_everything: 1234
+ckpt_path: null
+
+# ── OMAR-RQ × Covers80 — VARIANT-SWAP experiment ─────────────────────────────
+# Tests `mtg-upf/omar-rq-multifeature` (the non-fsq, non-25hz variant) in
+# place of the default `multifeature-25hz-fsq`. Per the upstream README:
+#   - multifeature       : audio in, 18.75 Hz tokens, beat F1 = 0.833
+#   - multifeature-25hz-fsq: audio in, 25 Hz tokens,    beat F1 = 0.855
+# Both share the same Conformer backbone (24 layers, embed_dim=1024) so
+# the probe head doesn't change. Zero-shot retrieval — no training.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks: []
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "OMARRQ-multifeature-nonfsq / Covers80"
+      tags: ["OMARRQ-multifeature", "Covers80", "variant-swap", "probe"]
+      job_type: "probe"
+      name: "nonfsq-test"
+      save_dir: "./output/probe.Covers80.OMARRQ-multifeature-nonfsq/"
+
+
+model:
+  class_path: marble.tasks.Covers80.probe.CoverRetrievalTask
+  init_args:
+    sample_rate: 24000
+
+    encoder:
+      class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature"
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: ["0..23"]
+          mode: mean
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+data:
+  class_path: marble.tasks.Covers80.datamodule.Covers80DataModule
+  init_args:
+    batch_size: 8
+    num_workers: 4
+
+    audio_transforms:
+      train:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      val:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      test:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+
+    train:
+      class_path: marble.tasks.Covers80.datamodule.Covers80AudioDummy
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 30.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/Covers80/Covers80.test.jsonl
+        backend: null
+    val:
+      class_path: marble.tasks.Covers80.datamodule.Covers80AudioDummy
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 30.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/Covers80/Covers80.test.jsonl
+        backend: null
+    test:
+      class_path: marble.tasks.Covers80.datamodule.Covers80AudioAll
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 30.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/Covers80/Covers80.test.jsonl
+        backend: null
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
