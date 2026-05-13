@@ -296,12 +296,17 @@ def _download_covers80():
 @app.function(
     image=image,
     volumes=VOL,
-    timeout=30 * 60,
+    timeout=2 * 60 * 60,    # 2 h: fast at default settings (~30 s), generous if
+                            # use_torchaudio=True is opted in (~2 h for 7k files).
 )
-def setup_shs100k_jsonl(use_torchaudio: bool = True):
+def setup_shs100k_jsonl(use_torchaudio: bool = False):
     """One-time setup: rewrite SHS100K.test.jsonl on the marble-data volume
     to point at the Modal-mounted audio dir, dropping entries whose audio
-    file is missing or unreadable.
+    file is missing.
+
+    Default check: existence + size (sub-minute on 7k files).
+    Opt-in: use_torchaudio=True also verifies each file decodes (~2 h,
+    only worth it if you suspect upload corruption).
 
     Prerequisite (one-time, from your laptop):
         modal volume put marble-data \\
@@ -310,7 +315,7 @@ def setup_shs100k_jsonl(use_torchaudio: bool = True):
 
     After this runs, the JSONL on the volume references
     `data/SHS100K/audio/<ytid>.m4a` and only includes entries whose audio
-    actually exists on the volume.
+    file exists on the volume.
     """
     _chdir()
     data_vol.reload()
