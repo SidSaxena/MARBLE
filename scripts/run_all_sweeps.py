@@ -147,6 +147,31 @@ SWEEPS: list[SweepDef] = [
         note="Cover retrieval | MAP | zero-shot | 5K tracks | OMARRQ 24 layers",
     ),
 
+    # ── VGMIDI-TVar theme/variation retrieval (zero-shot, MIDI-rendered audio) ─
+    # Small dataset — fast.  Tests whether the encoders represent intra-piece
+    # variation invariance, which is the leitmotif relationship in miniature.
+    SweepDef(
+        model="CLaMP3",
+        task="VGMIDITVar",
+        base_config="configs/probe.CLaMP3-layers.VGMIDITVar.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | MIDI-rendered | CLaMP3 13 layers",
+    ),
+    SweepDef(
+        model="MERT-v1-95M",
+        task="VGMIDITVar",
+        base_config="configs/probe.MERT-v1-95M-layers.VGMIDITVar.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | MIDI-rendered | MERT 13 layers",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature25hz",
+        task="VGMIDITVar",
+        base_config="configs/probe.OMARRQ-multifeature25hz.VGMIDITVar.yaml",
+        num_layers=24,
+        note="Theme→variation | MAP | zero-shot | MIDI-rendered | OMARRQ 24 layers",
+    ),
+
     # ══════════════════════════════════════════════════════════════════════════
     # FAST supervised — small datasets, clip-level (single prediction per clip)
     # ══════════════════════════════════════════════════════════════════════════
