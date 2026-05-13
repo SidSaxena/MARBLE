@@ -214,15 +214,48 @@ class MelSpectrogram(BaseAudioTransform):
 
 class LayerSelector(BaseEmbTransform):
     """
-    Selects a subset of hidden‐state layers.
-    支持整型列表，也支持形如 "start..end" 的字符串范围。
+    Selects a subset of hidden-state layers and optionally aggregates them.
+
+    Accepts an integer list ``[0, 1, 5]`` OR string ranges ``["0..23"]``.
+
+    Modes
+    -----
+    ``mode="select"`` (default, BACKWARD-COMPATIBLE):
+        Returns a 4D tensor ``(B, len(layers), T, C)`` — same as before.
+        With ``layers=[N]`` this is the standard per-layer sweep.
+
+    ``mode="mean"``:
+        Returns ``(B, 1, T, C)`` — the element-wise mean of the selected
+        layers. Matches the upstream OMAR-RQ probing convention
+        (``omar_rq/probe/data/nsynth_pitch.py:133`` uses ``mean(dim=0)``
+        over the layer axis).
+
+    ``mode="sum"``:
+        Returns ``(B, 1, T, C)`` — element-wise sum.
+
+    ``mode="concat"``:
+        Returns ``(B, 1, T, C * len(layers))`` — concatenated along the
+        feature dim. The probe head's ``in_dim`` must match.
     """
     RANGE_RE = re.compile(r"^(\d+)\.\.(\d+)$")
+    _VALID_MODES = ("select", "mean", "sum", "concat")
 
-    def __init__(self, layers: Sequence[Union[int, str]]):
+    def __init__(
+        self,
+        layers: Sequence[Union[int, str]],
+        mode: str = "select",
+    ):
         super().__init__()
         self.layers = self._parse_layers(layers)
-        print(f"LayerSelector initialized with layers: {self.layers}")
+        if mode not in self._VALID_MODES:
+            raise ValueError(
+                f"Unknown mode {mode!r}; valid: {self._VALID_MODES}"
+            )
+        self.mode = mode
+        print(
+            f"LayerSelector initialized with layers: {self.layers}  "
+            f"(mode={self.mode})"
+        )
 
     def _parse_layers(self, layers):
         parsed = []
@@ -235,7 +268,6 @@ class LayerSelector(BaseEmbTransform):
                         raise ValueError(f"Range end ({end}) < start ({start})")
                     parsed.extend(range(start, end+1))
                 else:
-                    # 如果不是范围，就尝试转成单个 int
                     parsed.append(int(x))
             else:
                 parsed.append(int(x))
@@ -243,10 +275,21 @@ class LayerSelector(BaseEmbTransform):
 
     def forward(self, hidden_states: Sequence[torch.Tensor], **kwargs) -> torch.Tensor:
         selected = [hidden_states[i] for i in self.layers]
-        stacked = torch.stack(selected, dim=1)
+        stacked = torch.stack(selected, dim=1)   # (B, L, T, C)
         assert stacked.ndim == 4, \
             f"Expected 4D tensor after stacking, got {stacked.ndim}D"
-        return stacked
+
+        if self.mode == "select":
+            return stacked
+        if self.mode == "mean":
+            return stacked.mean(dim=1, keepdim=True)        # (B, 1, T, C)
+        if self.mode == "sum":
+            return stacked.sum(dim=1, keepdim=True)         # (B, 1, T, C)
+        if self.mode == "concat":
+            # (B, L, T, C) → (B, 1, T, L*C)
+            b, l, t, c = stacked.shape
+            return stacked.permute(0, 2, 1, 3).reshape(b, 1, t, l * c)
+        raise ValueError(f"Unknown mode {self.mode!r}")
 
 
 class LayerWeightedSum(BaseEmbTransform):
