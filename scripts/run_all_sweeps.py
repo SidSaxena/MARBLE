@@ -396,6 +396,14 @@ def main():
                         help="Re-run layers even if checkpoints exist")
     parser.add_argument("--accelerator", default=None,
                         help="Override trainer accelerator (gpu/mps/cpu)")
+    parser.add_argument("--precision", default=None,
+                        help="Override trainer.precision (e.g. 16-mixed, bf16-mixed, 32-true). "
+                             "Auto-applied as 16-mixed when --accelerator=mps.")
+    parser.add_argument("--concurrency", type=int, default=1,
+                        help="Run N layers per sweep in parallel (default: 1). "
+                             "For a 16 GB CUDA GPU use --concurrency 2.")
+    parser.add_argument("--num-workers-per-proc", type=int, default=None,
+                        help="Dataloader workers per subprocess when --concurrency>1.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print planned sweeps without running anything")
     args = parser.parse_args()
@@ -465,6 +473,12 @@ def main():
             cmd.append("--no-skip")
         if args.accelerator:
             cmd += ["--accelerator", args.accelerator]
+        if args.precision:
+            cmd += ["--precision", args.precision]
+        if args.concurrency > 1:
+            cmd += ["--concurrency", str(args.concurrency)]
+        if args.num_workers_per_proc is not None:
+            cmd += ["--num-workers-per-proc", str(args.num_workers_per_proc)]
 
         print(f"$ {' '.join(cmd)}\n", flush=True)
 
