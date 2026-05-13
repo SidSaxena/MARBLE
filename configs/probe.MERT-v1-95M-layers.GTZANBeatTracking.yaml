@@ -48,7 +48,9 @@ model:
   class_path: marble.tasks.GTZANBeatTracking.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
+    fps: 75   # MERT token rate — required by ProbeAudioTask
     use_ema: false
+    loss_weights: [1.0, 1.0, 0.0]  # beat, downbeat, tempo (tempo disabled — interferes with beat tracking)
 
     encoder:
       class_path: marble.encoders.MERT.model.MERT_v1_95M_Encoder
