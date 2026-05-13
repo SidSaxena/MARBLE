@@ -70,8 +70,13 @@ def _probe(path: Path) -> Optional[tuple[int, int, int]]:
 
 def _audit_one(rec: dict) -> dict:
     """Return a diff record comparing JSONL num_samples vs torchaudio.info."""
-    path = Path(rec["audio_path"])
-    out = {"path": str(path), "jsonl_ns": rec.get("num_samples"), "found": None}
+    # IMPORTANT: store the original string from the JSONL as the audit key,
+    # NOT str(Path(...)).  On Windows the Path round-trip flips '/' to '\\'
+    # which breaks the dict lookup in _rewrite_jsonl that uses the raw
+    # JSONL value as the key.
+    raw_path = rec["audio_path"]
+    path = Path(raw_path)
+    out = {"path": raw_path, "jsonl_ns": rec.get("num_samples"), "found": None}
     if not path.exists():
         out["status"] = "missing"
         return out
