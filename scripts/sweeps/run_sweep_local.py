@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/run_sweep_local.py
+scripts/sweeps/run_sweep_local.py
 ──────────────────────────
 Local (non-Modal) layer sweep runner. Drop-in equivalent of the Modal
 `run_sweep` function — generates per-layer configs, runs fit+test for each
@@ -12,26 +12,26 @@ default (disable with --no-skip).
 Usage
 ─────
 # Full 24-layer OMARRQ × GiantSteps sweep
-python scripts/run_sweep_local.py \\
+python scripts/sweeps/run_sweep_local.py \\
     --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
     --num-layers  24 \\
     --model-tag   OMARRQ-multifeature25hz \\
     --task-tag    GS
 
 # Resume an interrupted sweep (skips completed layers automatically)
-python scripts/run_sweep_local.py \\
+python scripts/sweeps/run_sweep_local.py \\
     --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
     --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS
 
 # Run only specific layers (e.g. for debugging layer 0 and 12)
-python scripts/run_sweep_local.py \\
+python scripts/sweeps/run_sweep_local.py \\
     --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
     --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS \\
     --layers 0 12
 
 # Override accelerator (e.g. for Apple Silicon; auto-applies precision=16-mixed
 # since MPS doesn't support bf16-mixed)
-python scripts/run_sweep_local.py \\
+python scripts/sweeps/run_sweep_local.py \\
     --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
     --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS \\
     --accelerator mps
@@ -39,7 +39,7 @@ python scripts/run_sweep_local.py \\
 # Parallel: run 2 layers concurrently as separate subprocesses (best on 16 GB
 # GPUs where each layer needs ~5–6 GB; auto-halves per-process dataloader
 # workers to keep total CPU pressure bounded).
-python scripts/run_sweep_local.py \\
+python scripts/sweeps/run_sweep_local.py \\
     --base-config configs/probe.CLaMP3-layers.HookTheoryKey.yaml \\
     --num-layers  13 --model-tag CLaMP3 --task-tag HookTheoryKey \\
     --concurrency 2
@@ -286,7 +286,7 @@ def main():
 
     # ── 1. Generate per-layer configs ────────────────────────────────────────
     _run([
-        PYTHON, "scripts/gen_sweep_configs.py",
+        PYTHON, "scripts/sweeps/gen_sweep_configs.py",
         "--base-config", args.base_config,
         "--num-layers",  str(args.num_layers),
         "--model-tag",   args.model_tag,

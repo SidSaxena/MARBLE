@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/verify_hooktheory.py
+scripts/verify/verify_hooktheory.py
 ────────────────────────────
 Audit the HookTheory pre-segmented clips against the shipped JSONL.
 
@@ -33,15 +33,15 @@ and optionally writes a corrected JSONL.
 Usage
 -----
   # Just diagnose — no writes
-  python scripts/verify_hooktheory.py \\
+  python scripts/verify/verify_hooktheory.py \\
       --jsonl data/HookTheory/HookTheoryKey.train.jsonl
 
   # Diagnose all six standard splits in one go
-  python scripts/verify_hooktheory.py \\
+  python scripts/verify/verify_hooktheory.py \\
       --jsonl-dir data/HookTheory
 
   # Rewrite each JSONL with torchaudio-derived num_samples (one-shot fix)
-  python scripts/verify_hooktheory.py \\
+  python scripts/verify/verify_hooktheory.py \\
       --jsonl-dir data/HookTheory --rewrite
 """
 

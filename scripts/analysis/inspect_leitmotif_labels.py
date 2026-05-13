@@ -6,8 +6,8 @@ Prints sorted unique labels and per-label counts.
 
 Usage
 -----
-    python scripts/inspect_leitmotif_labels.py path/to/leitmotif.jsonl
-    python scripts/inspect_leitmotif_labels.py data/leitmotif/train.jsonl data/leitmotif/val.jsonl
+    python scripts/analysis/inspect_leitmotif_labels.py path/to/leitmotif.jsonl
+    python scripts/analysis/inspect_leitmotif_labels.py data/leitmotif/train.jsonl data/leitmotif/val.jsonl
 """
 
 import argparse

@@ -59,7 +59,7 @@ You can pass multiple `--soundfont` flags; the script rotates through
 them deterministically per piece to avoid timbre-overfitting:
 
 ```bash
-python scripts/build_vgmiditvar_dataset.py \
+python scripts/data/build_vgmiditvar_dataset.py \
     --soundfont /path/to/FluidR3_GM.sf2 \
     --soundfont /path/to/GeneralUser-GS.sf2 \
     --soundfont /path/to/SalamanderGrandPiano.sf2 \
@@ -81,7 +81,7 @@ Drop it somewhere accessible, e.g. `data/source/VGMIDI-TVar.zip`.
 Then run:
 
 ```bash
-python scripts/build_vgmiditvar_dataset.py \
+python scripts/data/build_vgmiditvar_dataset.py \
     --midi-zip /path/to/VGMIDI-TVar.zip \
     --soundfont /path/to/FluidR3_GM.sf2 \
     --data-dir data/VGMIDITVar \
@@ -155,7 +155,7 @@ Once the JSONL + audio are in place, the four registered sweeps will
 work:
 
 ```bash
-python scripts/run_all_sweeps.py --tasks VGMIDITVar
+python scripts/sweeps/run_all_sweeps.py --tasks VGMIDITVar
 ```
 
 This runs:
@@ -172,7 +172,7 @@ step 1) so it works independently of the audio render.
 If disk is *really* tight, you can run just the symbolic sweep:
 
 ```bash
-python scripts/run_all_sweeps.py --tasks VGMIDITVar --models CLaMP3-symbolic
+python scripts/sweeps/run_all_sweeps.py --tasks VGMIDITVar --models CLaMP3-symbolic
 ```
 
 That only needs the ~10 MB of extracted MIDI; no audio render required.
@@ -215,7 +215,7 @@ Once the dataset exists, validate the CLaMP3 cross-modal API on real
 data:
 
 ```bash
-python scripts/test_clamp3_crossmodal_semantic.py \
+python scripts/diagnostics/test_clamp3_crossmodal_semantic.py \
     --jsonl data/VGMIDITVar/VGMIDITVar.jsonl \
     --midi-dir data/VGMIDITVar/midi \
     --num-pairs 5

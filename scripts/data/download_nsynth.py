@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/download_nsynth.py
+scripts/data/download_nsynth.py
 ──────────────────────────
 Download the NSynth dataset (pitch classification) from Google Magenta
 and generate JSONL metadata files for MARBLE probing.
@@ -21,16 +21,16 @@ Instruments:   11 families × 3 sources
 Usage
 -----
 # Download all three splits (default)
-python scripts/download_nsynth.py
+python scripts/data/download_nsynth.py
 
 # Download only valid + test (useful for quick evaluation)
-python scripts/download_nsynth.py --splits valid test
+python scripts/data/download_nsynth.py --splits valid test
 
 # Custom data directory
-python scripts/download_nsynth.py --data-dir /mnt/data
+python scripts/data/download_nsynth.py --data-dir /mnt/data
 
 # Skip already-downloaded archives
-python scripts/download_nsynth.py --no-download  # generate JSONL only
+python scripts/data/download_nsynth.py --no-download  # generate JSONL only
 """
 
 import argparse
@@ -210,9 +210,9 @@ def main():
 
     print(f"Done.  Total records written: {total_records}")
     print(f"\nNext steps:")
-    print(f"  python scripts/run_all_sweeps.py --tasks NSynth")
+    print(f"  python scripts/sweeps/run_all_sweeps.py --tasks NSynth")
     print(f"  # or run a single sweep:")
-    print(f"  python scripts/run_sweep_local.py \\")
+    print(f"  python scripts/sweeps/run_sweep_local.py \\")
     print(f"      --base-config configs/probe.OMARRQ-multifeature25hz.NSynth.yaml \\")
     print(f"      --num-layers 24 --model-tag OMARRQ-multifeature25hz --task-tag NSynth")
 

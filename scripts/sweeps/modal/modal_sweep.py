@@ -1,6 +1,6 @@
-"""scripts/modal_sweep.py — submit a MARBLE layer sweep to Modal in parallel.
+"""scripts/sweeps/modal/modal_sweep.py — submit a MARBLE layer sweep to Modal in parallel.
 
-Mirrors `scripts/run_sweep_local.py`'s CLI surface but submits one Modal
+Mirrors `scripts/sweeps/run_sweep_local.py`'s CLI surface but submits one Modal
 container per layer (via `modal_marble.run_parallel_sweep`).
 
 Same total compute cost as the sequential `run_sweep`, but wall-clock ≈
@@ -8,20 +8,20 @@ single-layer time instead of N × single-layer.
 
 Usage
 -----
-    modal run scripts/modal_sweep.py \\
+    modal run scripts/sweeps/modal/modal_sweep.py \\
         --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
         --num-layers 24 \\
         --model-tag OMARRQ-multifeature25hz \\
         --task-tag GS
 
 Subset of layers (comma-separated):
-    modal run scripts/modal_sweep.py \\
+    modal run scripts/sweeps/modal/modal_sweep.py \\
         --base-config configs/probe.CLaMP3-layers.GS.yaml \\
         --num-layers 13 --model-tag CLaMP3 --task-tag GS \\
         --layers 0,1,2,3
 
 Re-run only the test stage (skip fit for completed layers):
-    modal run scripts/modal_sweep.py --retest-only ... [other flags]
+    modal run scripts/sweeps/modal/modal_sweep.py --retest-only ... [other flags]
 """
 
 from modal_marble import app, run_parallel_sweep

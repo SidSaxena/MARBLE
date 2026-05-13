@@ -302,7 +302,7 @@ data:
 ### 4.2 Run the layer sweep
 
 ```bash
-python scripts/run_sweep_local.py \
+python scripts/sweeps/run_sweep_local.py \
     --base-config configs/probe.CLaMP3-layers.LeitmotifDetection.yaml \
     --num-layers 13 \
     --model-tag CLaMP3-layers \
@@ -483,7 +483,7 @@ for split in 'train val test'.split():
 "
 
 # 3. CLaMP3 13-layer sweep on the clip classifier
-python scripts/run_sweep_local.py \
+python scripts/sweeps/run_sweep_local.py \
     --base-config configs/probe.CLaMP3-layers.LeitmotifDetection.yaml \
     --num-layers 13 \
     --model-tag CLaMP3-layers \
@@ -1154,7 +1154,7 @@ similarities in `[-1, +1]` on random / synthetic inputs.
 **What's NOT yet verified end-to-end:** *semantic* alignment —
 whether same-content pairs (a MIDI and its rendered audio) actually
 score higher than unrelated pairs.  A pass/fail test for this exists at
-`scripts/test_clamp3_crossmodal_semantic.py` and runs against any
+`scripts/diagnostics/test_clamp3_crossmodal_semantic.py` and runs against any
 rendered VGMIDI-TVar dataset (see §14.4.1).  Run it on real data
 before drawing conclusions from cross-modal similarity scores.
 
@@ -1215,7 +1215,7 @@ scripts/
   build_vgmiditvar_dataset.py    # MIDI zip → fluidsynth render → JSONL
 ```
 
-All four sweeps are registered in `scripts/run_all_sweeps.py`.  Each
+All four sweeps are registered in `scripts/sweeps/run_all_sweeps.py`.  Each
 verified to parse via `cli.py --print_config` and appear in
 `run_all_sweeps.py --dry-run --tasks VGMIDITVar`.
 
@@ -1228,11 +1228,11 @@ rendered, valid 44.1 kHz stereo WAVs, JSONL parsed cleanly,
 `VGMIDITVarAudioAll` loaded and returned correctly-shaped waveforms.
 The full 12,870-MIDI render is deferred until run on a machine with
 adequate disk (~15–20 GB free for raw WAV).  Standalone runbook:
-[`docs/vgmiditvar_setup.md`](./vgmiditvar_setup.md).
+[`docs/data/vgmiditvar_setup.md`](./vgmiditvar_setup.md).
 
 ### 14.4.1 Cross-modal semantic test
 
-**Status: script committed at `scripts/test_clamp3_crossmodal_semantic.py`;
+**Status: script committed at `scripts/diagnostics/test_clamp3_crossmodal_semantic.py`;
 result pending the full dataset render.**
 
 Validates whether `embed_audio` / `embed_symbolic` produce embeddings
@@ -1244,7 +1244,7 @@ pass if ≥4/5 audio rows have their own MIDI ranked #1.
 Run after the dataset is built:
 
 ```bash
-python scripts/test_clamp3_crossmodal_semantic.py \
+python scripts/diagnostics/test_clamp3_crossmodal_semantic.py \
     --jsonl data/VGMIDITVar/VGMIDITVar.jsonl \
     --midi-dir data/VGMIDITVar/midi \
     --num-pairs 5

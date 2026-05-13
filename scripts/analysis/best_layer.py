@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/best_layer.py
+"""scripts/analysis/best_layer.py
 ─────────────────────────
 Query the WandB project for completed layer-sweep runs and report the
 best layer per sweep (group).
@@ -10,16 +10,16 @@ key (the same signal `_layer_done` uses to mark sweeps as done).
 Examples
 --------
     # Best layer for every sweep group in the project
-    uv run python scripts/best_layer.py
+    uv run python scripts/analysis/best_layer.py
 
     # Drill into one sweep — print every layer's metric
-    uv run python scripts/best_layer.py --group "MERT-v1-95M / SHS100K"
+    uv run python scripts/analysis/best_layer.py --group "MERT-v1-95M / SHS100K"
 
     # Filter groups by substring (case-insensitive)
-    uv run python scripts/best_layer.py --filter NSynth
+    uv run python scripts/analysis/best_layer.py --filter NSynth
 
     # Override the metric pick (default: auto-detect)
-    uv run python scripts/best_layer.py --metric test/MAP
+    uv run python scripts/analysis/best_layer.py --metric test/MAP
 """
 
 import argparse
@@ -169,7 +169,7 @@ def main():
         print(f"{group:<48} {best_layer:>5}  {m_disp:<22} {v:>9.4f}")
     print()
     print(f"  {len(by_group)} sweep group(s) found.")
-    print(f"  Drill into one with: scripts/best_layer.py --group \"<name>\"")
+    print(f"  Drill into one with: scripts/analysis/best_layer.py --group \"<name>\"")
 
 
 if __name__ == "__main__":

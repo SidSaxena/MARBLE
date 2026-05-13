@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/test_mps_compat.py
+"""scripts/diagnostics/test_mps_compat.py
 ──────────────────────────────
 Validate that MPS (Apple Silicon) can actually run a MARBLE layer-probe
 sweep end-to-end. The `--accelerator mps` flag was plumbed through but
@@ -32,9 +32,9 @@ ground.
 
 Usage
 -----
-    uv run python scripts/test_mps_compat.py
-    uv run python scripts/test_mps_compat.py --layer 6   # different layer
-    uv run python scripts/test_mps_compat.py --keep-output  # don't clean
+    uv run python scripts/diagnostics/test_mps_compat.py
+    uv run python scripts/diagnostics/test_mps_compat.py --layer 6   # different layer
+    uv run python scripts/diagnostics/test_mps_compat.py --keep-output  # don't clean
 """
 
 import argparse
@@ -139,7 +139,7 @@ def _check_torchaudio_can_decode(jsonl_path: Path) -> bool:
             print("        brew install ffmpeg@7", file=sys.stderr)
             print("        DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/opt/ffmpeg@7/lib \\",
                   file=sys.stderr)
-            print("            uv run python scripts/test_mps_compat.py",
+            print("            uv run python scripts/diagnostics/test_mps_compat.py",
                   file=sys.stderr)
             print("      (then retry; torchaudio should now register the ffmpeg backend)",
                   file=sys.stderr)
@@ -192,7 +192,7 @@ def main():
     sweep_dir = f"configs/sweeps/{MODEL_TAG}.{TASK_TAG}"
     print(f"\n→ Generating layer-{args.layer} config in {sweep_dir} ...")
     subprocess.run([
-        sys.executable, "scripts/gen_sweep_configs.py",
+        sys.executable, "scripts/sweeps/gen_sweep_configs.py",
         "--base-config", CONFIG,
         "--num-layers", str(NUM_LAYERS),
         "--model-tag", MODEL_TAG,

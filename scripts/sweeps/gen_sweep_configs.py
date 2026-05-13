@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/gen_sweep_configs.py
+scripts/sweeps/gen_sweep_configs.py
 ─────────────────────────────
 Generate one YAML config per transformer layer for a MARBLE layer sweep.
 
@@ -16,7 +16,7 @@ For each layer N it:
 
 Usage
 -----
-python scripts/gen_sweep_configs.py \\
+python scripts/sweeps/gen_sweep_configs.py \\
     --base-config configs/probe.OMARRQ-multifeature25hz.Chords1217.yaml \\
     --num-layers  12 \\
     --model-tag   OMARRQ-multifeature25hz \\

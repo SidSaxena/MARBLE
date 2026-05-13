@@ -18,7 +18,7 @@ JSONL format (one line per track):
     "duration":   300.0
   }
 
-Download:  python scripts/download_covers80.py
+Download:  python scripts/data/download_covers80.py
 """
 
 import json

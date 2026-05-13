@@ -16,7 +16,7 @@ Filenames encode the relationship:
     ...
 
 The audio version of this task synthesises every MIDI to audio (see
-``scripts/build_vgmiditvar_dataset.py``) and uses the work-group identity
+``scripts/data/build_vgmiditvar_dataset.py``) and uses the work-group identity
 (``piece_id + section``) as the retrieval label — analogous to
 ``work_id`` in SHS-100K / Covers80.
 

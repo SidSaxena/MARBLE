@@ -1,4 +1,4 @@
-"""scripts/modal_run_all_sweeps.py — orchestrate the Modal-migrated sweeps.
+"""scripts/sweeps/modal/modal_run_all_sweeps.py — orchestrate the Modal-migrated sweeps.
 
 Per-sweep semantics: each sweep parallelizes across its N layers via
 `modal_marble.run_parallel_sweep` (one L4 container per layer). This script
@@ -13,12 +13,12 @@ GS is skipped on Modal (already done locally).
 
 Usage
 -----
-    modal run scripts/modal_run_all_sweeps.py                  # all selected
-    modal run scripts/modal_run_all_sweeps.py --only MERT-NSynth
-    modal run scripts/modal_run_all_sweeps.py --skip MERT-NSynth,CLaMP3-NSynth
-    modal run scripts/modal_run_all_sweeps.py --tier 1         # just MERT
-    modal run scripts/modal_run_all_sweeps.py --tier 2         # just CLaMP3
-    modal run scripts/modal_run_all_sweeps.py --tier 3         # just OMARRQ
+    modal run scripts/sweeps/modal/modal_run_all_sweeps.py                  # all selected
+    modal run scripts/sweeps/modal/modal_run_all_sweeps.py --only MERT-NSynth
+    modal run scripts/sweeps/modal/modal_run_all_sweeps.py --skip MERT-NSynth,CLaMP3-NSynth
+    modal run scripts/sweeps/modal/modal_run_all_sweeps.py --tier 1         # just MERT
+    modal run scripts/sweeps/modal/modal_run_all_sweeps.py --tier 2         # just CLaMP3
+    modal run scripts/sweeps/modal/modal_run_all_sweeps.py --tier 3         # just OMARRQ
 """
 
 from modal_marble import app, run_parallel_sweep
