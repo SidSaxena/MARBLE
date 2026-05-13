@@ -29,11 +29,20 @@ python scripts/run_sweep_local.py \\
     --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS \\
     --layers 0 12
 
-# Override accelerator (e.g. for Apple Silicon)
+# Override accelerator (e.g. for Apple Silicon; auto-applies precision=16-mixed
+# since MPS doesn't support bf16-mixed)
 python scripts/run_sweep_local.py \\
     --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
     --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS \\
     --accelerator mps
+
+# Parallel: run 2 layers concurrently as separate subprocesses (best on 16 GB
+# GPUs where each layer needs ~5–6 GB; auto-halves per-process dataloader
+# workers to keep total CPU pressure bounded).
+python scripts/run_sweep_local.py \\
+    --base-config configs/probe.CLaMP3-layers.HookTheoryKey.yaml \\
+    --num-layers  13 --model-tag CLaMP3 --task-tag HookTheoryKey \\
+    --concurrency 2
 """
 
 import argparse
@@ -42,6 +51,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # Use the same Python interpreter that is running this script so that the
@@ -127,6 +137,108 @@ def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
 
 
 # ──────────────────────────────────────────────
+# Per-layer worker
+# ──────────────────────────────────────────────
+
+def _run_one_layer(
+    layer: int,
+    args,
+    sweep_dir: str,
+    stream_fit: bool,
+    num_workers_override: int | None,
+    precision_override: str | None,
+) -> dict:
+    """Run fit + test for a single layer. Returns a result dict.
+
+    stream_fit=True  → fit output streams to console as it runs (sequential
+                       mode preserves the original behavior bit-for-bit).
+    stream_fit=False → fit output is captured and returned in result["log"]
+                       (parallel mode — caller prints on completion to avoid
+                       interleaved tqdm progress bars from N concurrent fits).
+
+    Test output is always captured (matches the original behavior).
+    """
+    cfg = f"{sweep_dir}/sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
+    t0 = time.time()
+
+    already_done = (not args.no_skip) and _layer_done(args.task_tag, args.model_tag, layer)
+
+    if already_done and not args.retest:
+        return {
+            "layer": layer, "skipped": True, "elapsed": 0.0,
+            "metrics": {}, "log": "", "test_returncode": 0,
+        }
+
+    # CLI overrides shared by fit and test
+    common_overrides: list[str] = []
+    if args.accelerator:
+        common_overrides.append(f"--trainer.accelerator={args.accelerator}")
+    if precision_override is not None:
+        common_overrides.append(f"--trainer.precision={precision_override}")
+    if num_workers_override is not None:
+        common_overrides.append(
+            f"--data.init_args.num_workers={num_workers_override}"
+        )
+
+    log_parts: list[str] = []
+
+    # ── Fit ──────────────────────────────────────────────────────────────────
+    if already_done:
+        msg = "  ✓ Already complete — skipping fit, re-running test (--retest)."
+        if stream_fit:
+            print(msg)
+        else:
+            log_parts.append(msg)
+    else:
+        fit_cmd = [
+            PYTHON, "cli.py", "fit", "-c", cfg,
+            f"--trainer.logger.init_args.name=layer-{layer}-fit",
+            "--trainer.logger.init_args.job_type=fit",
+        ] + common_overrides
+        if stream_fit:
+            print(f"$ {' '.join(fit_cmd)}", flush=True)
+            subprocess.run(fit_cmd, check=True)
+        else:
+            r = subprocess.run(fit_cmd, capture_output=True, text=True)
+            log_parts.append(f"$ {' '.join(fit_cmd)}")
+            log_parts.append(r.stdout)
+            if r.returncode != 0:
+                log_parts.append(f"STDERR:\n{r.stderr}")
+                raise subprocess.CalledProcessError(
+                    r.returncode, fit_cmd, output=r.stdout, stderr=r.stderr
+                )
+
+    # ── Test ─────────────────────────────────────────────────────────────────
+    test_cmd = [
+        PYTHON, "cli.py", "test", "-c", cfg,
+        f"--trainer.logger.init_args.name=layer-{layer}-test",
+        "--trainer.logger.init_args.job_type=test",
+    ] + common_overrides
+
+    if not stream_fit:
+        log_parts.append(f"$ {' '.join(test_cmd)}")
+    r = subprocess.run(test_cmd, capture_output=True, text=True)
+    log_parts.append(r.stdout)
+    if r.returncode != 0:
+        # Match original behavior: log stderr but don't raise — test errors
+        # are recorded and the sweep continues.
+        log_parts.append(f"STDERR:\n{r.stderr}")
+
+    metrics = _extract_test_metrics(r.stdout)
+    elapsed = time.time() - t0
+
+    return {
+        "layer": layer,
+        "skipped": False,
+        "elapsed": elapsed,
+        "metrics": metrics,
+        "log": "\n".join(log_parts),
+        "test_returncode": r.returncode,
+        "test_stderr": r.stderr if r.returncode != 0 else "",
+    }
+
+
+# ──────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────
 
@@ -152,7 +264,23 @@ def main():
                              "Default (without this flag) is to skip both fit and test.")
     parser.add_argument("--accelerator", default=None,
                         help="Override trainer accelerator (gpu/mps/cpu). Defaults to config value.")
+    parser.add_argument("--precision", default=None,
+                        help="Override trainer.precision (e.g. 16-mixed, bf16-mixed, 32-true). "
+                             "Defaults to config value, except when --accelerator=mps which "
+                             "auto-overrides to 16-mixed (MPS does not support bf16-mixed). "
+                             "Pass this flag explicitly to override the auto behavior.")
+    parser.add_argument("--concurrency", type=int, default=1,
+                        help="Run N layers in parallel as separate subprocesses (default: 1, "
+                             "sequential — bit-identical to the original behavior). "
+                             "Each layer needs ~5–6 GB VRAM; for a 16 GB GPU use --concurrency 2.")
+    parser.add_argument("--num-workers-per-proc", type=int, default=None,
+                        help="Per-subprocess dataloader workers (--data.init_args.num_workers). "
+                             "Only injected when --concurrency > 1. Defaults to max(2, 8 // concurrency) "
+                             "so the total worker count stays bounded.")
     args = parser.parse_args()
+
+    if args.concurrency < 1:
+        parser.error("--concurrency must be >= 1")
 
     sweep_dir = f"configs/sweeps/{args.model_tag}.{args.task_tag}"
 
@@ -170,65 +298,89 @@ def main():
     results: dict[int, dict] = {}
     t_sweep_start = time.time()
 
-    # ── 2. Run each layer ────────────────────────────────────────────────────
-    for layer in run_layers:
-        cfg = f"{sweep_dir}/sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
+    # ── 2. Resolve overrides for concurrent runs ─────────────────────────────
+    num_workers_override: int | None = None
+    if args.concurrency > 1:
+        num_workers_override = (
+            args.num_workers_per_proc
+            if args.num_workers_per_proc is not None
+            else max(2, 8 // args.concurrency)
+        )
 
-        print(f"\n{'='*60}")
-        print(f" Layer {layer}/{args.num_layers - 1}  [{args.model_tag} | {args.task_tag}]")
-        print(f"{'='*60}", flush=True)
+    precision_override: str | None = args.precision
+    if precision_override is None and args.accelerator == "mps":
+        # MPS doesn't support bf16; auto-fall-back to fp16. Most configs ship
+        # with `bf16-mixed`, so without this override every MPS run would die
+        # at trainer construction.
+        precision_override = "16-mixed"
 
-        t_layer_start = time.time()
+    # ── 3. Run each layer ────────────────────────────────────────────────────
+    if args.concurrency == 1:
+        # Sequential — keep original behavior (streaming fit output) so CUDA
+        # workflows remain bit-identical to the pre-concurrency version.
+        for layer in run_layers:
+            print(f"\n{'='*60}")
+            print(f" Layer {layer}/{args.num_layers - 1}  [{args.model_tag} | {args.task_tag}]")
+            print(f"{'='*60}", flush=True)
+            try:
+                result = _run_one_layer(
+                    layer, args, sweep_dir, stream_fit=True,
+                    num_workers_override=num_workers_override,
+                    precision_override=precision_override,
+                )
+            except subprocess.CalledProcessError as e:
+                print(f"\n  Layer {layer} fit failed (exit {e.returncode}). "
+                      f"Continuing.", file=sys.stderr)
+                result = {"layer": layer, "skipped": False, "elapsed": 0.0,
+                          "metrics": {}, "log": "", "test_returncode": e.returncode}
+            if result.get("skipped"):
+                print(f"  ✓ Already complete — skipping."
+                      f"  (--retest to re-run test, --no-skip to redo everything)")
+            else:
+                print(result.get("log", ""))
+                if result.get("test_returncode", 0) != 0:
+                    print(f"STDERR: {result.get('test_stderr', '')}", file=sys.stderr)
+            results[layer] = result
+    else:
+        # Parallel — N fit+test pairs in flight, output captured per-layer and
+        # printed on completion to keep tqdm progress bars from interleaving.
+        print(f"\nRunning {len(run_layers)} layers with --concurrency={args.concurrency}"
+              f"  (num_workers per proc = {num_workers_override})\n", flush=True)
+        with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+            futures = {
+                ex.submit(
+                    _run_one_layer, layer, args, sweep_dir,
+                    False, num_workers_override, precision_override,
+                ): layer
+                for layer in run_layers
+            }
+            for fut in as_completed(futures):
+                layer = futures[fut]
+                try:
+                    result = fut.result()
+                except subprocess.CalledProcessError as e:
+                    print(f"\nLayer {layer} fit failed (exit {e.returncode}):\n"
+                          f"{e.stderr}", file=sys.stderr)
+                    result = {"layer": layer, "skipped": False, "elapsed": 0.0,
+                              "metrics": {}, "log": "",
+                              "test_returncode": e.returncode}
+                print(f"\n{'='*60}")
+                if result.get("skipped"):
+                    print(f" Layer {layer}  [skipped]  (already complete)")
+                else:
+                    print(f" Layer {layer}  done  [{result['elapsed']/60:.1f}m]"
+                          f"  [{args.model_tag} | {args.task_tag}]")
+                print(f"{'='*60}", flush=True)
+                if result.get("log"):
+                    print(result["log"])
+                results[layer] = result
 
-        already_done = (not args.no_skip) and _layer_done(args.task_tag, args.model_tag, layer)
-
-        if already_done and not args.retest:
-            # ── Fully skip: no fit, no test, no new WandB run ─────────────────
-            print(f"  ✓ Already complete — skipping."
-                  f"  (--retest to re-run test, --no-skip to redo everything)")
-            results[layer] = {"metrics": {}, "elapsed": 0.0, "skipped": True}
-            continue
-
-        # ── Fit ───────────────────────────────────────────────────────────────
-        # Override WandB run name / job_type at the command line so the fit
-        # process and the test process end up as distinct, clearly-labelled
-        # WandB runs (instead of two indistinguishable "layer-N" entries).
-        if already_done:
-            print(f"  ✓ Already complete — skipping fit, re-running test (--retest).")
-        else:
-            fit_cmd = [
-                PYTHON, "cli.py", "fit", "-c", cfg,
-                f"--trainer.logger.init_args.name=layer-{layer}-fit",
-                "--trainer.logger.init_args.job_type=fit",
-            ]
-            if args.accelerator:
-                fit_cmd += [f"--trainer.accelerator={args.accelerator}"]
-            _run(fit_cmd)
-
-        # ── Test ──────────────────────────────────────────────────────────────
-        test_cmd = [
-            PYTHON, "cli.py", "test", "-c", cfg,
-            f"--trainer.logger.init_args.name=layer-{layer}-test",
-            "--trainer.logger.init_args.job_type=test",
-        ]
-        if args.accelerator:
-            test_cmd += [f"--trainer.accelerator={args.accelerator}"]
-
-        result = subprocess.run(test_cmd, capture_output=True, text=True)
-        elapsed = time.time() - t_layer_start
-
-        print(result.stdout)
-        if result.returncode != 0:
-            print("STDERR:", result.stderr, file=sys.stderr)
-
-        metrics = _extract_test_metrics(result.stdout)
-        results[layer] = {"metrics": metrics, "elapsed": elapsed, "stdout": result.stdout}
-
-    # ── 3. Summary table ─────────────────────────────────────────────────────
+    # ── 4. Summary table ─────────────────────────────────────────────────────
     total_elapsed = time.time() - t_sweep_start
     print(f"\n{'='*60}")
     print(f" Sweep complete  [{args.model_tag} | {args.task_tag}]")
-    print(f" Total wall time: {total_elapsed/60:.1f} min")
+    print(f" Total wall time: {total_elapsed/60:.1f} min  "
+          f"(concurrency={args.concurrency})")
     print(f"{'='*60}")
     for layer in run_layers:
         r = results.get(layer, {})
@@ -239,7 +391,7 @@ def main():
             t_str = f"{r.get('elapsed', 0)/60:.1f}m"
             print(f"  layer {layer:2d}  [{t_str:>5}]  {m_str}")
 
-    # ── 4. Best layer ─────────────────────────────────────────────────────────
+    # ── 5. Best layer ─────────────────────────────────────────────────────────
     # Rank by the first test metric found (works for both weighted_score and r2)
     scored = {
         layer: list(r["metrics"].values())[0]
