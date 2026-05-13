@@ -83,8 +83,13 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
-# Filename pattern:  052_A_0.mid  /  708_A_2.mid  /  234_B_1.mid
-_FILENAME_RE = re.compile(r"^(?P<piece>\d+)_(?P<section>[A-Z]+)_(?P<idx>\d+)\.mid$")
+# Filename pattern handles both POP909-TVar and VGMIDI-TVar conventions:
+#   POP909-TVar:  052_A_0.mid                   piece=052, section=A, idx=0
+#   VGMIDI-TVar:  e0_real_Other games_NES_Monster Party_Title Screen_A_1.mid
+#                 piece="e0_real_Other games_NES_Monster Party_Title Screen", section=A, idx=1
+# The trailing  _<section>_<idx>.mid  is what identifies the variation; everything
+# before that (including underscores, spaces, slashes) is the piece identifier.
+_FILENAME_RE = re.compile(r"^(?P<piece>.+)_(?P<section>[A-Z]+)_(?P<idx>\d+)\.mid$")
 
 
 # ── MIDI extraction ──────────────────────────────────────────────────────────
