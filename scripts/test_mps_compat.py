@@ -95,6 +95,69 @@ def _check_audio_reachable(jsonl_path: Path, sample: int = 5) -> bool:
     return True
 
 
+def _check_torchaudio_can_decode(jsonl_path: Path) -> bool:
+    """Confirm torchaudio can actually open the SHS100K audio format.
+
+    SHS100K is .m4a (AAC), which libsndfile can't read. torchaudio needs
+    its ffmpeg backend; that requires a compatible ffmpeg shared library
+    (4.x–7.x for torchaudio 2.7 — NOT 8.x, which brew ships by default).
+    """
+    try:
+        import torchaudio
+    except ImportError:
+        print("ERROR: torchaudio not importable", file=sys.stderr)
+        return False
+
+    backends = torchaudio.list_audio_backends()
+    print(f"  torchaudio backends: {backends}")
+
+    # Sample a real .m4a from the JSONL and attempt to open it.
+    with open(jsonl_path) as f:
+        first = json.loads(next(line for line in f if line.strip()))
+    sample_path = Path(first["audio_path"])
+    ext = sample_path.suffix.lower()
+
+    try:
+        torchaudio.info(str(sample_path))
+        print(f"✓ torchaudio can decode {ext} files via {backends}")
+        return True
+    except Exception as e:
+        print(f"\nERROR: torchaudio cannot decode {ext} files on this Mac.",
+              file=sys.stderr)
+        print(f"  Sample: {sample_path.name}", file=sys.stderr)
+        print(f"  Exception: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"  Backends found: {backends}", file=sys.stderr)
+        if ext in {".m4a", ".aac", ".mp4"}:
+            print("\nRoot cause: torchaudio 2.7 needs ffmpeg 4.x–7.x to "
+                  "decode AAC/M4A. macOS brew ships ffmpeg 8.x by default, "
+                  "which is unsupported. libsndfile (the only available "
+                  "backend) doesn't support AAC.",
+                  file=sys.stderr)
+            print("\nFix options:", file=sys.stderr)
+            print("  (A) Install a compatible ffmpeg alongside ffmpeg 8:",
+                  file=sys.stderr)
+            print("        brew install ffmpeg@7", file=sys.stderr)
+            print("        DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/opt/ffmpeg@7/lib \\",
+                  file=sys.stderr)
+            print("            uv run python scripts/test_mps_compat.py",
+                  file=sys.stderr)
+            print("      (then retry; torchaudio should now register the ffmpeg backend)",
+                  file=sys.stderr)
+            print("  (B) Pre-convert a few SHS100K samples to FLAC:", file=sys.stderr)
+            print("        mkdir -p data/SHS100K/audio_flac && "
+                  "for f in $(head -20 data/SHS100K/SHS100K.test.jsonl | jq -r .audio_path); do",
+                  file=sys.stderr)
+            print("            ffmpeg -nostdin -loglevel error -y "
+                  "-i \"$f\" -c:a flac \"data/SHS100K/audio_flac/$(basename \"$f\" .m4a).flac\"",
+                  file=sys.stderr)
+            print("        done", file=sys.stderr)
+            print("      (then use --jsonl pointing at the FLAC copy)", file=sys.stderr)
+            print("  (C) Pick a different smoke-test dataset whose audio is "
+                  "WAV/FLAC/MP3 (soundfile-compatible) instead of SHS100K.",
+                  file=sys.stderr)
+        return False
+
+
 def _wandb_summary_has_test(output_root: Path) -> tuple[bool, list[str]]:
     """Walk output_root for any wandb-summary.json with `test/*` keys."""
     for s in output_root.glob("wandb/run-*/files/wandb-summary.json"):
@@ -118,9 +181,12 @@ def main():
                          "(useful for debugging).")
     args = ap.parse_args()
 
+    jsonl = Path("data/SHS100K/SHS100K.test.jsonl")
     if not _check_mps_available():
         sys.exit(1)
-    if not _check_audio_reachable(Path("data/SHS100K/SHS100K.test.jsonl")):
+    if not _check_audio_reachable(jsonl):
+        sys.exit(1)
+    if not _check_torchaudio_can_decode(jsonl):
         sys.exit(1)
 
     sweep_dir = f"configs/sweeps/{MODEL_TAG}.{TASK_TAG}"
