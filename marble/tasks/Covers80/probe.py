@@ -144,18 +144,43 @@ class CoverRetrievalTask(LightningModule):
         # ── cosine similarity (embeddings already L2-normalised) ─────────────
         sim = embs @ embs.T   # (N, N)
 
-        # ── compute MAP ───────────────────────────────────────────────────────
+        # ── Centering variant: remove cone-effect anisotropy ─────────────────
+        # The anisotropy diagnostic (scripts/diagnostics/anisotropy_diag.py)
+        # found OMARRQ embeddings live in a cone (mean_vec_norm ≈ 0.5). For
+        # cosine retrieval that shared direction inflates every pairwise
+        # similarity and squashes discrimination. Subtracting the corpus
+        # mean ("all-but-the-top", Mu 2018) removes it. We log BOTH the raw
+        # and centered MAP so the comparison is automatic for every encoder.
+        embs_c = embs - embs.mean(dim=0, keepdim=True)
+        embs_c = F.normalize(embs_c, dim=-1)
+        sim_c  = embs_c @ embs_c.T
+
+        # ── compute MAP for both variants ─────────────────────────────────────
+        map_raw      = self._compute_map(sim,   work_ids)
+        map_centered = self._compute_map(sim_c, work_ids)
+        print(f"[CoverRetrieval] MAP (raw)      = {map_raw:.4f}")
+        print(f"[CoverRetrieval] MAP (centered) = {map_centered:.4f}")
+
+        self.log("test/map",          map_raw,      prog_bar=True,  rank_zero_only=True)
+        self.log("test/map_centered", map_centered, prog_bar=False, rank_zero_only=True)
+        self.log("test/map@1",          self._map_at_k(sim,   work_ids, k=1), rank_zero_only=True)
+        self.log("test/map@1_centered", self._map_at_k(sim_c, work_ids, k=1), rank_zero_only=True)
+        self.log("test/mrr",          self._mrr(sim,   work_ids), rank_zero_only=True)
+        self.log("test/mrr_centered", self._mrr(sim_c, work_ids), rank_zero_only=True)
+
+    @staticmethod
+    def _compute_map(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
+        """Standard MAP from a similarity matrix and work_id labels."""
+        N = len(work_ids)
         aps: list[float] = []
         for i in range(N):
             sims_i = sim[i].clone()
             sims_i[i] = -2.0                               # exclude self
-
             order      = sims_i.argsort(descending=True)
             is_rel     = (work_ids[order] == work_ids[i])
             n_relevant = int(is_rel.sum().item())
             if n_relevant == 0:
                 continue
-
             hits = 0
             ap   = 0.0
             for rank, rel in enumerate(is_rel.tolist(), start=1):
@@ -164,17 +189,7 @@ class CoverRetrievalTask(LightningModule):
                     ap   += hits / rank
             ap /= n_relevant
             aps.append(ap)
-
-        map_score = float(torch.tensor(aps).mean().item())
-        print(f"[CoverRetrieval] MAP = {map_score:.4f}")
-
-        self.log("test/map",  map_score,  prog_bar=True, rank_zero_only=True)
-        self.log("test/map@1",
-                 self._map_at_k(sim, work_ids, k=1),
-                 prog_bar=False, rank_zero_only=True)
-        self.log("test/mrr",
-                 self._mrr(sim, work_ids),
-                 prog_bar=False, rank_zero_only=True)
+        return float(torch.tensor(aps).mean().item()) if aps else 0.0
 
     # ── helper metrics ────────────────────────────────────────────────────────
 
