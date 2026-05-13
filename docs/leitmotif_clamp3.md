@@ -7,6 +7,16 @@ This document covers everything from data preparation through embedding
 extraction, probe training, inference at scale, evaluation, and known
 failure modes.  Each section ends with the exact commands you'd run.
 
+**Companion documents:**
+- [`leitmotif_swtc.md`](./leitmotif_swtc.md) — applies this methodology
+  to the Star Wars Thematic Corpus, with concrete workflows and a
+  proposed MARBLE task design.
+
+**Implementation status (last reviewed below in §14):**
+The cross-modal API described in §13 is **implemented and end-to-end
+tested**.  The VGMIDI-TVar audio + symbolic probe tasks described in
+§12 are **shipped as MARBLE tasks**.
+
 ---
 
 ## 0. Scope and assumptions
@@ -1116,4 +1126,140 @@ the pattern is:
 This hybrid is sketched in §9 (#1) of the original plan; with the
 cross-modal API in place, the "find the region" step can now use a MIDI
 template instead of requiring labelled audio.
+
+---
+
+## 14. Implementation status
+
+This document was first drafted as a forward-looking plan.  Several
+pieces have since been built and tested.  This section is the canonical
+truth about what's actually shipped in the repository.
+
+### 14.1 Cross-modal API (§13)
+
+**Status: implemented and end-to-end tested with the real CLaMP3 checkpoint.**
+
+| Method | File | Tested |
+|---|---|---|
+| `CLaMP3_Encoder.embed_audio(wavs)` | `marble/encoders/CLaMP3/model.py` | ✓ Returns L2-normalised `(B, 768)` |
+| `CLaMP3_Encoder.embed_symbolic(patches)` | `marble/encoders/CLaMP3/model.py` | ✓ Returns L2-normalised `(B, 768)` |
+| `CLaMP3_Encoder.embed_text(strs)` | `marble/encoders/CLaMP3/model.py` | ✓ Returns L2-normalised `(B, 768)` |
+
+All three are inherited by `CLaMP3_Symbolic_Encoder`.  Cosine similarity
+across modalities returns sane values in `[-1, +1]` — a confirmed
+cross-modal verification was run with audio, MIDI, and text inputs.
+
+### 14.2 Symbolic CLaMP3 encoder (§13)
+
+**Status: implemented and end-to-end tested.**
+
+```python
+from marble.encoders.CLaMP3.model import CLaMP3_Symbolic_Encoder
+enc = CLaMP3_Symbolic_Encoder().eval()
+# forward(patches) returns tuple of 13 × (B, 1, H) — same contract as audio path
+out = enc(patches_tensor)
+```
+
+Tested with the real CLaMP3 checkpoint on a synthetic 4-note test MIDI:
+- 13 layer outputs, each `(B=1, T=1, H=768)`
+- Layer norms increase as expected through the BERT stack
+- Layers are differentiated (not collapsed)
+- Forward time on CPU: ~0.2 s per item after weights are cached
+
+The `CLaMP3_Encoder` (audio path) wrapper produces per-layer hidden
+states for layer-probe analysis; the cross-modal helpers in §14.1 are
+the separate route for shared-space embeddings.
+
+### 14.3 MIDI ↔ MTF conversion (§13)
+
+**Status: implemented and tested.**
+
+```python
+from marble.encoders.CLaMP3.midi_util import midi_to_mtf
+
+# Adapted from upstream clamp3/preprocessing/midi/batch_midi2mtf.py
+mtf_text = midi_to_mtf("path/to/file.mid", m3_compatible=True)
+# Output: newline-separated MTF starting with "ticks_per_beat N"
+```
+
+This is the canonical text format that `M3Patchilizer.encode()`
+expects.  Tested on synthetic MIDI; produces valid byte-level patches.
+
+### 14.4 VGMIDI-TVar task (§12.1)
+
+**Status: shipped — both audio and symbolic paths.**
+
+| Path | Encoder | Layers | Config | Dataset class |
+|---|---|---|---|---|
+| Audio | `CLaMP3_Encoder` | 13 | `probe.CLaMP3-layers.VGMIDITVar.yaml` | `VGMIDITVarAudioAll` |
+| Audio | `MERT_v1_95M_Encoder` | 13 | `probe.MERT-v1-95M-layers.VGMIDITVar.yaml` | `VGMIDITVarAudioAll` |
+| Audio | `OMARRQ_Multifeature25hz_Encoder` | 24 | `probe.OMARRQ-multifeature25hz.VGMIDITVar.yaml` | `VGMIDITVarAudioAll` |
+| Symbolic | `CLaMP3_Symbolic_Encoder` | 13 | `probe.CLaMP3-symbolic-layers.VGMIDITVar.yaml` | `VGMIDITVarSymbolicAll` |
+
+Files:
+```
+marble/tasks/VGMIDITVar/
+  __init__.py
+  datamodule.py    # Audio + Symbolic Base / All / Dummy / Test classes
+  probe.py         # Re-exports Covers80's CoverRetrievalTask
+scripts/
+  build_vgmiditvar_dataset.py    # MIDI zip → fluidsynth render → JSONL
+```
+
+All four sweeps are registered in `scripts/run_all_sweeps.py`.  Each
+verified to parse via `cli.py --print_config` and appear in
+`run_all_sweeps.py --dry-run --tasks VGMIDITVar`.
+
+### 14.5 SuperMario Structure (§12.2)
+
+**Status: planned but not implemented.**  Awaiting decision after
+VGMIDI-TVar results confirm whether the MIDI-render pipeline is
+viable for these encoders.
+
+### 14.6 LeitmotifDetection clip classifier (§4)
+
+**Status: skeleton shipped; full pipeline not built.**
+
+The base scaffold lives in `marble/tasks/LeitmotifDetection/`:
+- `datamodule.py` — `_LeitmotifAudioBase` (JSONL-driven clip loader)
+- `probe.py` — `ProbeLeitmotifTask` (with file-level aggregation)
+
+What's still missing for an actual run:
+- `configs/probe.CLaMP3-layers.LeitmotifDetection.yaml` (sketched in §4
+  but not committed)
+- Actual leitmotif clip JSONL with motif labels (user's data)
+- `scripts/leitmotif_localise.py` (§5; sketched only)
+- `scripts/leitmotif_eval.py` (§6; sketched only)
+
+These are built when the user has actual motif-annotated data.
+
+### 14.7 Star Wars (SWTC) integration
+
+**Status: documented in [`leitmotif_swtc.md`](./leitmotif_swtc.md);
+nothing implemented yet.**
+
+The companion doc walks through ten workflows, the Path A
+(CLaMP3 CLI) recipe, and a proposed `SWTCLeitmotif` MARBLE task design.
+Recommended order:
+1. Validate Workflow 1 via the CLI before any MARBLE code
+2. Build the MARBLE task only if Workflow 1 produces meaningful
+   detections
+
+---
+
+## 15. Quick reference: which doc covers what
+
+| Topic | Doc |
+|---|---|
+| Methodology (data prep, splits, evaluation, sliding window) | This doc, §1–§10 |
+| Encoder choice and trade-offs | This doc, §11 |
+| Candidate datasets for the broader probe suite | This doc, §12 |
+| Cross-modal CLaMP3 workflows | This doc, §13 |
+| What's actually implemented | This doc, §14 |
+| Star Wars / SWTC specifics | [`leitmotif_swtc.md`](./leitmotif_swtc.md) |
+| The 67 themes and Lehman's catalogue | [`leitmotif_swtc.md`](./leitmotif_swtc.md), §1 |
+| Path A: CLaMP3 CLI workflow (no MARBLE) | [`leitmotif_swtc.md`](./leitmotif_swtc.md), §4 |
+| Path B: MARBLE `SWTCLeitmotif` task design | [`leitmotif_swtc.md`](./leitmotif_swtc.md), §5 |
+| 10 SWTC-specific workflows (detection, family map, etc.) | [`leitmotif_swtc.md`](./leitmotif_swtc.md), §6 |
+| Scientific questions worth answering | [`leitmotif_swtc.md`](./leitmotif_swtc.md), §8 |
 
