@@ -35,9 +35,9 @@ model:
 
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
-          init_args:
-            layers: ["0..23"]
-            mode: mean
+        init_args:
+          layers: ["0..23"]
+          mode: mean
       - class_path: marble.modules.transforms.TimeAvgPool
 
 
