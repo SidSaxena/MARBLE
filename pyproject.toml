@@ -1,6 +1,12 @@
 # Install system deps before running `uv sync`:
-#   macOS:  brew install ffmpeg
-#   Linux:  sudo apt install ffmpeg
+#   macOS:  brew install ffmpeg@7        (torchaudio 2.7 supports ffmpeg 4–7; brew's
+#                                         default `ffmpeg` is currently 8.x and is
+#                                         unsupported — torchaudio falls back to the
+#                                         libsndfile backend which can't read .m4a.
+#                                         If you have ffmpeg 8 installed, also run:
+#                                         export DYLD_FALLBACK_LIBRARY_PATH=
+#                                             /opt/homebrew/opt/ffmpeg@7/lib)
+#   Linux:  sudo apt install ffmpeg      (apt's ffmpeg is typically 4–6, works as-is)
 
 [build-system]
 requires = ["setuptools>=42", "wheel"]
