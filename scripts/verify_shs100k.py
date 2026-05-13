@@ -221,6 +221,16 @@ def main():
         records = [json.loads(line) for line in f if line.strip()]
     log.info(f"JSONL: {jsonl}  ({len(records):,} entries)")
 
+    if not records:
+        log.error(
+            f"JSONL is empty.  Most likely the downloader was re-run with "
+            f"--skip-audio pointing at the wrong audio dir, overwriting it.\n"
+            f"  Fix: regenerate the JSONL from the actual audio dir:\n"
+            f"    python scripts/download_shs100k.py --skip-audio "
+            f"--audio-dir <your-audio-dir>"
+        )
+        sys.exit(1)
+
     # Infer audio_dir from first record if not given
     if args.audio_dir:
         audio_dir = Path(args.audio_dir)
