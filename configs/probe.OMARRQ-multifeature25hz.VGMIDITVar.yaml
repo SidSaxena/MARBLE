@@ -1,0 +1,91 @@
+seed_everything: 1234
+ckpt_path: null
+
+# VGMIDI-TVar zero-shot theme/variation retrieval — OMARRQ-multifeature25hz per-layer sweep.
+# max_epochs=0: no training. test stage embeds all renders and computes MAP.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks: []
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "OMARRQ-multifeature25hz / VGMIDITVar"
+      tags: ["OMARRQ-multifeature25hz", "VGMIDITVar", "layer-sweep", "probe"]
+      job_type: "probe"
+      name: "OMARRQ-multifeature25hz"
+      save_dir: "./output/probe.VGMIDITVar.OMARRQ-multifeature25hz/"
+
+
+model:
+  class_path: marble.tasks.VGMIDITVar.probe.CoverRetrievalTask
+  init_args:
+    sample_rate: 24000
+
+    encoder:
+      class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: [6]   # sweep replaces this
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+
+data:
+  class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 4
+
+    audio_transforms:
+      train:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      val:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      test:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+
+    train:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioDummy
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
+        backend: null
+    val:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioDummy
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
+        backend: null
+    test:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioAll
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
+        backend: null
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
