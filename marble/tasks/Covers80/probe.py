@@ -133,7 +133,12 @@ class CoverRetrievalTask(LightningModule):
         work_ids = torch.tensor(file_work_ids)             # (N,)
         N        = len(work_ids)
 
-        print(f"\n[Covers80] Evaluating retrieval MAP over {N} tracks "
+        # Prefix is generic ("[CoverRetrieval]") because this class is
+        # reused by VGMIDITVar / SHS100K / etc. — the prior "[Covers80]"
+        # was misleading when the same code runs against any work-id-keyed
+        # retrieval dataset. The originating task is also visible in the
+        # WandB run's group/tags.
+        print(f"\n[CoverRetrieval] Evaluating retrieval MAP over {N} tracks "
               f"({len(set(file_work_ids))} works).")
 
         # ── cosine similarity (embeddings already L2-normalised) ─────────────
@@ -161,7 +166,7 @@ class CoverRetrievalTask(LightningModule):
             aps.append(ap)
 
         map_score = float(torch.tensor(aps).mean().item())
-        print(f"[Covers80] MAP = {map_score:.4f}")
+        print(f"[CoverRetrieval] MAP = {map_score:.4f}")
 
         self.log("test/map",  map_score,  prog_bar=True, rank_zero_only=True)
         self.log("test/map@1",
