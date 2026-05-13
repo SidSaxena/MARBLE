@@ -925,3 +925,195 @@ SoundFonts per file) so the encoder can't latch onto a single timbre
 signature.  This is a pre-processing step worth building once and
 reusing for both datasets.
 
+---
+
+## 13. Cross-modal leitmotif discovery with CLaMP3
+
+CLaMP3 was trained with contrastive loss across **three modality branches**:
+
+* **Audio** — MERT features → BERT-style transformer
+* **Symbolic (M3)** — MIDI patches → BERT-style transformer
+* **Text** — XLM-RoBERTa
+
+All three project into a **shared 768-dim embedding space** via per-branch
+projection heads (``audio_proj`` / ``symbolic_proj`` / ``text_proj``).
+A vector from any branch can be compared by cosine similarity to a vector
+from any other branch.
+
+This unlocks several leitmotif workflows that pure-audio probes can't
+support.
+
+### 13.1 The cross-modal API exposed in MARBLE
+
+The CLaMP3 encoder wrappers expose three convenience methods that return
+L2-normalised shared-space embeddings:
+
+```python
+from marble.encoders.CLaMP3.model import CLaMP3_Symbolic_Encoder
+
+enc = CLaMP3_Symbolic_Encoder().eval().cuda()   # one class handles all 3 paths
+
+#   each returns Tensor of shape (B, 768), L2-normalised
+e_audio    = enc.embed_audio(wavs)                   # (B, 1, T_samples) → (B, 768)
+e_symbolic = enc.embed_symbolic(midi_patches)        # (B, P, 64)       → (B, 768)
+e_text     = enc.embed_text(["fanfare in C major"])  # str | list[str]  → (B, 768)
+
+# Cross-modal cosine similarity matrix — comparable across all three branches
+sims = e_audio @ e_symbolic.T          # (B_audio, B_symbolic)
+```
+
+Each method:
+
+- Always uses the **final projection head** (the same one CLaMP3 was
+  contrastively trained to align).  Per-layer outputs aren't available
+  here — for layer-probe analysis use the standard ``forward()`` /
+  ``LayerSelector`` pipeline instead.
+- Pools globally over chunks/segments with length-weighted averaging
+  before the projection — so long inputs (a whole track) collapse to a
+  single 768-dim vector that compares fairly against short ones.
+- Returns L2-normalised vectors — cosine similarity is just `A @ B.T`,
+  no extra normalisation step needed.
+
+### 13.2 Workflow A: MIDI-template motif search
+
+The cleanest leitmotif workflow this enables:
+
+**You have** a MIDI snippet of a leitmotif theme (one file, a few bars).
+**You want** to find every occurrence of that theme in a long audio track.
+
+```python
+# 1. Tokenise the MIDI motif
+from marble.encoders.CLaMP3.midi_util import midi_to_mtf
+from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+
+motif_text   = midi_to_mtf("themes/main_theme.mid")
+patches      = M3Patchilizer().encode(motif_text, add_special_patches=True)
+motif_tensor = torch.tensor(patches).unsqueeze(0)   # (1, P, 64)
+motif_emb    = enc.embed_symbolic(motif_tensor)     # (1, 768)
+
+# 2. Slide a 5-sec window over the audio track
+W, H_hop, sr = 5 * 24000, 1 * 24000, 24000
+windows = [audio[:, :, i:i+W] for i in range(0, audio.size(-1)-W+1, H_hop)]
+audio_embs = torch.stack([
+    enc.embed_audio(w.unsqueeze(0)) for w in windows
+], dim=0).squeeze(1)                                # (N_windows, 768)
+
+# 3. Cosine similarity → detection curve
+scores = (audio_embs @ motif_emb.T).squeeze(-1)     # (N_windows,)
+detections = (scores > THRESHOLD).nonzero()          # indices into the curve
+```
+
+**Why this is valuable.**  No labelled *audio* training data of the
+motif is needed — a single MIDI annotation is enough.  This works
+particularly well for game soundtracks where the original MIDI scores
+are often available (game-rip MIDI archives) but labelled audio
+occurrences are not.
+
+### 13.3 Workflow B: Audio-prototype motif search (no probe)
+
+When you have a few audio examples of a motif but no MIDI:
+
+```python
+prototype_audios = [load("clip1.wav"), load("clip2.wav"), load("clip3.wav")]
+motif_emb = torch.stack([
+    enc.embed_audio(c.unsqueeze(0)) for c in prototype_audios
+], dim=0).mean(dim=0)                # (1, 768)  — averaged prototype
+motif_emb = F.normalize(motif_emb, dim=-1)
+```
+
+Then run the same sliding-window cosine-similarity pass over the target
+track. This is the "few-shot CLaMP3" approach mentioned in §9 of the
+audio plan, formalised: **no probe head training**, just nearest-prototype
+matching in the shared space.
+
+### 13.4 Workflow C: Hybrid (MIDI + audio prototypes)
+
+When you have *both* the MIDI score and a couple of audio examples:
+
+```python
+e_midi   = enc.embed_symbolic(motif_patches)     # (1, 768)
+e_audio  = enc.embed_audio(audio_examples)       # (N, 768)
+motif_emb = F.normalize((e_midi.mean(0) + e_audio.mean(0)) / 2, dim=-1)
+```
+
+The MIDI anchor pins down the *musical identity*; the audio examples
+encode *arrangement / orchestration cues*.  Averaging in the shared
+space combines both signals.  In practice this is the strongest
+single-pass approach we expect to see for leitmotif work.
+
+### 13.5 Workflow D: Text-prompt motif search
+
+Limited by CLaMP3's training corpus but worth trying for descriptive
+queries:
+
+```python
+candidates = enc.embed_text([
+    "heroic march in B♭ major with brass and percussion",
+    "wistful piano melody in F♯ minor",
+    "mysterious low-strings ostinato in D minor",
+])
+scores = (audio_embs @ candidates.T)              # (N_windows, len(candidates))
+```
+
+**Honest caveat.**  CLaMP3 was trained on commercial music with
+captions; game-soundtrack-specific phrases ("Hyrule Castle theme")
+won't match.  Generic musical-content prompts (key + instrumentation +
+mood) work moderately well.  Always validate on a held-out track
+before trusting it.
+
+### 13.6 Workflow E: Cross-version alignment
+
+You have two arrangements of the same soundtrack (orchestral vs piano,
+or game OST vs concert performance).  Question: which moments
+correspond?
+
+```python
+# 5-sec windows from both versions
+e_v1 = embed_audio_sliding(version_1)            # (N1, 768)
+e_v2 = embed_audio_sliding(version_2)            # (N2, 768)
+
+# Pairwise similarity matrix
+sim = e_v1 @ e_v2.T                              # (N1, N2)
+
+# Dynamic time warping over the similarity matrix gives the alignment path
+from librosa.sequence import dtw
+_, path = dtw(C=1.0 - sim.numpy(), backtrack=True)
+```
+
+CLaMP3's arrangement-invariant embeddings make this dramatically more
+robust than chroma-DTW alignment for orchestrational changes.
+
+### 13.7 What this can NOT do
+
+| Want | Why CLaMP3 isn't right | Alternative |
+|---|---|---|
+| Frame-accurate MIDI→audio alignment | 5-sec chunk ceiling | SyncToolbox, chroma-DTW |
+| Note-level transcription | No per-pitch output head | Basic Pitch, OnsetsAndFrames |
+| Detect specific named-but-unfamous theme by text | Captions in training don't include "Hyrule Castle" | Audio or MIDI prototype workflows above |
+
+### 13.8 The "alignment" angle, briefly
+
+In MIR, "alignment" usually means **frame-level correspondence between
+two music representations** (e.g. score-to-audio synchronisation).
+CLaMP3 is *not* a frame-level alignment tool — it sees in 5-sec
+chunks.
+
+But the workflows above all involve a coarser form of alignment:
+
+- §13.2 / §13.3 align a motif template to **windows of a track**
+  (5-sec granularity).
+- §13.6 aligns full **arrangements** by computing chunk-level
+  similarity then running DTW over the matrix.
+
+For genuinely frame-accurate work (sub-second motif onset detection),
+the pattern is:
+
+1. **CLaMP3 finds the region** (which 5-sec window contains the motif)
+2. **A frame-level encoder finishes the job** within that region — MERT
+   (75 Hz) for tonal motifs, OMARRQ (25 Hz) for rhythmic ones — by
+   running DTW or peak-picking on a finer feature
+
+This hybrid is sketched in §9 (#1) of the original plan; with the
+cross-modal API in place, the "find the region" step can now use a MIDI
+template instead of requiring labelled audio.
+

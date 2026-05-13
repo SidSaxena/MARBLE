@@ -433,6 +433,172 @@ class CLaMP3_Encoder(BaseEncoder):
 # Symbolic-music encoder (M3 path)
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Cross-modal embedding API
+# ──────────────────────────────────────────────────────────────────────────────
+# CLaMP3 was trained with contrastive loss across three modality branches —
+# audio, symbolic (M3), text — each with a projection head that lands the
+# pooled embedding in a SHARED 768-dim space.  These helpers expose those
+# shared-space embeddings so user code can:
+#
+#   • Compare an audio clip and a MIDI motif via cosine similarity
+#   • Use a MIDI motif as a query against a full audio track
+#   • Use a text description as a query against either modality
+#
+# The shape contract is uniform across all three: (B, H_shared) where
+# H_shared = CLAMP3_HIDDEN_SIZE (768 for the public checkpoint).
+# These are *separate* from the layer-probe forward() — they always use the
+# final projection head and a global pooled embedding, never a per-layer
+# hidden state.
+
+
+class CLaMP3CrossModalMixin:
+    """Mix-in adding ``embed_audio`` / ``embed_symbolic`` / ``embed_text``
+    helpers to CLaMP3 encoder classes.
+
+    Each method returns ``(B, H_shared)`` L2-normalised tensors that live in
+    the same space — so ``embed_audio(wavs) @ embed_symbolic(patches).T``
+    yields a valid cross-modal similarity matrix.
+    """
+
+    @torch.no_grad()
+    def embed_audio(self, wavs: torch.Tensor) -> torch.Tensor:
+        """Audio waveform → ``(B, H_shared)`` L2-normalised shared embeddings."""
+        device = wavs.device
+        self.model.to(device)
+        self.mert_encoder.to(device)
+
+        # Step 1: MERT preprocessing + feature extraction (same as forward())
+        processed = torch.stack([
+            self.mert_preprocessor(
+                {'input_features': w, 'sampling_rate': self.SAMPLING_RATE}
+            )['input_features']
+            for w in wavs
+        ], dim=0)
+        mert_features = extract_mert_features_batch(processed, self.mert_encoder, device)
+        mert_chunks   = mert_features.mean(dim=1)                  # (B, C, H_mert)
+
+        # Step 2: pad with zero vectors at start/end (matches infer_test3)
+        embeddings = []
+        for b in range(mert_chunks.size(0)):
+            zero_vec  = torch.zeros((1, mert_chunks.size(-1)), device=device)
+            seq       = torch.cat((zero_vec, mert_chunks[b], zero_vec), dim=0)
+            emb       = self._get_embedding_from_segments(
+                input_data=seq,
+                max_len=self.config.MAX_AUDIO_LENGTH,
+                data_type='audio',
+                device=device,
+            )
+            embeddings.append(emb)
+        out = torch.stack(embeddings, dim=0)                       # (B, H_shared)
+        return F.normalize(out, dim=-1)
+
+    @torch.no_grad()
+    def embed_symbolic(self, patches: torch.Tensor) -> torch.Tensor:
+        """MIDI patches → ``(B, H_shared)`` L2-normalised shared embeddings.
+
+        Parameters
+        ----------
+        patches : Tensor, shape ``(B, P, PATCH_SIZE)``
+            Pre-tokenised patches as produced by
+            ``M3Patchilizer`` (see the VGMIDITVar symbolic datamodule).
+            Padding rows must carry ``pad_token_id == 0``.
+        """
+        device = patches.device
+        self.model.to(device)
+
+        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+        if not hasattr(self, "patchilizer"):
+            self.patchilizer = M3Patchilizer()
+
+        embeddings = []
+        for b in range(patches.size(0)):
+            item = patches[b].to(device).long()
+            # Strip fully-padded trailing rows
+            non_pad = (item != self.patchilizer.pad_token_id).any(dim=-1)
+            real_len = int(non_pad.sum().item())
+            if real_len == 0:
+                real_len = 1
+            real = item[:real_len]
+
+            # The CLaMP3Model.get_symbolic_features wrapper handles batching
+            # but expects already-padded input; we segment and pad manually
+            # so very long pieces are length-weighted correctly.
+            max_len = self.config.PATCH_LENGTH
+            segments = self._prepare_segments(real, max_len)
+            feats = []
+            weights = []
+            for seg in segments:
+                seg_len = seg.size(0)
+                pad_len = max_len - seg_len
+                mask = F.pad(
+                    torch.ones(seg_len, device=device), (0, pad_len), value=0.0,
+                )
+                pad_tok = torch.full(
+                    (pad_len, self.config.PATCH_SIZE),
+                    self.patchilizer.pad_token_id,
+                    dtype=torch.long,
+                    device=device,
+                )
+                seg_padded = torch.cat((seg.to(device), pad_tok), dim=0)
+
+                # get_symbolic_features(..., get_global=True) applies symbolic_proj
+                emb = self.model.get_symbolic_features(
+                    symbolic_inputs=seg_padded.unsqueeze(0),
+                    symbolic_masks=mask.unsqueeze(0),
+                    get_global=True,
+                )                                             # (1, H_shared)
+                feats.append(emb.squeeze(0))
+                weights.append(float(seg_len))
+
+            stacked = torch.stack(feats, dim=0)              # (S, H_shared)
+            w = torch.tensor(weights, device=device).unsqueeze(-1)
+            embeddings.append((stacked * w).sum(0) / w.sum())
+
+        out = torch.stack(embeddings, dim=0)                  # (B, H_shared)
+        return F.normalize(out, dim=-1)
+
+    @torch.no_grad()
+    def embed_text(self, texts) -> torch.Tensor:
+        """Text strings → ``(B, H_shared)`` L2-normalised shared embeddings.
+
+        Parameters
+        ----------
+        texts : str | list[str]
+            One or more natural-language descriptions, e.g.
+            ``["triumphant orchestral fanfare in C major"]``.
+        """
+        if isinstance(texts, str):
+            texts = [texts]
+        device = next(self.model.parameters()).device
+
+        embeddings = []
+        for text_item in texts:
+            items = list(set(text_item.split("\n")))
+            items = "\n".join(items).split("\n")
+            items = [c for c in items if len(c) > 0]
+            item_str = self.tokenizer.sep_token.join(items)
+            input_data = self.tokenizer(item_str, return_tensors="pt")['input_ids']
+            input_data = input_data.squeeze(0).to(device)
+            emb = self._get_embedding_from_segments(
+                input_data=input_data,
+                max_len=self.config.MAX_TEXT_LENGTH,
+                data_type='text',
+                device=device,
+            )
+            embeddings.append(emb)
+        out = torch.stack(embeddings, dim=0)                  # (B, H_shared)
+        return F.normalize(out, dim=-1)
+
+
+# Attach the cross-modal helpers to CLaMP3_Encoder directly so they're
+# available on both the audio wrapper and its CLaMP3_Symbolic_Encoder
+# subclass without resorting to MRO surgery.
+CLaMP3_Encoder.embed_audio    = CLaMP3CrossModalMixin.embed_audio
+CLaMP3_Encoder.embed_symbolic = CLaMP3CrossModalMixin.embed_symbolic
+CLaMP3_Encoder.embed_text     = CLaMP3CrossModalMixin.embed_text
+
+
 class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
     """CLaMP3 encoder that consumes pre-tokenised MIDI patches instead of audio.
 
@@ -454,6 +620,15 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
     * Segments longer than ``CLaMP3Config.PATCH_LENGTH`` (default 512) are
       chunked and length-weighted, mirroring the audio path's behaviour.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # CLaMP3_Encoder (audio path) doesn't instantiate the patchilizer;
+        # the symbolic path needs it for the pad_token_id sentinel.  Match
+        # M3Patchilizer's constants directly so we don't rely on the
+        # CLaMP3Model's instance.
+        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+        self.patchilizer = M3Patchilizer()
 
     @torch.no_grad()
     def forward(self, patches: torch.Tensor) -> tuple:    # type: ignore[override]
