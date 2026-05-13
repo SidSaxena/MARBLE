@@ -479,6 +479,19 @@ def main():
     ap.add_argument("--sleep-interval", type=float, default=0.0, metavar="SEC",
                     help="Pass --sleep-interval SEC to yt-dlp: minimum delay "
                          "before each actual audio download (default: 0).")
+    ap.add_argument("--reverse", action="store_true",
+                    help="Process CSV entries in reverse order.  On a resume run "
+                         "this hits the tail of the dataset first — the part "
+                         "most likely to contain rate-limit-victim entries — "
+                         "while the IP is fresh, then breezes through the early "
+                         "cached entries.")
+    ap.add_argument("--missing-only", action="store_true",
+                    help="Skip CSV entries that already have a downloaded audio "
+                         "file.  Useful to retry just the 'failed' tail without "
+                         "iterating over thousands of cache hits.  NB: the JSONL "
+                         "output will only contain the newly-processed entries; "
+                         "re-run with --skip-audio afterwards to rebuild the "
+                         "full JSONL from disk.")
     args = ap.parse_args()
 
     _install_sigint_handler()
@@ -545,6 +558,23 @@ def main():
         log.info(f"\n{'='*60}\nSplit : {split}\n{'='*60}")
 
         rows = _fetch_csv(split)
+
+        # ── Optional filters / reordering (applied in semantic order) ─────────
+        # 1. Reverse FIRST so subsequent slicing operates on the desired tail.
+        if args.reverse:
+            rows = list(reversed(rows))
+            log.info("  --reverse: processing CSV in reverse order")
+
+        # 2. Skip entries that already have a downloaded audio file.
+        if args.missing_only and not args.skip_audio:
+            before = len(rows)
+            rows   = [r for r in rows
+                      if _find_audio(r["youtube_id"], audio_dir) is None]
+            log.info(f"  --missing-only: {before} → {len(rows)} entries "
+                     f"({before - len(rows)} already on disk)")
+
+        # 3. Finally, cap to --max-entries (applied AFTER reverse/missing-only
+        #    so "--reverse --max-entries 100" yields the last 100 of the CSV).
         if args.max_entries:
             rows = rows[: args.max_entries]
 
