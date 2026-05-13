@@ -594,3 +594,334 @@ project_root/
     ├── datamodule.py
     └── probe.py
 ```
+
+---
+
+## 11. Encoder-agnostic general approach
+
+Sections 0–10 above are written around CLaMP3 because that's where the
+preliminary probe results currently point.  The same methodology
+generalises to any audio encoder — what changes is window size, embedding
+dimension, and best-layer index; the pipeline shape stays identical.
+This section is the encoder-free recipe.
+
+### 11.1 Encoder selection decision tree
+
+```
+Q1.  Does your downstream task need frame-level timing?
+       ──── yes ───►  Pick a frame-level encoder
+       │                MERT-v1-95M     (75 Hz, H=768, 12+1 layers)
+       │                OMARRQ          (25 Hz, H=1024, 24 layers)
+       │                MuQ / MusicFM   (similar profile)
+       │
+       ──── no, clip-level is fine ───►  Q2
+
+Q2.  Do your motifs come in many arrangements / instrumentations?
+       ──── yes ───►  Prefer contrastive music+text models
+       │                CLaMP3, MuQ-MuLan
+       │                (their embeddings cluster by musical identity
+       │                 rather than acoustic surface)
+       │
+       ──── motifs are acoustically consistent ───►  Either family works;
+              prefer MERT for the cheaper compute budget
+```
+
+For leitmotifs in soundtrack data specifically, the bias is strongly
+toward Q2's "many arrangements" branch — a leitmotif is recognised
+across orchestration changes, tempo shifts, key modulations, and timbre
+variation.  That's the situation contrastive embeddings are built for.
+
+### 11.2 What every encoder gives you
+
+Every audio encoder in MARBLE exposes the same shape contract:
+
+```
+encoder(waveform: [B, 1, T_samples])  →  [B, L, T_tokens, H]
+                                          │   │   │          │
+                                          │   │   │          embedding dim
+                                          │   │   token-time axis
+                                          │   layer axis
+                                          batch
+```
+
+What varies:
+
+| Encoder        | H     | L   | tokens/sec | sample rate | natural window |
+|----------------|-------|-----|------------|-------------|----------------|
+| MERT-v1-95M    | 768   | 13  | 75         | 24 kHz      | any            |
+| OMARRQ         | 1024  | 24  | 25         | 24 kHz      | any            |
+| CLaMP3         | 768   | 13  | 1 / 5 s    | 24 kHz      | 5 s            |
+| MuQ            | 1024  | 13  | 25         | 24 kHz      | any            |
+| MusicFM        | 768   | 13  | 25         | 24 kHz      | any            |
+
+"Natural window" is the smallest segment that produces a meaningful
+embedding.  For chunk-rate encoders (CLaMP3) you can't go below the
+chunk; for token-rate encoders (everything else) any window length works
+but very short windows (< 1 s) get sparse and noisy.
+
+### 11.3 Pipeline that works for every encoder
+
+```
+   waveform                                     classifier head
+      │                                                ▲
+      ▼                                                │
+  ┌────────┐    ┌──────────────┐    ┌────────────┐    │
+  │encoder │ →  │LayerSelector │ →  │pooling     │ →──┘
+  │(frozen)│    │(best layer N)│    │(see §11.4) │
+  └────────┘    └──────────────┘    └────────────┘
+       (B, L, T, H)      (B, T, H)         (B, H)
+```
+
+The encoder stays **frozen** for every layer-sweep probe — what we're
+measuring is whether motif identity is recoverable from the
+representations the encoder already produces.  Training the encoder
+itself is a separate (and much more expensive) question; do that only
+after probes prove no frozen layer suffices.
+
+### 11.4 Pooling choices
+
+How `(B, T, H) → (B, H)`?  Three options, ranked by what they cost vs
+what they buy:
+
+| Pooling | Cost | Buys | When to use |
+|---|---|---|---|
+| **Mean-pool over time** | none | a single robust vector | default; works for almost all clip-level tasks |
+| **Max-pool over time** | none | the strongest token | when one moment in the clip is decisive (e.g. a sting) |
+| **Attention-pool**  | small (1 layer) | learnable per-token weighting | when motifs occupy a small fraction of the clip |
+| **Concat first+mean+last** | none | crude position-awareness | rarely worth it; mean-pool usually wins |
+
+Mean-pool is the default everywhere in MARBLE.  If mean-pool's accuracy
+plateaus and you suspect the motif occupies a sub-region of the clip,
+swap in attention-pool and re-run.  Don't tune this before the layer
+sweep — pick the best layer with mean-pool first, then revisit pooling.
+
+### 11.5 Sliding-window inference, encoder-agnostic
+
+For full-track localisation, the parameters generalise as:
+
+| Parameter | How to pick |
+|---|---|
+| Window `W` | = natural window for chunk-rate encoders; = 5–10 s for token-rate (matches typical motif statement length) |
+| Hop `H` | 10–20% of `W` for fine localisation; 50% for fast scanning |
+| Smoothing | Gaussian over the per-class curve, σ ≈ `W/2` |
+| Threshold | tuned per-encoder, per-dataset on val set |
+
+**Multi-resolution scan:** if motif lengths vary widely in your data,
+run the window sweep at multiple `W` values (e.g. 5 s, 10 s, 15 s) and
+take the per-time maximum across resolutions.  Catches both short
+stings and long statements without committing to one window size.
+
+### 11.6 Multi-encoder ensembles
+
+Once you have probes trained on each encoder individually, you can
+ensemble at three levels (increasing cost):
+
+1. **Probability-level**.  Average the softmax outputs from each
+   encoder's trained head.  Zero training cost on top of the
+   individual probes.  Typical gain: 2–5 absolute % in file-level acc.
+2. **Embedding-level**.  Concatenate embeddings from each encoder into
+   one wide vector and train one combined head.  Requires the per-clip
+   embeddings to be cached for all encoders.  Typical gain: 5–10%.
+3. **Layer-level fusion**.  Concatenate the *best layer* of each
+   encoder and train a head on that.  Same cost as 2; can be slightly
+   better than 2 if some encoders' early layers complement others'
+   middle layers.
+
+For leitmotif detection, MERT (acoustic / pitch detail) + CLaMP3
+(musical identity / arrangement-invariant) is the natural pairing — the
+two encoders capture different views and rarely make the same mistakes.
+
+### 11.7 Honest comparison checklist
+
+When evaluating a new encoder for your leitmotif task, run these in
+order before adopting it:
+
+1. **Identical evaluation harness.** Same JSONL, same splits, same
+   pooling, same head architecture, same hyperparameters.  Only the
+   encoder changes.
+2. **Layer sweep, not single-layer evaluation.** A single layer can
+   misrepresent an encoder — always pick best-of-N.
+3. **Sanity-check on a related public task.** If the encoder doesn't
+   beat random on GS/HookTheoryKey, expect leitmotif performance to be
+   poor too.
+4. **Wall-clock cost.** Per-clip embedding time, per-track localisation
+   time, peak GPU memory.  A 2% accuracy gain at 10× the latency may
+   not be worth it for batch processing of an album.
+5. **Failure mode analysis.** Look at the confusion matrix.  A model
+   with lower top-1 but cleaner confusions (only confuses related
+   motifs) may be more useful than one with higher top-1 but wild
+   off-class errors.
+
+### 11.8 When the frozen-probe ceiling isn't enough
+
+If every encoder × layer × pooling combination plateaus below what you
+need:
+
+1. **Fine-tune the last few encoder layers.** Use the same probe head
+   but unfreeze layers 10–12 of the encoder.  Requires more data
+   (1000s of labelled clips) and careful learning-rate scheduling
+   (encoder LR 10× smaller than head LR).  Often gives 5–15% more.
+2. **Train your own encoder on your domain.** Self-supervised on a
+   corpus of soundtracks (BTW + similar games), then probe.  Months of
+   work; only justifiable if you have lots of domain audio.
+3. **Switch to symbolic.** If your data has MIDI versions
+   (game-rip MIDI is often available), embedding-based motif matching
+   in symbolic space is dramatically easier than from audio.
+
+---
+
+## 12. Candidate datasets for leitmotif / variation probes
+
+Two external datasets came up as potential additions to the MARBLE probe
+suite.  Both are plausible but have very different integration costs.
+
+### 12.1 Variation-Transformer (POP909-TVar + VGMIDI-TVar)
+
+**What it is.**  Theme-and-variation pairs extracted from POP909 (Western
+pop) and VGMIDI (video-game piano arrangements).  Filenames encode the
+relationship: `{piece_id}_{section}_0.mid` is a theme,
+`{piece_id}_{section}_N.mid` for N>0 is its Nth variation.
+
+| | |
+|---|---|
+| Source | https://github.com/ChenyuGAO-CS/Variation-Transformer-Data-and-Model |
+| Format | **MIDI only**, no audio |
+| Splits | Pre-defined train/test in each dataset |
+| POP909-TVar | ~9,440 files, pop |
+| VGMIDI-TVar | smaller; video-game piano |
+
+**Relevance to leitmotifs.**  High and direct — a leitmotif "statement
+across arrangements" is conceptually the same relationship as a theme
+and its variations.  The dataset gives **explicit theme–variation
+groupings**, which makes it usable as a retrieval probe analogous to
+SHS-100K but at the motif scale instead of the song scale.
+
+**Integration cost.**
+
+1. **MIDI → audio rendering** (one-time).  Pipeline: `fluidsynth` +
+   a piano-leaning SoundFont (e.g. SGM-V2.01, Salamander).  Render at
+   44.1 kHz, mono, 16-bit WAV.  ~1–2 s per file.  ~5 hours total for
+   both datasets.
+2. **Datamodule.**  Almost identical to Covers80 / SHS100K — the
+   "work_id" becomes the theme-section identifier (`piece_id_section`),
+   tracks within the same theme group are "covers" of each other.
+   Re-use `CoverRetrievalTask` with no changes.
+3. **Probe.**  Zero-shot retrieval; no training.  Same MAP-based eval as
+   SHS100K.
+4. **Caveat.**  Rendering MIDI to audio produces a *synthetic*
+   distribution that may not match what the encoders were trained on
+   (which is mostly studio-recorded music).  Expect lower absolute
+   numbers than on natural-audio retrieval tasks — but for *relative*
+   comparison across encoders / layers / pooling choices, that's fine.
+
+**Recommendation: implement VGMIDI-TVar first** as a small MARBLE retrieval
+task.  Why VGMIDI before POP909:
+
+- Game music distribution is what you actually care about for the
+  leitmotif downstream
+- Smaller dataset → faster iteration during integration
+- Once VGMIDI-TVar works, POP909-TVar is the same datamodule with
+  different JSONL — trivial to add as a sanity check
+
+The new task could be called `VGMIDITVar` (or `Variation` if generic).
+Configs follow the Covers80 layer-sweep template line for line — only
+the JSONL paths change.
+
+### 12.2 Super Mario Structure Annotation
+
+**What it is.**  554 Super Mario pieces with bar-level structural
+annotations (Intro / Loop / Transition / Bridge / Outro / Stinger and
+finer A/B/C section labels), plus 3,304 within-piece section pairs with
+pre-computed similarity scores in three buckets (high / mid / low).
+
+| | |
+|---|---|
+| Source | https://github.com/ShxLuo-Saxon/supermario-structure-annotation |
+| Format | Annotations are JSON; source audio is **NOT redistributed** |
+| Audio source | NinSheetMusic (manual download per `metadata/pieces.csv`) |
+| Audio format on source | MUS (Finale), MIDI also available |
+| Splits | Pre-defined train/val/test (70/15/15, piece-stratified) on pairs |
+
+**Relevance to leitmotifs.**  Medium.  Two distinct sub-tasks are
+embedded here, with different value:
+
+| Sub-task | What it teaches | Leitmotif relevance |
+|---|---|---|
+| **Function classification** (section → In/Lp/Tr/Br/Ou/St) | Where in a track this section sits structurally | Low — section function ≠ motif identity |
+| **Section-pair similarity** (compute similarity between two sections of the same piece, classify into 3 buckets) | Whether the encoder represents intra-piece variation faithfully | **High** — directly tests "do two clips with the same musical material map close in embedding space" |
+
+The section-pair sub-task is essentially "is this encoder good at
+recognising that two sections of the same Mario piece share material" —
+which is the leitmotif question in miniature.
+
+**Integration cost.**
+
+1. **Audio acquisition** is the bottleneck.  Three paths:
+   1. **Use the MIDI route** — `metadata/pieces.csv` has `url_mid`
+      pointing at NinSheetMusic MIDI files.  Free, scriptable
+      download.  Then MIDI → audio via fluidsynth (same as §12.1).
+   2. The MXL/MUS route in the README requires **Finale** (commercial
+      software) — skip.
+   3. Render bar ranges to clips on demand from MIDI using bar→time
+      maps computed from the MIDI tempo track.  Cleaner but more code.
+2. **MIDI → audio rendering** (one-time, ~10 min for 554 pieces).
+3. **Bar-to-time alignment.**  Annotations are in **bar numbers**, but
+   the audio rendering produces a continuous waveform.  You need a
+   reliable bar→time map for each MIDI to extract correct clips.
+   `pretty_midi` exposes this via `pm.get_beats()` + tempo information.
+4. **Datamodule + probes.**
+   - **Function classification.**  Per-clip multi-class task, same
+     pattern as HookTheoryStructure.  Simple to add.
+   - **Section similarity bucketing.**  Same pattern as Covers80
+     retrieval-style: embed both sections, predict bucket from cosine
+     similarity (with a learned threshold or a small linear head).
+
+**Recommendation: implement the section-similarity sub-task** as a new
+MARBLE task; **skip the function-classification sub-task for now** —
+it duplicates what HookTheoryStructure already measures, with the added
+overhead of the MIDI pipeline.
+
+Suggested task name: `SuperMarioPairs` or simply `MarioStructure`.  The
+metric would be 3-class accuracy on similarity-bucket prediction, with
+a per-clip retrieval-style alternative (MAP within a piece) as a
+sanity check.
+
+### 12.3 Side-by-side: which to add first?
+
+| | VGMIDI-TVar | MarioStructure (pairs) | Both |
+|---|---|---|---|
+| Time to working datamodule | ~1 day | ~2 days | ~3 days |
+| Audio quality risk | Synthetic, piano-only | Synthetic, multi-instrument | — |
+| Direct leitmotif fit | High (theme ↔ variation) | High (section-pair similarity) | — |
+| Dataset size | Small | Small | — |
+| Adds new MARBLE capability | Variation retrieval probe | Within-piece similarity probe | — |
+| Reuses existing infrastructure | Mostly Covers80 / SHS100K | Mostly HookTheoryStructure | — |
+
+**My recommendation:**
+
+1. **Finish current sweeps first.**  Don't expand the dataset suite until
+   the MERT / OMARRQ / CLaMP3 sweeps on the existing 9 tasks have
+   converged numbers — otherwise you'll be comparing apples and oranges
+   when you do add these.
+2. **Add VGMIDI-TVar next.**  Lowest integration cost, most direct
+   leitmotif relevance, smallest dataset for fast iteration.  Reuses
+   `CoverRetrievalTask` essentially unchanged.
+3. **Defer MarioStructure** until VGMIDI-TVar results clarify whether
+   the encoders generalise to synthesised MIDI audio at all.  If MIDI
+   rendering tanks every encoder's performance, MarioStructure won't
+   add new signal.  If the rendering works, MarioStructure becomes the
+   richer follow-up.
+
+### 12.4 What to skip
+
+Both datasets share one risk worth naming explicitly: **synthetic MIDI
+audio is out-of-distribution for the audio encoders.**  MERT, OMARRQ,
+and CLaMP3 were all pretrained on natural audio recordings — a
+fluidsynth render with a single piano SoundFont may produce embeddings
+that cluster by SoundFont quirks rather than by musical content.
+
+Mitigation: render with **varied SoundFonts** (rotate among 3–5 high-quality
+SoundFonts per file) so the encoder can't latch onto a single timbre
+signature.  This is a pre-processing step worth building once and
+reusing for both datasets.
+
