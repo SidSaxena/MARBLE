@@ -375,6 +375,9 @@ def _data_present(task: str) -> bool:
         # build with `scripts/data/build_hooktheory_melody_jsonl.py` after a
         # full HookTheory download (zips/audio/*.tar, ~104 GB).
         "HookTheoryMelody":    "data/HookTheory/HookTheory.train.jsonl",
+        # VGMIDITVar: built from MIDI zip via scripts/data/build_vgmiditvar_dataset.py
+        # (single JSONL covering both train + test splits; no .train/.test variant).
+        "VGMIDITVar":          "data/VGMIDITVar/VGMIDITVar.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()
