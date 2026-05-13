@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/download_shs100k.py
+scripts/data/download_shs100k.py
 ───────────────────────────
 Download SHS-100K (Second Hand Songs 2025) and build MARBLE JSONL metadata.
 
@@ -45,32 +45,32 @@ Prerequisites
 Usage
 -----
   # Test split (community benchmark, ~7,100 tracks) — recommended first run
-  python scripts/download_shs100k.py --browser firefox
+  python scripts/data/download_shs100k.py --browser firefox
 
   # RECOMMENDED for parallel workers: export cookies to file first, then use it.
   # (parallel --cookies-from-browser access can cause Firefox DB lock errors)
   python -m yt_dlp --cookies-from-browser firefox --cookies cookies.txt \\
           --skip-download "https://youtube.com/watch?v=rblt2EtFfC4"
-  python scripts/download_shs100k.py --cookies-file cookies.txt --workers 4
+  python scripts/data/download_shs100k.py --cookies-file cookies.txt --workers 4
 
   # Close Edge/Chrome before using them (Chromium locks the cookie DB)
-  python scripts/download_shs100k.py --browser edge --workers 2
+  python scripts/data/download_shs100k.py --browser edge --workers 2
 
   # Rebuild JSONL from already-downloaded files (no new downloads)
-  python scripts/download_shs100k.py --skip-audio
+  python scripts/data/download_shs100k.py --skip-audio
 
   # Put audio on an external drive (keeps the JSONL inside the project).
   # The JSONL's audio_path entries will point at the external drive.
-  python scripts/download_shs100k.py --audio-dir /Volumes/MyDrive/SHS100K
+  python scripts/data/download_shs100k.py --audio-dir /Volumes/MyDrive/SHS100K
 
   # Later, on a different machine, rebuild JSONL with the new audio location
-  python scripts/download_shs100k.py --skip-audio --audio-dir D:/SHS100K
+  python scripts/data/download_shs100k.py --skip-audio --audio-dir D:/SHS100K
 
   # Show all yt-dlp error messages (diagnose systematic failures)
-  python scripts/download_shs100k.py --browser firefox --verbose-errors
+  python scripts/data/download_shs100k.py --browser firefox --verbose-errors
 
   # Quick smoke-test
-  python scripts/download_shs100k.py --max-entries 10 --browser firefox
+  python scripts/data/download_shs100k.py --max-entries 10 --browser firefox
 
 Troubleshooting: all downloads failing (ok=0)
 ---------------------------------------------
@@ -327,7 +327,7 @@ def _download(
                 "    python -m yt_dlp --cookies-from-browser firefox "
                 "--cookies cookies.txt --skip-download "
                 "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
-                "    python scripts/download_shs100k.py --cookies-file cookies.txt"
+                "    python scripts/data/download_shs100k.py --cookies-file cookies.txt"
             )
         elif "No video formats found" in err or "Signature solving failed" in err:
             # The video exists but the player clients we use could not surface
@@ -531,7 +531,7 @@ def main():
                 "  python -m yt_dlp --cookies-from-browser firefox "
                 "--cookies cookies.txt --skip-download "
                 "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
-                "  python scripts/download_shs100k.py --cookies-file cookies.txt "
+                "  python scripts/data/download_shs100k.py --cookies-file cookies.txt "
                 f"--workers {args.workers}"
             )
     else:
@@ -617,7 +617,7 @@ def main():
                         "       python -m yt_dlp --cookies-from-browser firefox "
                         "--cookies cookies.txt --skip-download "
                         "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
-                        "       python scripts/download_shs100k.py "
+                        "       python scripts/data/download_shs100k.py "
                         "--cookies-file cookies.txt\n"
                         "  3. Add --verbose-errors to see the actual yt-dlp output.\n",
                         n_done,
@@ -645,7 +645,7 @@ def main():
             log.info(f"  ⊕  {n_works:>6,} works  (avg {len(records) / n_works:.1f} versions)")
 
     log.info("\nAll splits done.")
-    log.info("Next: python scripts/run_all_sweeps.py")
+    log.info("Next: python scripts/sweeps/run_all_sweeps.py")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/verify_shs100k.py
+scripts/verify/verify_shs100k.py
 ─────────────────────────
 Audit the downloaded SHS-100K audio dataset and the JSONL that points at it.
 
@@ -25,21 +25,21 @@ remux them in-place (audio stream copied losslessly, no re-encode).
 Usage
 -----
   # Quick check (file existence + size only)
-  python scripts/verify_shs100k.py
+  python scripts/verify/verify_shs100k.py
 
   # Custom paths
-  python scripts/verify_shs100k.py \\
+  python scripts/verify/verify_shs100k.py \\
       --jsonl data/SHS100K/SHS100K.test.jsonl \\
       --audio-dir "/Volumes/WD Black/datasets/MARBLE"
 
   # Thorough: also run ffprobe on every file and compare to JSONL metadata
-  python scripts/verify_shs100k.py --ffprobe
+  python scripts/verify/verify_shs100k.py --ffprobe
 
   # Most thorough: also try opening with torchaudio (slowest)
-  python scripts/verify_shs100k.py --torchaudio
+  python scripts/verify/verify_shs100k.py --torchaudio
 
   # Clean up AppleDouble sidecars (macOS metadata files) and convert .mp4 → .m4a
-  python scripts/verify_shs100k.py --clean-appledouble --convert-mp4
+  python scripts/verify/verify_shs100k.py --clean-appledouble --convert-mp4
 """
 
 import argparse
@@ -234,7 +234,7 @@ def main():
             f"JSONL is empty.  Most likely the downloader was re-run with "
             f"--skip-audio pointing at the wrong audio dir, overwriting it.\n"
             f"  Fix: regenerate the JSONL from the actual audio dir:\n"
-            f"    python scripts/download_shs100k.py --skip-audio "
+            f"    python scripts/data/download_shs100k.py --skip-audio "
             f"--audio-dir <your-audio-dir>"
         )
         sys.exit(1)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/convert_shs100k_to_flac.py
+"""scripts/data/convert_shs100k_to_flac.py
 ─────────────────────────────────────
 Convert SHS100K .m4a → .flac so torchaudio's soundfile backend can decode
 them on any platform. SHS100K is the only MARBLE dataset that ships as
@@ -18,17 +18,17 @@ Usage
 -----
     # Convert in-place: writes .flac alongside .m4a, rewrites JSONL,
     # optionally deletes .m4a files on success.
-    uv run python scripts/convert_shs100k_to_flac.py
+    uv run python scripts/data/convert_shs100k_to_flac.py
 
     # Override paths (when audio lives somewhere other than the JSONL
     # references — e.g. moved between machines)
-    uv run python scripts/convert_shs100k_to_flac.py \\
+    uv run python scripts/data/convert_shs100k_to_flac.py \\
         --jsonl data/SHS100K/SHS100K.test.jsonl \\
         --audio-dir D:/datasets/SHS100K \\
         --out-dir D:/datasets/SHS100K
 
     # Keep originals (default deletes .m4a after successful conversion)
-    uv run python scripts/convert_shs100k_to_flac.py --keep-originals
+    uv run python scripts/data/convert_shs100k_to_flac.py --keep-originals
 
 Prerequisites
 -------------

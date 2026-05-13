@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/test_clamp3_crossmodal_semantic.py
+scripts/diagnostics/test_clamp3_crossmodal_semantic.py
 ──────────────────────────────────────────
 Validate that CLaMP3's symbolic and audio branches actually produce
 semantically aligned embeddings (i.e. same-content pairs score higher
@@ -15,16 +15,16 @@ each audio row the diagonal entry (its own MIDI) is at or near the top.
 
 Usage
 -----
-  # After scripts/build_vgmiditvar_dataset.py has produced
+  # After scripts/data/build_vgmiditvar_dataset.py has produced
   # data/VGMIDITVar/VGMIDITVar.jsonl + audio renders:
 
-  uv run python scripts/test_clamp3_crossmodal_semantic.py \\
+  uv run python scripts/diagnostics/test_clamp3_crossmodal_semantic.py \\
       --jsonl data/VGMIDITVar/VGMIDITVar.jsonl \\
       --midi-dir data/VGMIDITVar/midi \\
       --num-pairs 5
 
   # Or specify an explicit list of (midi_path, audio_path) pairs:
-  uv run python scripts/test_clamp3_crossmodal_semantic.py \\
+  uv run python scripts/diagnostics/test_clamp3_crossmodal_semantic.py \\
       --pairs midi1.mid wav1.wav midi2.mid wav2.wav ...
 
 Pass criterion

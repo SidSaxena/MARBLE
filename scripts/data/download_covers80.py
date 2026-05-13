@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/download_covers80.py
+scripts/data/download_covers80.py
 ────────────────────────────
 Download the Covers80 dataset and generate a single JSONL file suitable for
 MARBLE's zero-shot cover-song retrieval evaluation.
@@ -34,9 +34,9 @@ manually at  data/Covers80/covers80.tgz  and re-run.
 
 Usage
 -----
-python scripts/download_covers80.py
-python scripts/download_covers80.py --data-dir /mnt/data
-python scripts/download_covers80.py --no-download   # if archive already exists
+python scripts/data/download_covers80.py
+python scripts/data/download_covers80.py --data-dir /mnt/data
+python scripts/data/download_covers80.py --no-download   # if archive already exists
 """
 
 import argparse
@@ -116,7 +116,7 @@ def main():
             except Exception as e:
                 print(f"\n\nDownload failed: {e}")
                 print("Manually place covers80.tgz in the data directory and re-run:")
-                print(f"  python scripts/download_covers80.py --data-dir {dest} --no-download")
+                print(f"  python scripts/data/download_covers80.py --data-dir {dest} --no-download")
                 sys.exit(1)
 
     # ── 2. Extract ────────────────────────────────────────────────────────────
@@ -196,7 +196,7 @@ def main():
           f"({len(work_ids_seen)} unique)")
 
     print(f"\nNext steps — run the Covers80 layer sweep:")
-    print(f"  python scripts/run_sweep_local.py \\")
+    print(f"  python scripts/sweeps/run_sweep_local.py \\")
     print(f"      --base-config configs/probe.OMARRQ-multifeature25hz.Covers80.yaml \\")
     print(f"      --num-layers 24 --model-tag OMARRQ-multifeature25hz --task-tag Covers80")
 

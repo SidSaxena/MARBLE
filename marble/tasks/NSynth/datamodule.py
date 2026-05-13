@@ -17,7 +17,7 @@ Dataset format — one JSON line per audio clip:
 
 Label mapping:  class_idx = note - 21   →  88 classes  (A0=0 … C8=87)
 
-Download:  python scripts/download_nsynth.py
+Download:  python scripts/data/download_nsynth.py
 """
 
 import json

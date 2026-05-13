@@ -119,7 +119,7 @@ def _gen_sweep_configs(base_config: str, num_layers: int,
     """Generate per-layer YAML configs and return the sweep dir path."""
     sweep_dir = f"configs/sweeps/{model_tag}.{task_tag}"
     _run([
-        "python", "scripts/gen_sweep_configs.py",
+        "python", "scripts/sweeps/gen_sweep_configs.py",
         "--base-config", base_config,
         "--num-layers",  str(num_layers),
         "--model-tag",   model_tag,
@@ -131,7 +131,7 @@ def _gen_sweep_configs(base_config: str, num_layers: int,
 
 def _has_test_metrics(summary_path: Path) -> bool:
     """True if a WandB summary file contains at least one `test/...` key.
-    Mirrors scripts/run_sweep_local.py:80 — the only reliable completion
+    Mirrors scripts/sweeps/run_sweep_local.py:80 — the only reliable completion
     signal for both supervised and zero-shot sweeps."""
     import json
     try:
@@ -142,7 +142,7 @@ def _has_test_metrics(summary_path: Path) -> bool:
 
 
 def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
-    """Port of scripts/run_sweep_local.py:97 — checks output/.../wandb/run-*/
+    """Port of scripts/sweeps/run_sweep_local.py:97 — checks output/.../wandb/run-*/
     files/wandb-summary.json for `test/*` keys. Used for resume-skip both
     locally and inside Modal containers (volume mounts the same path)."""
     patterns = [
@@ -332,7 +332,7 @@ def setup_shs100k_jsonl(use_torchaudio: bool = False):
         )
 
     cmd = [
-        "python", "scripts/verify_shs100k.py",
+        "python", "scripts/verify/verify_shs100k.py",
         "--jsonl", jsonl,
         "--audio-dir", audio_dir,
         "--rewrite",
@@ -378,7 +378,7 @@ def setup_hooktheory_full():
     audio_dir = f"{WORK_DIR}/data/HookTheory/audio"
     out_dir = f"{WORK_DIR}/data/HookTheory"
     _run([
-        "python", "scripts/build_hooktheory_melody_jsonl.py",
+        "python", "scripts/data/build_hooktheory_melody_jsonl.py",
         "--out-dir", out_dir,
         "--audio-dir", audio_dir,
         "--filter-by-audio",

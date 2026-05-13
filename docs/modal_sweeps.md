@@ -81,7 +81,7 @@ modal volume put marble-data \
     data/SHS100K/SHS100K.test.jsonl \
     SHS100K/SHS100K.test.jsonl
 
-# 2. Rewrite + verify on Modal (uses scripts/verify_shs100k.py --rewrite
+# 2. Rewrite + verify on Modal (uses scripts/verify/verify_shs100k.py --rewrite
 #    against the mounted audio dir)
 modal run modal_marble.py::setup_shs100k_jsonl
 ```
@@ -126,7 +126,7 @@ After Phase 1.1, kick off SHS100K as the smoke test. It's zero-shot
 retrieval (`max_epochs=0`) so test-only, fast, cheap:
 
 ```bash
-modal run scripts/modal_sweep.py \
+modal run scripts/sweeps/modal/modal_sweep.py \
     --base-config configs/probe.MERT-v1-95M-layers.SHS100K.yaml \
     --num-layers 13 \
     --model-tag MERT-v1-95M \
@@ -149,13 +149,13 @@ If smoke test passes, proceed to Phase 3.
 
 ```bash
 # All MERT sweeps (~7 sweeps, ~$100)
-modal run scripts/modal_run_all_sweeps.py --tier 1
+modal run scripts/sweeps/modal/modal_run_all_sweeps.py --tier 1
 
 # All CLaMP3 sweeps (~4 sweeps, ~$50)
-modal run scripts/modal_run_all_sweeps.py --tier 2
+modal run scripts/sweeps/modal/modal_run_all_sweeps.py --tier 2
 
 # Or one at a time
-modal run scripts/modal_run_all_sweeps.py --only MERT-NSynth
+modal run scripts/sweeps/modal/modal_run_all_sweeps.py --only MERT-NSynth
 ```
 
 Resume-safe: re-running a finished sweep is free — `_layer_done`
@@ -169,7 +169,7 @@ prints `skipped`.
 After Tier 1+2 results are in, decide whether to spend on OMARRQ:
 
 ```bash
-modal run scripts/modal_run_all_sweeps.py --tier 3
+modal run scripts/sweeps/modal/modal_run_all_sweeps.py --tier 3
 ```
 
 Each OMARRQ sweep is 24 layers (vs 13 for MERT/CLaMP3), so cost
@@ -199,7 +199,7 @@ modal volume get marble-output \
 
 Re-running a completed sweep is a no-op for finished layers — the
 `_layer_done` check (mirrored from
-[scripts/run_sweep_local.py:97](../scripts/run_sweep_local.py)) inspects
+[scripts/sweeps/run_sweep_local.py:97](../scripts/sweeps/run_sweep_local.py)) inspects
 the WandB summary JSON on the `marble-output` volume. `output_vol.reload()`
 runs at the top of each container so cross-container visibility is
 consistent.
@@ -265,8 +265,8 @@ Per-sweep cost roughly:
 | File | Role |
 |---|---|
 | [modal_marble.py](../modal_marble.py) | Modal app + `run_one_layer` (parallel unit) + `run_parallel_sweep` + data-setup functions |
-| [scripts/modal_sweep.py](../scripts/modal_sweep.py) | CLI bridge — `modal run` wrapper around `run_parallel_sweep` |
-| [scripts/modal_run_all_sweeps.py](../scripts/modal_run_all_sweeps.py) | Tier-prioritized orchestrator for the full migration |
-| [scripts/build_hooktheory_melody_jsonl.py](../scripts/build_hooktheory_melody_jsonl.py) | Builds `HookTheory.{train,val,test}.jsonl` from upstream raw data |
-| [scripts/verify_shs100k.py](../scripts/verify_shs100k.py) | SHS100K audit (`--rewrite` mode drops bad entries + repoints audio paths) |
+| [scripts/sweeps/modal/modal_sweep.py](../scripts/sweeps/modal/modal_sweep.py) | CLI bridge — `modal run` wrapper around `run_parallel_sweep` |
+| [scripts/sweeps/modal/modal_run_all_sweeps.py](../scripts/sweeps/modal/modal_run_all_sweeps.py) | Tier-prioritized orchestrator for the full migration |
+| [scripts/data/build_hooktheory_melody_jsonl.py](../scripts/data/build_hooktheory_melody_jsonl.py) | Builds `HookTheory.{train,val,test}.jsonl` from upstream raw data |
+| [scripts/verify/verify_shs100k.py](../scripts/verify/verify_shs100k.py) | SHS100K audit (`--rewrite` mode drops bad entries + repoints audio paths) |
 | [download.py](../download.py) | HF dataset download — `download_dataset(..., with_full_audio=True)` for HookTheoryMelody |

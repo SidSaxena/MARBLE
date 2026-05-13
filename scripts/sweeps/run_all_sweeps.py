@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/run_all_sweeps.py
+scripts/sweeps/run_all_sweeps.py
 ─────────────────────────
 Orchestrator: runs all MARBLE layer sweeps (OMARRQ, CLaMP3, MERT) sequentially,
 ordered fastest → slowest so results appear as soon as possible.
@@ -11,18 +11,18 @@ resume — already-completed layers (checkpoint exists) are skipped.
 Usage
 ─────
 # Run everything (skips completed layers automatically)
-python scripts/run_all_sweeps.py
+python scripts/sweeps/run_all_sweeps.py
 
 # Run only specific models or tasks
-python scripts/run_all_sweeps.py --models MERT
-python scripts/run_all_sweeps.py --tasks GS HookTheoryKey
-python scripts/run_all_sweeps.py --models CLaMP3 MERT --tasks GS
+python scripts/sweeps/run_all_sweeps.py --models MERT
+python scripts/sweeps/run_all_sweeps.py --tasks GS HookTheoryKey
+python scripts/sweeps/run_all_sweeps.py --models CLaMP3 MERT --tasks GS
 
 # Dry-run: print what would be run without running anything
-python scripts/run_all_sweeps.py --dry-run
+python scripts/sweeps/run_all_sweeps.py --dry-run
 
 # Override accelerator (Apple Silicon)
-python scripts/run_all_sweeps.py --accelerator mps
+python scripts/sweeps/run_all_sweeps.py --accelerator mps
 
 Speed order (calibrated to OMARRQ × GS = 16 h / 24 layers ≈ 40 min/layer)
 ───────────────────────────────────────────────────────────────────────────
@@ -66,8 +66,8 @@ Notes
 • CLaMP3: 13 layers, 768-dim. No BeatTracking or Chords1217 (frame-rate mismatch).
 • OMARRQ: 24 Conformer layers, 1024-dim, 25 Hz token rate.
 • NSynth train is capped at 50K samples (~289K total) to keep sweep tractable.
-• HookTheory data: run `uv run python scripts/download_hooktheory.py` first.
-• SHS100K data: run `uv run python scripts/download_shs100k.py` first.
+• HookTheory data: run `uv run python scripts/data/download_hooktheory.py` first.
+• SHS100K data: run `uv run python scripts/data/download_shs100k.py` first.
 """
 
 import argparse
@@ -372,7 +372,7 @@ def _data_present(task: str) -> bool:
         "HookTheoryKey":       "data/HookTheory/HookTheoryKey.train.jsonl",
         "HookTheoryStructure": "data/HookTheory/HookTheoryStructure.train.jsonl",
         # HookTheoryMelody needs the rich raw schema + full-song audio:
-        # build with `scripts/build_hooktheory_melody_jsonl.py` after a
+        # build with `scripts/data/build_hooktheory_melody_jsonl.py` after a
         # full HookTheory download (zips/audio/*.tar, ~104 GB).
         "HookTheoryMelody":    "data/HookTheory/HookTheory.train.jsonl",
     }
@@ -463,7 +463,7 @@ def main():
         print(f"{'#'*70}\n")
 
         cmd = [
-            PYTHON, "scripts/run_sweep_local.py",
+            PYTHON, "scripts/sweeps/run_sweep_local.py",
             "--base-config", s.base_config,
             "--num-layers",  str(s.num_layers),
             "--model-tag",   s.model,

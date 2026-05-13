@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/build_vgmiditvar_dataset.py
+scripts/data/build_vgmiditvar_dataset.py
 ───────────────────────────────────
 Render the Variation-Transformer VGMIDI-TVar (and optionally POP909-TVar)
 MIDI dataset to audio and build a MARBLE-compatible JSONL.
@@ -46,23 +46,23 @@ Prerequisites
 Usage
 -----
     # Render the test split of VGMIDI-TVar (default)
-    python scripts/build_vgmiditvar_dataset.py \\
+    python scripts/data/build_vgmiditvar_dataset.py \\
         --midi-zip data/source/VGMIDI-TVar.zip \\
         --audio-dir data/VGMIDITVar/audio \\
         --data-dir  data/VGMIDITVar \\
         --soundfont /path/to/SGM-V2.01.sf2
 
     # Use multiple SoundFonts rotated per-piece (recommended)
-    python scripts/build_vgmiditvar_dataset.py \\
+    python scripts/data/build_vgmiditvar_dataset.py \\
         --soundfont sf2/SGM-V2.01.sf2 \\
         --soundfont sf2/GeneralUser-GS.sf2 \\
         --soundfont sf2/FluidR3_GM.sf2
 
     # Rebuild JSONL from already-rendered audio (no re-rendering)
-    python scripts/build_vgmiditvar_dataset.py --skip-render
+    python scripts/data/build_vgmiditvar_dataset.py --skip-render
 
     # Render POP909-TVar instead of VGMIDI-TVar
-    python scripts/build_vgmiditvar_dataset.py \\
+    python scripts/data/build_vgmiditvar_dataset.py \\
         --midi-zip data/source/POP909-TVar.zip \\
         --audio-dir data/POP909TVar/audio --data-dir data/POP909TVar
 """

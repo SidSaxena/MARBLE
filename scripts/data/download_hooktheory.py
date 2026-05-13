@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-scripts/download_hooktheory.py
+scripts/data/download_hooktheory.py
 ──────────────────────────────
 Download the HookTheory dataset from HuggingFace (m-a-p/HookTheory).
 
@@ -25,11 +25,11 @@ Prerequisites
 
 Usage
 -----
-  uv run python scripts/download_hooktheory.py
-  uv run python scripts/download_hooktheory.py --data-dir /path/to/data
+  uv run python scripts/data/download_hooktheory.py
+  uv run python scripts/data/download_hooktheory.py --data-dir /path/to/data
 
 After download, run sweeps with:
-  uv run python scripts/run_all_sweeps.py --tasks HookTheoryKey HookTheoryStructure
+  uv run python scripts/sweeps/run_all_sweeps.py --tasks HookTheoryKey HookTheoryStructure
 """
 
 import argparse
@@ -64,7 +64,7 @@ def main():
 
     print()
     print("All done. Start sweeps with:")
-    print("  uv run python scripts/run_all_sweeps.py "
+    print("  uv run python scripts/sweeps/run_all_sweeps.py "
           "--tasks HookTheoryKey HookTheoryStructure")
 
 

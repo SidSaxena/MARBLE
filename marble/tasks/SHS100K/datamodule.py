@@ -24,7 +24,7 @@ JSONL format (one line per track):
     "duration":       209.4
   }
 
-Download:  python scripts/download_shs100k.py
+Download:  python scripts/data/download_shs100k.py
 """
 
 import json

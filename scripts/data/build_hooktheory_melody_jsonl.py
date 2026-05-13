@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/build_hooktheory_melody_jsonl.py
+"""scripts/data/build_hooktheory_melody_jsonl.py
 ─────────────────────────────────────────────
 Build `HookTheory.{train,val,test}.jsonl` for the HookTheoryMelody task.
 
@@ -36,14 +36,14 @@ fields it needs directly without renaming.
 Usage
 -----
     # Local: build from cached HF data, skip audio filter
-    uv run python scripts/build_hooktheory_melody_jsonl.py
+    uv run python scripts/data/build_hooktheory_melody_jsonl.py
 
     # Build + filter by which full-song audio actually exists on disk
-    uv run python scripts/build_hooktheory_melody_jsonl.py \\
+    uv run python scripts/data/build_hooktheory_melody_jsonl.py \\
         --audio-dir data/HookTheory/audio --filter-by-audio
 
     # Custom output dir (default: data/HookTheory/)
-    uv run python scripts/build_hooktheory_melody_jsonl.py \\
+    uv run python scripts/data/build_hooktheory_melody_jsonl.py \\
         --out-dir /mnt/marble-data/HookTheory
 """
 
