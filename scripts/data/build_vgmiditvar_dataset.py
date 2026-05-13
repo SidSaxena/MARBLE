@@ -94,6 +94,30 @@ _FILENAME_RE = re.compile(r"^(?P<piece>.+)_(?P<section>[A-Z]+)_(?P<idx>\d+)\.mid
 
 # ── MIDI extraction ──────────────────────────────────────────────────────────
 
+# Characters illegal in Windows file names. We sanitize unconditionally
+# (not just on Windows) so JSONLs are portable across platforms — a
+# dataset built on Linux and one built on Windows produce identical
+# filenames, audio paths, and work IDs.
+_FS_ILLEGAL_RE = re.compile(r'[<>:"|?*\x00-\x1f]')
+
+
+def _safe_filename(name: str) -> str:
+    """Return a cross-platform-safe version of `name` (a filename component,
+    not a full path). Replaces Windows-illegal chars with `-`, strips
+    Windows-rejected trailing dots/spaces, collapses runs of `-`.
+
+    The replacement char is `-` (NOT `_`) because the downstream
+    _FILENAME_RE regex uses `_` as structural separator between piece /
+    section / index — `?` → `_` could create ambiguity.
+    """
+    cleaned = _FS_ILLEGAL_RE.sub("-", name)
+    # Windows rejects names with trailing dots or spaces
+    cleaned = cleaned.rstrip(" .")
+    # Collapse multiple consecutive dashes (cosmetic only)
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
+    return cleaned or "_unnamed"
+
+
 def _extract_midi_zip(zip_path: Path, dest: Path) -> dict[str, list[Path]]:
     """Extract MIDI files from the source zip, return {split: [paths]}.
 
@@ -102,9 +126,14 @@ def _extract_midi_zip(zip_path: Path, dest: Path) -> dict[str, list[Path]]:
         29thSep2023_theme_var_extracted_for_training/
             train/*.mid
             test/*.mid
+
+    Filenames are sanitized through `_safe_filename()` so Windows-illegal
+    characters (`<>:"|?*`) don't break extraction. Sanitization is
+    deterministic + applied on every platform for portable JSONLs.
     """
     dest.mkdir(parents=True, exist_ok=True)
     splits: dict[str, list[Path]] = {"train": [], "test": []}
+    n_sanitized = 0
     with zipfile.ZipFile(zip_path) as zf:
         for name in zf.namelist():
             if not name.endswith(".mid"):
@@ -115,13 +144,21 @@ def _extract_midi_zip(zip_path: Path, dest: Path) -> dict[str, list[Path]]:
             split = next((p for p in parts if p in ("train", "test")), None)
             if split is None:
                 continue
-            out_path = dest / split / Path(name).name
+            orig_name = Path(name).name
+            safe_name = _safe_filename(orig_name)
+            if safe_name != orig_name:
+                n_sanitized += 1
+            out_path = dest / split / safe_name
             out_path.parent.mkdir(parents=True, exist_ok=True)
             if not out_path.exists():
                 with zf.open(name) as src, open(out_path, "wb") as dst:
                     shutil.copyfileobj(src, dst)
             splits[split].append(out_path)
-    log.info(f"  extracted: train={len(splits['train']):,}  test={len(splits['test']):,}  MIDI files")
+    msg = (f"  extracted: train={len(splits['train']):,}  "
+           f"test={len(splits['test']):,}  MIDI files")
+    if n_sanitized:
+        msg += f"  ({n_sanitized} filename(s) sanitized for cross-platform safety)"
+    log.info(msg)
     return splits
 
 
