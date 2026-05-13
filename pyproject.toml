@@ -30,6 +30,7 @@ dependencies = [
     "wandb",
     "mir_eval",
     "pretty_midi",
+    "mido",          # marble/encoders/CLaMP3/midi_util.py — MIDI→MTF conversion
     "yt-dlp",        # download_hooktheory.py
     "numpy>=1.19",
     "scipy>=1.5",

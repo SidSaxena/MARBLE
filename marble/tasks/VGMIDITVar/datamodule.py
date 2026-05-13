@@ -130,7 +130,12 @@ class _VGMIDITVarAudioBase(Dataset):
             n_full   = total_samples // orig_clip_frames
             rem      = total_samples - n_full * orig_clip_frames
             n_slices = n_full + (1 if rem / orig_clip_frames >= min_clip_ratio else 0)
-            n_slices = max(n_slices, 1)   # always keep at least 1 clip even if short
+            # VGMIDI-TVar themes are short (often 4–8 s).  Many renders end
+            # up shorter than clip_seconds=15, which would give n_slices=0
+            # via the formula above.  Force at least one slice — the
+            # __getitem__ zero-pad path handles the short length cleanly,
+            # so we'd rather include a short theme than drop it.
+            n_slices = max(n_slices, 1)
             for s in range(n_slices):
                 self.index_map.append((file_idx, s, orig_sr, orig_clip_frames))
 
@@ -254,7 +259,12 @@ class _VGMIDITVarSymbolicBase(Dataset):
         max_patches: Optional[int] = None,
         midi_dir: Optional[str] = None,
     ):
-        # Local import keeps the audio path's import-time independent of CLaMP3.
+        # Intentional lazy imports.  The audio path of VGMIDITVar runs
+        # with MERT / OMARRQ encoders that should NOT pull in CLaMP3 at
+        # all — eagerly importing CLaMP3 at module top-level would slow
+        # down those other sweeps and force the (heavy) CLaMP3 weight
+        # download on machines that never run the symbolic config.
+        # Do not move these to the file head.
         from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
         from marble.encoders.CLaMP3.midi_util  import midi_to_mtf
         from marble.encoders.CLaMP3.model      import CLaMP3Config
