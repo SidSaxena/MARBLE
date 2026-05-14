@@ -26,39 +26,59 @@ Validation: disk math exact (96 KB/clip predicted, 100 KB observed on
 OMARRQ-25hz with `torch.save` header); meanall + per-layer queries served
 from same cache by the commutativity property.
 
+### ✅ Cache extension to clip-level supervised tasks (11 tasks)
+
+**Shipped 2026-05-14** as the follow-up to the retrieval cache.
+
+- Cache plumbing factored into `EmbeddingCacheMixin`
+  (`marble/utils/emb_cache.py`). Both `BaseTask` and `CoverRetrievalTask`
+  inherit; supervised tasks (`GS`, `EMO`, `GTZANGenre`, `NSynth`,
+  `HookTheoryKey`, `HookTheoryStructure`, `MTGGenre/Instrument/Mood/Top50/MTT`)
+  get caching transparently through `BaseTask`.
+- `BaseTask.forward(x, clip_ids=...)` routes through the mixin's
+  hit/miss paths; `_shared_step`/`test_step` unpack 4-tuple batches.
+- All 11 supervised datamodules now emit `clip_id` as the 4th tuple
+  element (using `make_clip_id`).
+- ~97 supervised configs updated with `cache_embeddings: true`.
+
+### ✅ Audio-I/O bypass on cache hits
+
+**Shipped 2026-05-14** with the supervised extension. Pushes warm-cache
+wall-clock from ~10 min per layer (audio decode dominated) to
+estimated <1 min per layer.
+
+- `BaseAudioDataset.cache_check_fn` (optional `Callable[[str], bool]`)
+  injected by the task at `setup()` time via
+  `EmbeddingCacheMixin._inject_cache_check_into_datasets`.
+- On hit, dataset returns a zero-placeholder waveform and skips
+  `torchaudio.load + resample + pad` entirely. The task's `forward()`
+  ignores `x` on cache hits and uses the cached tensor.
+- Same pattern added to the 7 custom-dataset classes (Covers80,
+  SHS100K, VGMIDITVar, GS, EMO, GTZANGenre, NSynth).
+
 ---
 
 ## Open
 
-### 1. Cache integration for clip-level supervised tasks (11 tasks)
+### 1. Leitmotifs matrix-profile result cache (separate repo)
 
-The cache utility + retrieval integration already shipped. Extending to
-clip-level supervised tasks (`GS`, `EMO`, `GTZANGenre`, `NSynth`,
-`HookTheoryKey`, `HookTheoryStructure`, `MTGGenre/Instrument/Mood/Top50/MTT`)
-is mechanical:
+In `/Users/sid/leitmotifs/`. The matrix-profile cosine-similarity step
+takes 4–5 hours of GPU compute over 8M pair-wise comparisons (5-second
+windows × 259 tracks). DTW after that is another 2 hours. Per-window
+embeddings are already cached in `embeddings/<model>/L<N>/*.pt`, so
+MARBLE-style embedding caching won't help. What WILL help is caching
+the **matrix-profile results** themselves:
 
-- Each task's datamodule needs to return `clip_id` (same `make_clip_id(path, slice_idx)`
-  pattern as retrieval).
-- Each task's `forward()` needs to accept an optional `clip_ids` kwarg
-  and route through the cache miss/hit branches — same shape as the
-  retrieval task's integration. The `BaseTask._shared_step` may want a
-  small adapter so `training_step` / `validation_step` / `test_step`
-  all pass `clip_ids` through.
+- Per-pair `(pair_id, peak_score, peak_pos)` → ~100 MB for 8M pairs
+- Per-pair DTW scalar → ~32 MB
 
-**Cost.** ~2–3 hours; mostly find-and-replace across 11 datamodule
-files plus 11 probe.py files. Most of those probes follow a shared
-pattern (encoder → emb_transforms → MLPDecoder head) so a single
-`_forward_with_cache` helper on `BaseTask` could cover them all and
-the per-task changes drop to 1 line each.
+Cache key: `sha256(encoder_id + layer + window_seconds + step_seconds + sample_rate)[:8]`.
+Re-iterations on downstream filter thresholds or clustering
+parameters reuse the cached matrix-profile output instead of paying
+the 4–5h GPU cost again.
 
-**Benefit.** Even bigger speedup than retrieval. Supervised tasks
-train for 40–60 epochs; without cache, each epoch re-runs the
-encoder over all clips. With cache, only epoch 1 pays the encoder
-cost (and only on uncached clips); epochs 2–40 are pure head
-training. Estimated 10–20× speedup on a 13-layer × 60-epoch GS sweep.
-
-**Trigger.** When you start the supervised sweeps (after the SHS100K
-+ Covers80 retrieval sweeps land).
+**Cost.** ~50 LOC wrapping the existing matrix-profile script.
+**Trigger.** Next time you iterate on the leitmotifs pipeline.
 
 ### 2. Frame-level task caching (deferred indefinitely)
 

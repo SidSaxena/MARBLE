@@ -1,11 +1,10 @@
 # marble/tasks/EMO/probe.py
 import torch
-import torch.nn as nn
-import lightning.pytorch as pl
-from torchmetrics import Metric, R2Score, MetricCollection
+from torchmetrics import Metric, MetricCollection, R2Score
 
 from marble.core.base_task import BaseTask
 from marble.core.utils import instantiate_from_config
+
 
 class ProbeAudioTask(BaseTask):
     """
@@ -31,10 +30,7 @@ class ProbeAudioTask(BaseTask):
 
         # metrics comes in as nested dict: { split: { name: cfg, … }, … }
         metric_maps = {
-            split: {
-                name: instantiate_from_config(cfg)
-                for name, cfg in metrics[split].items()
-            }
+            split: {name: instantiate_from_config(cfg) for name, cfg in metrics[split].items()}
             for split in ("train", "val", "test")
         }
 
@@ -54,16 +50,24 @@ class ProbeAudioTask(BaseTask):
         self._test_file_outputs: list[dict] = []
 
     def test_step(self, batch, batch_idx):
-        x, labels, file_paths = batch
-        logits = self(x)
+        # 4-tuple (waveform, label, path, clip_id) when caching is on;
+        # fall back to legacy 3-tuple shape for older datamodules.
+        if isinstance(batch, (tuple, list)) and len(batch) >= 4:
+            x, labels, file_paths, clip_ids = batch[0], batch[1], batch[2], batch[3]
+        else:
+            x, labels, file_paths = batch
+            clip_ids = None
+        logits = self(x, clip_ids=list(clip_ids) if clip_ids is not None else None)
 
         # Store per-slice probabilities and labels for file-level aggregation
-        for fp, logit, lb in zip(file_paths, logits, labels):
-            self._test_file_outputs.append({
-                "file_path": fp,
-                "logit": logit.detach().to(torch.float32), # (C,)
-                "label": lb.to(torch.float32) # (C,)
-            })
+        for fp, logit, lb in zip(file_paths, logits, labels, strict=False):
+            self._test_file_outputs.append(
+                {
+                    "file_path": fp,
+                    "logit": logit.detach().to(torch.float32),  # (C,)
+                    "label": lb.to(torch.float32),  # (C,)
+                }
+            )
 
     def on_test_epoch_end(self) -> None:
         # Aggregate per-file predictions
@@ -77,9 +81,9 @@ class ProbeAudioTask(BaseTask):
         print(f"Aggregating {len(file_dict)} files with per-slice outputs")
         batched_logits = []
         batched_labels = []
-        for fp, info in file_dict.items():
-            arr = torch.stack(info["logits"])      # (n_slices, C)
-            mean_logit = arr.mean(dim=0)             # (C,)
+        for _fp, info in file_dict.items():
+            arr = torch.stack(info["logits"])  # (n_slices, C)
+            mean_logit = arr.mean(dim=0)  # (C,)
             batched_logits.append(mean_logit)
             batched_labels.append(info["label"])
         batched_logits = torch.stack(batched_logits)
@@ -89,13 +93,13 @@ class ProbeAudioTask(BaseTask):
         if mc is not None:
             metrics_out = mc(batched_logits, batched_labels)
             self.log_dict(metrics_out, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-            
 
 
 class SliceR2(Metric):
     """
     对 2 维回归输出 y_pred[...,dim] / y[...,dim] 做 R2 评估。
     """
+
     def __init__(self, dim: int, **r2_kwargs):
         super().__init__()
         self.dim = dim

@@ -45,6 +45,7 @@ model:
   class_path: marble.tasks.HookTheoryKey.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
+    cache_embeddings: true
     use_ema: false
 
     encoder:

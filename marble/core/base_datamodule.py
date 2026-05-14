@@ -1,19 +1,18 @@
 # marble/core/base_datamodule.py
 
-import os
 import json
-from abc import ABCMeta, abstractmethod, ABC
-from typing import Sequence, Union, Dict, List, Tuple, Optional
+import os
+from abc import ABC, ABCMeta, abstractmethod
 
-import torch
-import torchaudio
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
 import lightning.pytorch as pl
+import torch
+import torch.nn.functional as F
+import torchaudio
+from torch.utils.data import DataLoader, Dataset
 
 from marble.core.utils import instantiate_from_config
 from marble.modules.transforms import AudioTransformDataset
+from marble.utils.emb_cache import make_clip_id
 
 
 class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
@@ -34,15 +33,12 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
         self.audio_transforms = audio_transforms or {"train": [], "val": [], "test": []}
 
         self.train_config = train
-        self.val_config   = val
-        self.test_config  = test
+        self.val_config = val
+        self.test_config = test
 
     def _wrap(self, dataset: Dataset, stage: str) -> Dataset:
         """根据 stage 选对应的 transforms 列表来 wrap Dataset"""
-        transforms = [
-            instantiate_from_config(cfg) 
-            for cfg in self.audio_transforms.get(stage, [])
-        ]
+        transforms = [instantiate_from_config(cfg) for cfg in self.audio_transforms.get(stage, [])]
         if transforms:
             return AudioTransformDataset(dataset, transforms)
         print(f"No transforms for stage '{stage}', using original dataset.")
@@ -51,10 +47,10 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
     def setup(self, stage: str | None = None):
         # 原始 train/val dataset
         train_ds = instantiate_from_config(self.train_config)
-        val_ds   = instantiate_from_config(self.val_config)
+        val_ds = instantiate_from_config(self.val_config)
         # 分别 wrap
         self.train_dataset = self._wrap(train_ds, "train")
-        self.val_dataset   = self._wrap(val_ds,   "val")
+        self.val_dataset = self._wrap(val_ds, "val")
         test_ds = instantiate_from_config(self.test_config)
         self.test_dataset = self._wrap(test_ds, "test")
 
@@ -115,11 +111,11 @@ class BaseAudioDataset(Dataset, ABC):
         label_freq: int = -1,
         channel_mode: str = "first",
         min_clip_ratio: float = 1.0,
-        backend: Optional[str] = None
+        backend: str | None = None,
     ):
         """
         Args:
-            jsonl (str): Path to a JSONL file, where each line is a JSON object 
+            jsonl (str): Path to a JSONL file, where each line is a JSON object
                           containing at least:
                             - "audio_path": path to the audio file on disk
                             - "sample_rate": original sample rate (int)
@@ -135,8 +131,21 @@ class BaseAudioDataset(Dataset, ABC):
                                     E.g., if clip_seconds = 10, orig_sr = 44100, num_samples = 450000,
                                     then there are 10 full clips (10·44100 = 441000), plus 9000 samples left.
                                     If 9000/44100 = 0.204 > min_clip_ratio, a partial clip is kept.
+
+        Embedding-cache integration
+        ---------------------------
+        ``cache_check_fn`` is injected by the task at ``setup()`` time
+        (via ``EmbeddingCacheMixin._inject_cache_check_into_datasets``).
+        When set, ``__getitem__`` checks the cache for each clip's
+        ``clip_id`` BEFORE doing audio I/O — on cache hits we return a
+        zero placeholder waveform (the task's forward() ignores ``x``
+        on hits and uses the cached tensor) and skip
+        ``torchaudio.load + resample + pad`` entirely.
         """
         super().__init__()
+        # Set by the task at setup() time when the per-clip embedding cache
+        # is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
+        self.cache_check_fn: callable | None = None
         assert os.path.isfile(jsonl), f"JSONL file not found: {jsonl}"
         assert isinstance(sample_rate, (int, float)), "sample_rate must be an integer or float"
         self.jsonl = jsonl
@@ -151,11 +160,13 @@ class BaseAudioDataset(Dataset, ABC):
 
         # Validate channel_mode if expecting mono output
         if self.channels == 1 and self.channel_mode not in ("first", "mix", "random"):
-            raise ValueError(f"channel_mode must be one of 'first', 'mix', 'random' when channels=1, got: {self.channel_mode}")
+            raise ValueError(
+                f"channel_mode must be one of 'first', 'mix', 'random' when channels=1, got: {self.channel_mode}"
+            )
 
         # 1. Load metadata entries from the JSONL file
-        with open(self.jsonl, "r") as f:
-            self.meta: List[dict] = [json.loads(line) for line in f]
+        with open(self.jsonl) as f:
+            self.meta: list[dict] = [json.loads(line) for line in f]
 
         # 2. Pre-create resamplers for any original sample rate != target sample_rate
         self.resamplers: dict = {}
@@ -165,10 +176,8 @@ class BaseAudioDataset(Dataset, ABC):
                 self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
         # 3. Build index_map: a list of tuples (file_idx, slice_idx, orig_sr, orig_clip_frames)
-        self.index_map: List[Tuple[int, int, int, int]] = self._build_index_map(
-            metas=self.meta,
-            clip_seconds=self.clip_seconds,
-            min_clip_ratio=self.min_clip_ratio
+        self.index_map: list[tuple[int, int, int, int]] = self._build_index_map(
+            metas=self.meta, clip_seconds=self.clip_seconds, min_clip_ratio=self.min_clip_ratio
         )
 
     def __len__(self) -> int:
@@ -181,20 +190,31 @@ class BaseAudioDataset(Dataset, ABC):
         """
         Returns:
             waveform (torch.Tensor): Tensor of shape (channels, clip_len_target).
+                                     On cache hits this is a zero placeholder
+                                     (the task ignores ``x`` and uses the
+                                     cached tensor) — audio I/O is skipped.
             targets (Any): Whatever the subclass defines as target (e.g., frame-level labels).
             audio_path (str): Path to the original audio file from which the clip was taken.
+            clip_id (str): Stable identifier for the embedding cache.
+                           ``<stem>__<sha1(path)[:8]>__c<slice_idx>``.
         """
         file_idx, slice_idx, orig_sr, orig_clip_frames = self.index_map[idx]
         info = self.meta[file_idx]
         audio_path = info["audio_path"]
+        clip_id = make_clip_id(audio_path, slice_idx)
 
-        # 1. Load & preprocess the audio slice
-        waveform = self._load_and_preprocess(
-            path=audio_path,
-            slice_idx=slice_idx,
-            orig_sr=orig_sr,
-            orig_clip_frames=orig_clip_frames
-        )
+        # 1. Load & preprocess the audio slice — but skip if cache will hit.
+        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+            # Placeholder waveform: the task's forward() ignores ``x`` on
+            # cache hits and uses the cached (L, H) tensor instead.
+            waveform = torch.zeros(self.channels, self.clip_len_target)
+        else:
+            waveform = self._load_and_preprocess(
+                path=audio_path,
+                slice_idx=slice_idx,
+                orig_sr=orig_sr,
+                orig_clip_frames=orig_clip_frames,
+            )
         # waveform.shape == (self.channels, self.clip_len_target)
 
         # 2. Delegate target/label creation to subclass
@@ -202,28 +222,22 @@ class BaseAudioDataset(Dataset, ABC):
             file_idx=file_idx,
             slice_idx=slice_idx,
             orig_sr=orig_sr,
-            orig_clip_frames=orig_clip_frames
+            orig_clip_frames=orig_clip_frames,
         )
 
-        return waveform, targets, audio_path
+        return waveform, targets, audio_path, clip_id
 
     @abstractmethod
-    def get_targets(
-        self,
-        file_idx: int,
-        slice_idx: int,
-        orig_sr: int,
-        orig_clip_frames: int
-    ):
+    def get_targets(self, file_idx: int, slice_idx: int, orig_sr: int, orig_clip_frames: int):
         """
         Abstract method: subclasses must override this to produce whatever labels/targets
         are needed for a given clip.
-        
+
         Args:
             file_idx (int): Index of the audio file in self.meta.
             slice_idx (int): Which slice number (0-based) of length `orig_clip_frames` within the file.
             orig_sr (int): Original sample rate of the audio file.
-            orig_clip_frames (int): Number of samples per clip at original sample rate 
+            orig_clip_frames (int): Number of samples per clip at original sample rate
                                     (i.e., floor(clip_seconds * orig_sr)).
         Returns:
             Any data structure representing the target(s) for this clip.
@@ -231,11 +245,7 @@ class BaseAudioDataset(Dataset, ABC):
         raise NotImplementedError("Subclasses must implement get_targets().")
 
     def _load_and_preprocess(
-        self,
-        path: str,
-        slice_idx: int,
-        orig_sr: int,
-        orig_clip_frames: int
+        self, path: str, slice_idx: int, orig_sr: int, orig_clip_frames: int
     ) -> torch.Tensor:
         """
         Internal helper to:
@@ -249,10 +259,7 @@ class BaseAudioDataset(Dataset, ABC):
         """
         offset = slice_idx * orig_clip_frames
         waveform, _ = torchaudio.load(
-            path,
-            frame_offset=offset,
-            num_frames=orig_clip_frames,
-            backend=self.backend
+            path, frame_offset=offset, num_frames=orig_clip_frames, backend=self.backend
         )  # waveform shape: (orig_channels, actual_frames)
 
         # 1. Channel handling / downmixing / replication
@@ -322,11 +329,8 @@ class BaseAudioDataset(Dataset, ABC):
         return waveform
 
     def _build_index_map(
-        self,
-        metas: List[dict],
-        clip_seconds: float,
-        min_clip_ratio: float
-    ) -> List[Tuple[int, int, int, int]]:
+        self, metas: list[dict], clip_seconds: float, min_clip_ratio: float
+    ) -> list[tuple[int, int, int, int]]:
         """
         Construct a list of tuples indicating how to slice each audio file into fixed-length clips.
 
@@ -339,7 +343,7 @@ class BaseAudioDataset(Dataset, ABC):
 
         If the final partial segment has length >= min_clip_ratio * orig_clip_frames, it is included as well.
         """
-        index_map: List[Tuple[int, int, int, int]] = []
+        index_map: list[tuple[int, int, int, int]] = []
         for file_idx, info in enumerate(metas):
             orig_sr = int(info["sample_rate"])
             total_samples = int(info["num_samples"])

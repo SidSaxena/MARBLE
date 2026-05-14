@@ -31,15 +31,10 @@ from einops import reduce
 from lightning.pytorch import LightningModule
 
 from marble.core.utils import instantiate_from_config
-from marble.utils.emb_cache import (
-    EmbeddingCache,
-    compute_config_hash,
-    encoder_tuple_to_pooled,
-    stacked_to_layer_tuple,
-)
+from marble.utils.emb_cache import EmbeddingCacheMixin
 
 
-class CoverRetrievalTask(LightningModule):
+class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
     """
     Zero-shot cover-song retrieval probe.
 
@@ -78,90 +73,17 @@ class CoverRetrievalTask(LightningModule):
         # don't complain about zero-parameter models.
         self._dummy = nn.Parameter(torch.zeros(1), requires_grad=False)
 
-        # Embedding cache (lazy-built on first batch — we need access to
-        # the trainer's datamodule to compute the config hash from the
-        # actual audio pipeline. See ``_ensure_cache``.)
+        # Cache plumbing inherited from EmbeddingCacheMixin — slot init
+        # + lazy build on first forward + audio-I/O bypass injection.
         self.cache_embeddings = bool(cache_embeddings)
-        self._cache: EmbeddingCache | None = None
-        self._cache_init_attempted = False
+        self._init_cache_state()
 
-    # ── cache plumbing ───────────────────────────────────────────────────────
-
-    def _ensure_cache(self) -> None:
-        """Lazily construct the EmbeddingCache once the trainer + datamodule
-        are wired up. Safe to call repeatedly; only the first call does work."""
-        if self._cache is not None or self._cache_init_attempted:
-            return
-        self._cache_init_attempted = True
-        if not self.cache_embeddings:
-            return
-        # Derive a task tag from the WandB group name when available
-        # ("OMARRQ-multifeature-25hz / SHS100K" → ("OMARRQ-multifeature-25hz",
-        # "SHS100K")). Fall back to the encoder class name + a generic
-        # "task" if WandB metadata isn't present.
-        encoder_slug, task_name = self._derive_cache_slugs()
-        model_id = getattr(self.encoder, "HUGGINGFACE_MODEL_NAME", encoder_slug)
-        sr = int(getattr(self.encoder, "sampling_rate", self.sample_rate))
-        # Pull clip_seconds from the (test) datamodule when available.
-        clip_seconds = self._derive_clip_seconds()
-        # Pipeline signature: class names of the test-stage transforms,
-        # so changing the audio preprocessor invalidates the cache.
-        pipeline_sig = self._derive_pipeline_signature()
-        config_hash = compute_config_hash(
-            encoder_model_id=model_id,
-            sample_rate=sr,
-            clip_seconds=clip_seconds,
-            pipeline_signature=pipeline_sig,
-        )
-        self._cache = EmbeddingCache(
-            encoder_slug=encoder_slug,
-            task_name=task_name,
-            config_hash=config_hash,
-            metadata={
-                "encoder_model_id": str(model_id),
-                "sample_rate": sr,
-                "clip_seconds": float(clip_seconds),
-                "pipeline_signature": pipeline_sig,
-            },
-        )
-
-    def _derive_cache_slugs(self) -> tuple[str, str]:
-        """Return ``(encoder_slug, task_name)`` for the cache directory."""
-        group = None
-        try:
-            logger = self.trainer.logger
-            init_args = getattr(logger, "_wandb_init", None) or {}
-            group = init_args.get("group")
-        except Exception:
-            group = None
-        if isinstance(group, str) and " / " in group:
-            enc, task = group.split(" / ", 1)
-            return enc.strip(), task.strip()
-        # Fallbacks
-        enc = type(self.encoder).__name__
-        task = type(self).__name__
-        return enc, task
-
-    def _derive_clip_seconds(self) -> float:
-        try:
-            test_cfg = self.trainer.datamodule.test_config  # type: ignore[attr-defined]
-            init_args = test_cfg.get("init_args", {})
-            cs = init_args.get("clip_seconds")
-            if cs is not None:
-                return float(cs)
-        except Exception:
-            pass
-        return 0.0
-
-    def _derive_pipeline_signature(self) -> str:
-        try:
-            transforms = self.trainer.datamodule.audio_transforms.get("test", [])  # type: ignore[attr-defined]
-            # `transforms` here is a list of config dicts, not instances —
-            # use the class_path string as the signature.
-            sig_parts = [t.get("class_path", repr(t)) for t in transforms]
-            return "|".join(sig_parts)
-        except Exception:
-            return ""
+    def setup(self, stage: str | None = None) -> None:
+        """Hook into Lightning's per-stage setup to wire the cache check
+        into the datasets so they can skip audio I/O on cache hits."""
+        super().setup(stage)
+        self._ensure_cache()
+        self._inject_cache_check_into_datasets()
 
     # ── forward: encoder → transforms → flatten → L2-normalise ──────────────
 
@@ -178,26 +100,7 @@ class CoverRetrievalTask(LightningModule):
         written to ``output/.emb_cache/...`` and the encoder forward is
         skipped on cache hits.
         """
-        self._ensure_cache()
-        use_cache = self._cache is not None and clip_ids is not None
-
-        if use_cache and self._cache.has_all(clip_ids):
-            # Cache hit — skip encoder + time-pool entirely.
-            cached = self._cache.get_batch(clip_ids).to(x.device)  # (B, L, H)
-            self._cache.maybe_log(hit=True, n_clips=len(clip_ids))
-            layer_tuple = stacked_to_layer_tuple(cached)  # tuple of (B, 1, H)
-        else:
-            # Miss path — run the encoder, time-pool, persist to cache.
-            layer_outputs = self.encoder(x)  # tuple of (B, T, H)
-            if use_cache:
-                pooled = encoder_tuple_to_pooled(layer_outputs)  # (B, L, H)
-                self._cache.put_batch(clip_ids, pooled)
-                self._cache.maybe_log(hit=False, n_clips=len(clip_ids))
-                layer_tuple = stacked_to_layer_tuple(pooled)
-            else:
-                layer_tuple = layer_outputs
-
-        h = layer_tuple
+        h = self._cached_forward_layer_tuple(x, clip_ids)
         for t in self.emb_transforms:
             h = t(h)
         # h: (B, L_sel, T, H) → collapse to (B, H). For cache-hit / cache-warm

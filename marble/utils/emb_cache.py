@@ -296,3 +296,176 @@ def encoder_tuple_to_pooled(layer_outputs: tuple[torch.Tensor, ...]) -> torch.Te
     """
     pooled = [h.mean(dim=1) for h in layer_outputs]  # each (B, H_l)
     return torch.stack(pooled, dim=1)  # (B, L, H)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Mixin — shared cache plumbing for any LightningModule with the standard
+# encoder + emb_transforms + (decoder) pipeline
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class EmbeddingCacheMixin:
+    """Reusable cache-plumbing logic for any task with the standard MARBLE
+    pipeline ``encoder(x) → emb_transforms → (decoder)``.
+
+    Both :class:`marble.core.base_task.BaseTask` and the retrieval-only
+    :class:`marble.tasks.Covers80.probe.CoverRetrievalTask` inherit from
+    this mixin. The mixin doesn't override ``forward()`` itself — instead
+    it exposes :meth:`_cached_forward_to_emb_transform_input` which the
+    concrete ``forward()`` calls to obtain the layer-tuple representation
+    (either freshly encoded or loaded from disk).
+
+    The hosting class is expected to have:
+      * ``self.encoder`` returning a tuple of ``(B, T, H_l)`` per layer
+      * ``self.emb_transforms`` (a list — not consumed by the mixin)
+      * ``self.sample_rate`` (int, used as a fallback for cache key)
+      * ``self.cache_embeddings`` (bool, set in the host's ``__init__``)
+      * ``self.trainer`` set when in Lightning's lifecycle (optional)
+
+    Cache instance is built lazily on first forward via
+    :meth:`_ensure_cache` — we need access to the trainer's datamodule
+    to derive clip_seconds and the audio pipeline signature.
+    """
+
+    # Slots (set by host __init__ via `self.cache_embeddings = ...; mixin.__init__(self)`)
+    _cache: EmbeddingCache | None
+    _cache_init_attempted: bool
+    cache_embeddings: bool
+    sample_rate: int | float
+    encoder: Any
+
+    def _init_cache_state(self) -> None:
+        """Initialize the mixin's slots. Hosts should call this from
+        their ``__init__`` AFTER ``self.cache_embeddings = bool(...)``."""
+        self._cache = None
+        self._cache_init_attempted = False
+
+    # ── lazy cache construction ──────────────────────────────────────────
+
+    def _ensure_cache(self) -> None:
+        """Build the EmbeddingCache once the trainer + datamodule are
+        wired up. Safe to call repeatedly; only the first call does work."""
+        if self._cache is not None or self._cache_init_attempted:
+            return
+        self._cache_init_attempted = True
+        if not getattr(self, "cache_embeddings", False):
+            return
+        encoder_slug, task_name = self._derive_cache_slugs()
+        model_id = getattr(self.encoder, "HUGGINGFACE_MODEL_NAME", encoder_slug)
+        sr = int(getattr(self.encoder, "sampling_rate", self.sample_rate))
+        clip_seconds = self._derive_clip_seconds()
+        pipeline_sig = self._derive_pipeline_signature()
+        config_hash = compute_config_hash(
+            encoder_model_id=model_id,
+            sample_rate=sr,
+            clip_seconds=clip_seconds,
+            pipeline_signature=pipeline_sig,
+        )
+        self._cache = EmbeddingCache(
+            encoder_slug=encoder_slug,
+            task_name=task_name,
+            config_hash=config_hash,
+            metadata={
+                "encoder_model_id": str(model_id),
+                "sample_rate": sr,
+                "clip_seconds": float(clip_seconds),
+                "pipeline_signature": pipeline_sig,
+            },
+        )
+
+    def _derive_cache_slugs(self) -> tuple[str, str]:
+        """Return ``(encoder_slug, task_name)`` derived from the WandB
+        group name when available; fall back to class names."""
+        group = None
+        try:
+            logger = self.trainer.logger  # type: ignore[attr-defined]
+            init_args = getattr(logger, "_wandb_init", None) or {}
+            group = init_args.get("group")
+        except Exception:
+            group = None
+        if isinstance(group, str) and " / " in group:
+            enc, task = group.split(" / ", 1)
+            return enc.strip(), task.strip()
+        enc = type(self.encoder).__name__
+        task = type(self).__name__
+        return enc, task
+
+    def _derive_clip_seconds(self) -> float:
+        try:
+            test_cfg = self.trainer.datamodule.test_config  # type: ignore[attr-defined]
+            init_args = test_cfg.get("init_args", {})
+            cs = init_args.get("clip_seconds")
+            if cs is not None:
+                return float(cs)
+        except Exception:
+            pass
+        return 0.0
+
+    def _derive_pipeline_signature(self) -> str:
+        try:
+            transforms = self.trainer.datamodule.audio_transforms.get("test", [])  # type: ignore[attr-defined]
+            sig_parts = [t.get("class_path", repr(t)) for t in transforms]
+            return "|".join(sig_parts)
+        except Exception:
+            return ""
+
+    # ── cache-aware forward helpers ──────────────────────────────────────
+
+    def _cached_forward_layer_tuple(
+        self,
+        x: torch.Tensor,
+        clip_ids: list[str] | None,
+    ) -> tuple[torch.Tensor, ...]:
+        """Return the layer-tuple representation ``(L tensors of (B, T, H_l))``
+        for the input batch, either by reading from cache or by running the
+        encoder forward and persisting the pooled result.
+
+        Callers should then run ``self.emb_transforms`` on the returned
+        tuple, exactly as they would on a raw encoder output.
+
+        On cache hits the time axis collapses to T=1 — ``LayerSelector``
+        treats the tuple unchanged, and ``TimeAvgPool`` is a no-op on
+        T=1 inputs.
+        """
+        self._ensure_cache()
+        use_cache = self._cache is not None and clip_ids is not None
+
+        if use_cache and self._cache.has_all(clip_ids):
+            cached = self._cache.get_batch(clip_ids).to(x.device)  # (B, L, H)
+            self._cache.maybe_log(hit=True, n_clips=len(clip_ids))
+            return stacked_to_layer_tuple(cached)
+
+        # Miss path — run encoder, optionally persist.
+        layer_outputs = self.encoder(x)
+        if use_cache:
+            pooled = encoder_tuple_to_pooled(layer_outputs)  # (B, L, H)
+            self._cache.put_batch(clip_ids, pooled)
+            self._cache.maybe_log(hit=False, n_clips=len(clip_ids))
+            return stacked_to_layer_tuple(pooled)
+        return layer_outputs
+
+    # ── audio-I/O bypass injection ───────────────────────────────────────
+
+    def _inject_cache_check_into_datasets(self) -> None:
+        """Walk the wired-up datamodule and set ``cache_check_fn`` on every
+        dataset that supports it, so audio decode can be skipped on cache
+        hits. Safe to call multiple times — the fn is idempotent.
+
+        Should be invoked from the host's ``setup()`` once the trainer +
+        datamodule are attached.
+        """
+        if self._cache is None:
+            return
+        try:
+            dm = self.trainer.datamodule  # type: ignore[attr-defined]
+        except Exception:
+            return
+        if dm is None:
+            return
+        for attr in ("train_dataset", "val_dataset", "test_dataset"):
+            ds = getattr(dm, attr, None)
+            # AudioTransformDataset wraps the real dataset under .base
+            while ds is not None and hasattr(ds, "base"):
+                ds = ds.base
+            if ds is not None and hasattr(ds, "cache_check_fn"):
+                ds.cache_check_fn = self._cache.has

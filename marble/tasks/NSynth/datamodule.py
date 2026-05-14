@@ -21,21 +21,20 @@ Download:  python scripts/data/download_nsynth.py
 """
 
 import json
-from typing import List
 
 import torch
-import torchaudio
 import torch.nn.functional as F
+import torchaudio
 from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
-
+from marble.utils.emb_cache import make_clip_id
 
 # ─── constants ────────────────────────────────────────────────────────────────
-NUM_PITCH_CLASSES = 88          # MIDI pitches 21–108
-MIDI_OFFSET       = 21          # class_idx = note - MIDI_OFFSET
-NSYNTH_SR         = 16_000      # original sample rate of all NSynth WAVs
-NSYNTH_DURATION   = 4.0         # all NSynth clips are exactly 4 seconds
+NUM_PITCH_CLASSES = 88  # MIDI pitches 21–108
+MIDI_OFFSET = 21  # class_idx = note - MIDI_OFFSET
+NSYNTH_SR = 16_000  # original sample rate of all NSynth WAVs
+NSYNTH_DURATION = 4.0  # all NSynth clips are exactly 4 seconds
 
 
 class _NSynthAudioBase(Dataset):
@@ -84,25 +83,27 @@ class _NSynthAudioBase(Dataset):
                           up the sweep without losing label coverage.
                           Default (None) uses the full split.
         """
-        self.sample_rate      = int(sample_rate)
-        self.channels         = channels
-        self.channel_mode     = channel_mode
-        self.clip_len_target  = int(clip_seconds * self.sample_rate)
+        self.sample_rate = int(sample_rate)
+        self.channels = channels
+        self.channel_mode = channel_mode
+        self.clip_len_target = int(clip_seconds * self.sample_rate)
 
         with open(jsonl) as f:
-            self.meta: List[dict] = [json.loads(line) for line in f]
+            self.meta: list[dict] = [json.loads(line) for line in f]
 
         # Optional stratified subsample ──────────────────────────────────────
         if max_samples is not None and max_samples < len(self.meta):
             import random
+
             # Group by pitch class
             from collections import defaultdict
-            buckets: dict[int, List[dict]] = defaultdict(list)
+
+            buckets: dict[int, list[dict]] = defaultdict(list)
             for entry in self.meta:
                 buckets[int(entry["note"]) - MIDI_OFFSET].append(entry)
             # Per-class quota (floor); remainder goes to the largest classes
             per_class = max_samples // NUM_PITCH_CLASSES
-            subsampled: List[dict] = []
+            subsampled: list[dict] = []
             for cls_entries in buckets.values():
                 random.shuffle(cls_entries)
                 subsampled.extend(cls_entries[:per_class])
@@ -112,8 +113,10 @@ class _NSynthAudioBase(Dataset):
             subsampled.extend(all_rest[: max_samples - len(subsampled)])
             random.shuffle(subsampled)
             self.meta = subsampled
-            print(f"NSynth: subsampled {len(self.meta)} / {max_samples} clips "
-                  f"(requested cap={max_samples}).")
+            print(
+                f"NSynth: subsampled {len(self.meta)} / {max_samples} clips "
+                f"(requested cap={max_samples})."
+            )
 
         # Pre-build resamplers for any non-target SR (NSynth is always 16 kHz,
         # but guard for edge cases or mixed sources).
@@ -121,9 +124,11 @@ class _NSynthAudioBase(Dataset):
         for info in self.meta:
             orig_sr = int(info["sample_rate"])
             if orig_sr != self.sample_rate and orig_sr not in self.resamplers:
-                self.resamplers[orig_sr] = torchaudio.transforms.Resample(
-                    orig_sr, self.sample_rate
-                )
+                self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
+
+        # Set by the task at setup() time when the per-clip embedding cache
+        # is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
+        self.cache_check_fn = None
 
     def __len__(self) -> int:
         return len(self.meta)
@@ -136,17 +141,23 @@ class _NSynthAudioBase(Dataset):
         label    : int     class index 0–87
         path     : str     audio_path (used as uid for test aggregation)
         """
-        info    = self.meta[idx]
-        path    = info["audio_path"]
-        note    = int(info["note"])
-        label   = note - MIDI_OFFSET      # 0–87
+        info = self.meta[idx]
+        path = info["audio_path"]
+        note = int(info["note"])
+        label = note - MIDI_OFFSET  # 0–87
         orig_sr = int(info["sample_rate"])
+        clip_id = make_clip_id(path, 0)  # NSynth: one clip per file
 
-        waveform, _ = torchaudio.load(path)   # (C, T)
+        # Cache hit — skip audio I/O entirely.
+        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+            waveform = torch.zeros(self.channels, self.clip_len_target)
+            return waveform, label, path, clip_id
+
+        waveform, _ = torchaudio.load(path)  # (C, T)
 
         # ── channel handling ──────────────────────────────────────────────────
         C = waveform.size(0)
-        if C >= self.channels:
+        if self.channels <= C:
             if self.channels == 1:
                 if self.channel_mode == "first":
                     waveform = waveform[0:1]
@@ -166,29 +177,33 @@ class _NSynthAudioBase(Dataset):
 
         # ── pad / truncate ────────────────────────────────────────────────────
         T = waveform.size(1)
-        if T < self.clip_len_target:
+        if self.clip_len_target > T:
             waveform = F.pad(waveform, (0, self.clip_len_target - T))
-        elif T > self.clip_len_target:
+        elif self.clip_len_target < T:
             waveform = waveform[:, : self.clip_len_target]
 
-        return waveform, label, path
+        return waveform, label, path, clip_id
 
 
 class NSynthAudioTrain(_NSynthAudioBase):
     """Training split — DataModule sets shuffle=True."""
+
     pass
 
 
 class NSynthAudioVal(_NSynthAudioBase):
     """Validation split — DataModule sets shuffle=False."""
+
     pass
 
 
 class NSynthAudioTest(_NSynthAudioBase):
     """Test split — same logic as validation."""
+
     pass
 
 
 class NSynthDataModule(BaseDataModule):
     """Thin wrapper: all logic lives in BaseDataModule."""
+
     pass
