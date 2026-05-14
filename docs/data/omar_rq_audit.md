@@ -145,30 +145,64 @@ candidates for the 2–5× gap:
 
 ---
 
-## Concrete next steps (in expected-payoff order)
+## Experiments completed (2026-05-14)
 
-1. **Implement multi-layer mean aggregation** in `LayerSelector` (extend
-   to support `mean` mode over a list of layer indices). Re-run GS and
-   GTZAN-BT with `layers=[6,12,18,23], mode='mean'`. **Highest
-   expected payoff** — matches upstream eval convention.
+### Experiment 1: multi-layer mean aggregation — FAILED across all tasks
 
-2. **Try `mtg-upf/omar-rq-multifeature`** (no -25hz, no -fsq) as a
-   model_id parameter to `OMARRQ_Multifeature25hz_Encoder`. The class
-   name lies but the wrapper accepts arbitrary `model_id`. If results
-   improve, we've isolated the issue to the -25hz variant.
+| Task | Single-layer best | meanall (24 layers) | Δ |
+|---|---:|---:|---:|
+| GTZAN-BT (Beat F1) | 0.361 | 0.363 | noise |
+| Covers80 (MAP) | 0.027 | 0.025 | noise |
+| VGMIDITVar (MAP) | 0.074 | 0.074 | noise |
 
-3. **Apply centering** at encoder output for retrieval tasks specifically
-   (Covers80, SHS100K, VGMIDITVar). New `EncoderOutputCentering`
-   emb_transform that L2-normalizes after subtracting a precomputed
-   corpus mean. Expected: Covers80 MAP from 0.027 toward 0.10.
+Multi-layer mean aggregation does **not** explain the shortfall. The
+hypothesis that the paper's reported numbers used multi-layer averaging
+was wrong (or at least: the paper's number CAN'T be replicated just by
+averaging — there must be additional methodology we don't have).
 
-4. **Read the OMAR-RQ paper supplementary** (arXiv:2507.03482) for the
-   exact probe head config and training schedule. If they use a much
-   larger probe than ours, port that.
+### Experiment 2: centering (Mu-2018 "all-but-the-top") — TASK-DEPENDENT
 
-5. **Defer**: training a larger probe head end-to-end. This is a
-   pipeline change, not a fix; do this only if step 1+2+3 confirm
-   the integration is otherwise correct.
+Now logged for every retrieval run as `test/map_centered`:
+
+| Task | raw MAP | centered MAP | Verdict |
+|---|---:|---:|---|
+| Covers80 (-25hz-fsq, 160 tracks) | 0.0246 | 0.0213 | **−13%** — centering HURTS |
+| Covers80 (-multifeature, 160 tracks) | 0.0775 | 0.0721 | **−7%** — centering HURTS |
+| VGMIDITVar (-25hz-fsq, 12870 tracks) | 0.0737 | 0.0794 | **+7.7%** — centering helps |
+
+Pattern: centering helps with large corpora where the mean estimate is
+robust; hurts with small ones where it removes signal along with the
+cone. Keep `test/map_centered` as a logged side-by-side, don't make it
+default.
+
+### Experiment 3: variant swap (-fsq → -multifeature) — **MASSIVE WIN FOR RETRIEVAL**
+
+| Task | -25hz-fsq raw | **-multifeature raw** | Ratio |
+|---|---:|---:|---:|
+| Covers80 MAP | 0.0246 | **0.0775** | **3.1×** |
+| Covers80 MAP@1 | 0.000 | **0.100** | **∞** |
+| Covers80 MRR | 0.0367 | **0.1424** | **3.9×** |
+
+This is the real finding. The **FSQ quantization step in the SSL training
+objective degrades retrieval embeddings substantially**, even though
+supervised-task numbers in the paper are similar (Beat F1 0.833 vs
+0.855, Pitch 0.938 vs 0.940). Cosine retrieval is much more sensitive
+to embedding geometry than MLP-probe classification.
+
+**Action:** switch retrieval-task configs to default to
+`mtg-upf/omar-rq-multifeature`. The `-25hz-fsq` variant should be
+reserved for frame-rate-sensitive frame-level tasks where 25 Hz vs
+18.75 Hz matters.
+
+### Remaining open questions
+
+1. Does the non-fsq variant also help **classification** tasks
+   (GS, GTZAN-BT)? Need to run those — possibly modest improvement.
+2. Why does the **frame-level** beat-tracking shortfall (0.36 vs paper's
+   0.855) persist even after fixes? Most likely: missing DBN
+   post-processing on the activation curves (standard for SOTA beat
+   trackers; we just threshold + peak-pick).
+3. Does a **bigger probe head** narrow the gap further? Not yet tested.
 
 ---
 
