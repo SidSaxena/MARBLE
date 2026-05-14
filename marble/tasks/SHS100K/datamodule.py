@@ -28,18 +28,16 @@ Download:  python scripts/data/download_shs100k.py
 """
 
 import json
-import random
-from typing import List, Optional, Tuple
 
 import torch
-import torchaudio
 import torch.nn.functional as F
+import torchaudio
 from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
+from marble.utils.emb_cache import make_clip_id
 
-
-DEFAULT_CLIP_SECONDS  = 30.0
+DEFAULT_CLIP_SECONDS = 30.0
 DEFAULT_MIN_CLIP_RATIO = 0.5
 
 
@@ -70,38 +68,36 @@ class _SHS100KAudioBase(Dataset):
         clip_seconds: float = DEFAULT_CLIP_SECONDS,
         min_clip_ratio: float = DEFAULT_MIN_CLIP_RATIO,
         channel_mode: str = "mix",
-        backend: Optional[str] = None,
+        backend: str | None = None,
     ):
-        self.sample_rate     = int(sample_rate)
-        self.channels        = channels
-        self.clip_seconds    = clip_seconds
+        self.sample_rate = int(sample_rate)
+        self.channels = channels
+        self.clip_seconds = clip_seconds
         self.clip_len_target = int(clip_seconds * self.sample_rate)
-        self.min_clip_ratio  = min_clip_ratio
-        self.channel_mode    = channel_mode
-        self.backend         = backend
+        self.min_clip_ratio = min_clip_ratio
+        self.channel_mode = channel_mode
+        self.backend = backend
 
         with open(jsonl, encoding="utf-8") as f:
-            self.meta: List[dict] = [json.loads(line) for line in f]
+            self.meta: list[dict] = [json.loads(line) for line in f]
 
         # Build resamplers for any non-target sample rates in the dataset
         self.resamplers: dict[int, torchaudio.transforms.Resample] = {}
         for info in self.meta:
             orig_sr = int(info["sample_rate"])
             if orig_sr != self.sample_rate and orig_sr not in self.resamplers:
-                self.resamplers[orig_sr] = torchaudio.transforms.Resample(
-                    orig_sr, self.sample_rate
-                )
+                self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
         # index_map: list of (file_idx, slice_idx, orig_sr, orig_clip_frames)
-        self.index_map: List[Tuple[int, int, int, int]] = []
+        self.index_map: list[tuple[int, int, int, int]] = []
         for file_idx, info in enumerate(self.meta):
-            orig_sr          = int(info["sample_rate"])
-            total_samples    = int(info["num_samples"])
+            orig_sr = int(info["sample_rate"])
+            total_samples = int(info["num_samples"])
             orig_clip_frames = int(clip_seconds * orig_sr)
             if orig_clip_frames <= 0:
                 continue
-            n_full   = total_samples // orig_clip_frames
-            rem      = total_samples - n_full * orig_clip_frames
+            n_full = total_samples // orig_clip_frames
+            rem = total_samples - n_full * orig_clip_frames
             n_slices = n_full + (1 if rem / orig_clip_frames >= min_clip_ratio else 0)
             for s in range(n_slices):
                 self.index_map.append((file_idx, s, orig_sr, orig_clip_frames))
@@ -111,9 +107,10 @@ class _SHS100KAudioBase(Dataset):
 
     def __getitem__(self, idx: int):
         file_idx, slice_idx, orig_sr, orig_clip_frames = self.index_map[idx]
-        info    = self.meta[file_idx]
-        path    = info["audio_path"]
+        info = self.meta[file_idx]
+        path = info["audio_path"]
         work_id = int(info["work_id"])
+        clip_id = make_clip_id(path, slice_idx)
 
         offset = slice_idx * orig_clip_frames
         waveform, _ = torchaudio.load(
@@ -125,7 +122,7 @@ class _SHS100KAudioBase(Dataset):
 
         # ── channel handling ──────────────────────────────────────────────────
         C = waveform.size(0)
-        if C >= self.channels:
+        if self.channels <= C:
             if self.channels == 1:
                 if self.channel_mode == "first":
                     waveform = waveform[0:1]
@@ -142,7 +139,7 @@ class _SHS100KAudioBase(Dataset):
             else:
                 waveform = waveform[: self.channels]
         else:
-            deficit  = self.channels - C
+            deficit = self.channels - C
             waveform = torch.cat([waveform, waveform[-1:].repeat(deficit, 1)], 0)
 
         # ── resample ──────────────────────────────────────────────────────────
@@ -151,16 +148,17 @@ class _SHS100KAudioBase(Dataset):
 
         # ── pad / truncate to exact clip length ───────────────────────────────
         T = waveform.size(1)
-        if T < self.clip_len_target:
+        if self.clip_len_target > T:
             waveform = F.pad(waveform, (0, self.clip_len_target - T))
-        elif T > self.clip_len_target:
+        elif self.clip_len_target < T:
             waveform = waveform[:, : self.clip_len_target]
 
-        return waveform, work_id, path
+        return waveform, work_id, path, clip_id
 
 
 class SHS100KAudioAll(_SHS100KAudioBase):
     """Full split — used for zero-shot retrieval evaluation."""
+
     pass
 
 
@@ -170,9 +168,11 @@ class SHS100KAudioDummy(_SHS100KAudioBase):
     Points at the test JSONL so LightningCLI setup doesn't require separate
     files; these loaders are never iterated (max_epochs=0).
     """
+
     pass
 
 
 class SHS100KDataModule(BaseDataModule):
     """Thin wrapper — all logic is in BaseDataModule."""
+
     pass

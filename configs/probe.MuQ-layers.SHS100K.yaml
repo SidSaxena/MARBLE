@@ -36,6 +36,7 @@ model:
   class_path: marble.tasks.SHS100K.probe.CoverRetrievalTask
   init_args:
     sample_rate: 24000
+    cache_embeddings: true
 
     encoder:
       class_path: marble.encoders.MuQ.model.MuQ_Encoder

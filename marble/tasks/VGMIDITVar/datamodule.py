@@ -48,19 +48,18 @@ preserved so future supervised probes can use it.
 """
 
 import json
-from typing import List, Optional, Tuple
 
 import torch
-import torchaudio
 import torch.nn.functional as F
+import torchaudio
 from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
-
+from marble.utils.emb_cache import make_clip_id
 
 # Default clip length when splitting long renders into chunks.  Themes are
 # usually short (≤30 s) so we use a smaller default than Covers80.
-DEFAULT_CLIP_SECONDS  = 15.0
+DEFAULT_CLIP_SECONDS = 15.0
 DEFAULT_MIN_CLIP_RATIO = 0.5
 
 
@@ -91,20 +90,20 @@ class _VGMIDITVarAudioBase(Dataset):
         clip_seconds: float = DEFAULT_CLIP_SECONDS,
         min_clip_ratio: float = DEFAULT_MIN_CLIP_RATIO,
         channel_mode: str = "mix",
-        backend: Optional[str] = None,
-        split: Optional[str] = None,
+        backend: str | None = None,
+        split: str | None = None,
     ):
-        self.sample_rate     = int(sample_rate)
-        self.channels        = channels
-        self.clip_seconds    = clip_seconds
+        self.sample_rate = int(sample_rate)
+        self.channels = channels
+        self.clip_seconds = clip_seconds
         self.clip_len_target = int(clip_seconds * self.sample_rate)
-        self.min_clip_ratio  = min_clip_ratio
-        self.channel_mode    = channel_mode
-        self.backend         = backend
-        self.split           = split
+        self.min_clip_ratio = min_clip_ratio
+        self.channel_mode = channel_mode
+        self.backend = backend
+        self.split = split
 
         with open(jsonl, encoding="utf-8") as f:
-            self.meta: List[dict] = [json.loads(line) for line in f]
+            self.meta: list[dict] = [json.loads(line) for line in f]
 
         # Optionally filter to one split
         if split is not None:
@@ -115,20 +114,18 @@ class _VGMIDITVarAudioBase(Dataset):
         for info in self.meta:
             orig_sr = int(info["sample_rate"])
             if orig_sr != self.sample_rate and orig_sr not in self.resamplers:
-                self.resamplers[orig_sr] = torchaudio.transforms.Resample(
-                    orig_sr, self.sample_rate
-                )
+                self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
         # Flat index: (file_idx, slice_idx, orig_sr, orig_clip_frames)
-        self.index_map: List[Tuple[int, int, int, int]] = []
+        self.index_map: list[tuple[int, int, int, int]] = []
         for file_idx, info in enumerate(self.meta):
-            orig_sr          = int(info["sample_rate"])
-            total_samples    = int(info["num_samples"])
+            orig_sr = int(info["sample_rate"])
+            total_samples = int(info["num_samples"])
             orig_clip_frames = int(clip_seconds * orig_sr)
             if orig_clip_frames <= 0:
                 continue
-            n_full   = total_samples // orig_clip_frames
-            rem      = total_samples - n_full * orig_clip_frames
+            n_full = total_samples // orig_clip_frames
+            rem = total_samples - n_full * orig_clip_frames
             n_slices = n_full + (1 if rem / orig_clip_frames >= min_clip_ratio else 0)
             # VGMIDI-TVar themes are short (often 4–8 s).  Many renders end
             # up shorter than clip_seconds=15, which would give n_slices=0
@@ -144,9 +141,10 @@ class _VGMIDITVarAudioBase(Dataset):
 
     def __getitem__(self, idx: int):
         file_idx, slice_idx, orig_sr, orig_clip_frames = self.index_map[idx]
-        info    = self.meta[file_idx]
-        path    = info["audio_path"]
+        info = self.meta[file_idx]
+        path = info["audio_path"]
         work_id = int(info["work_id"])
+        clip_id = make_clip_id(path, slice_idx)
 
         offset = slice_idx * orig_clip_frames
         waveform, _ = torchaudio.load(
@@ -158,7 +156,7 @@ class _VGMIDITVarAudioBase(Dataset):
 
         # ── channel handling ──────────────────────────────────────────────────
         C = waveform.size(0)
-        if C >= self.channels:
+        if self.channels <= C:
             if self.channels == 1:
                 if self.channel_mode == "first":
                     waveform = waveform[0:1]
@@ -175,7 +173,7 @@ class _VGMIDITVarAudioBase(Dataset):
             else:
                 waveform = waveform[: self.channels]
         else:
-            deficit  = self.channels - C
+            deficit = self.channels - C
             waveform = torch.cat([waveform, waveform[-1:].repeat(deficit, 1)], 0)
 
         # ── resample ──────────────────────────────────────────────────────────
@@ -184,16 +182,17 @@ class _VGMIDITVarAudioBase(Dataset):
 
         # ── pad / truncate to exact clip length ───────────────────────────────
         T = waveform.size(1)
-        if T < self.clip_len_target:
+        if self.clip_len_target > T:
             waveform = F.pad(waveform, (0, self.clip_len_target - T))
-        elif T > self.clip_len_target:
+        elif self.clip_len_target < T:
             waveform = waveform[:, : self.clip_len_target]
 
-        return waveform, work_id, path
+        return waveform, work_id, path, clip_id
 
 
 class VGMIDITVarAudioAll(_VGMIDITVarAudioBase):
     """All renders, used for zero-shot retrieval evaluation."""
+
     pass
 
 
@@ -211,11 +210,13 @@ class VGMIDITVarAudioDummy(_VGMIDITVarAudioBase):
     LightningCLI doesn't need special-casing.  Points at the same JSONL
     as the test dataset; never iterated when ``max_epochs=0``.
     """
+
     pass
 
 
 class VGMIDITVarDataModule(BaseDataModule):
     """Thin wrapper — all logic is in BaseDataModule."""
+
     pass
 
 
@@ -255,9 +256,9 @@ class _VGMIDITVarSymbolicBase(Dataset):
     def __init__(
         self,
         jsonl: str,
-        split: Optional[str] = None,
-        max_patches: Optional[int] = None,
-        midi_dir: Optional[str] = None,
+        split: str | None = None,
+        max_patches: int | None = None,
+        midi_dir: str | None = None,
     ):
         # Intentional lazy imports.  The audio path of VGMIDITVar runs
         # with MERT / OMARRQ encoders that should NOT pull in CLaMP3 at
@@ -265,20 +266,21 @@ class _VGMIDITVarSymbolicBase(Dataset):
         # down those other sweeps and force the (heavy) CLaMP3 weight
         # download on machines that never run the symbolic config.
         # Do not move these to the file head.
-        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
-        from marble.encoders.CLaMP3.midi_util  import midi_to_mtf
-        from marble.encoders.CLaMP3.model      import CLaMP3Config
         from pathlib import Path as _Path
 
+        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+        from marble.encoders.CLaMP3.midi_util import midi_to_mtf
+        from marble.encoders.CLaMP3.model import CLaMP3Config
+
         self._midi_to_mtf = midi_to_mtf
-        self.patchilizer  = M3Patchilizer()
-        self.max_patches  = max_patches or CLaMP3Config.PATCH_LENGTH
-        self.patch_size   = CLaMP3Config.PATCH_SIZE
+        self.patchilizer = M3Patchilizer()
+        self.max_patches = max_patches or CLaMP3Config.PATCH_LENGTH
+        self.patch_size = CLaMP3Config.PATCH_SIZE
         self.pad_token_id = self.patchilizer.pad_token_id
-        self.midi_dir     = _Path(midi_dir) if midi_dir else None
+        self.midi_dir = _Path(midi_dir) if midi_dir else None
 
         with open(jsonl, encoding="utf-8") as f:
-            self.meta: List[dict] = [json.loads(line) for line in f]
+            self.meta: list[dict] = [json.loads(line) for line in f]
         if split is not None:
             self.meta = [m for m in self.meta if m.get("split") == split]
 
@@ -289,8 +291,9 @@ class _VGMIDITVarSymbolicBase(Dataset):
         # given, also try <midi_dir>/<split>/<stem>.mid (matches the layout
         # build_vgmiditvar_dataset.py produces).
         from pathlib import Path as _Path
+
         audio_path = _Path(entry["audio_path"])
-        candidate  = audio_path.with_suffix(".mid")
+        candidate = audio_path.with_suffix(".mid")
         if candidate.exists():
             return str(candidate)
         if self.midi_dir is not None:
@@ -298,8 +301,7 @@ class _VGMIDITVarSymbolicBase(Dataset):
             if cand.exists():
                 return str(cand)
         raise FileNotFoundError(
-            f"Could not find MIDI for {audio_path.stem}; tried {candidate} "
-            f"and {self.midi_dir}"
+            f"Could not find MIDI for {audio_path.stem}; tried {candidate} and {self.midi_dir}"
         )
 
     def __len__(self) -> int:
@@ -334,6 +336,7 @@ class _VGMIDITVarSymbolicBase(Dataset):
 
 class VGMIDITVarSymbolicAll(_VGMIDITVarSymbolicBase):
     """All MIDI files — zero-shot symbolic retrieval evaluation."""
+
     pass
 
 
@@ -347,4 +350,5 @@ class VGMIDITVarSymbolicTest(_VGMIDITVarSymbolicBase):
 
 class VGMIDITVarSymbolicDummy(_VGMIDITVarSymbolicBase):
     """Placeholder dataset for the train / val loaders under max_epochs=0."""
+
     pass
