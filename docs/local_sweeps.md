@@ -8,6 +8,27 @@ For the end-to-end runbook, see [workflow.md](workflow.md).
 
 ---
 
+## Embedding cache (read this before tuning concurrency)
+
+For all cache-safe tasks (retrieval + clip-level supervised) the
+encoder forward — historically ~33 min per layer for OMARRQ × SHS100K —
+runs **once per (encoder, task) pair**, not once per layer. Subsequent
+per-layer (and meanall) jobs load tensors from
+`output/.emb_cache/<encoder>/<task>__<hash>/` and skip the encoder
+entirely.
+
+This changes the calculus on `--concurrency`. With cold cache the GPU
+is saturated and concurrency > 1 doesn't help. With warm cache there's
+no GPU work at all, so concurrency mostly affects how fast the cache
+files get read from disk (typically you don't need >1).
+
+See [`embedding_cache.md`](embedding_cache.md) for the full design,
+disk-math, and CLI reference (`extract.py`, `manage.py`). The cache is
+enabled by default via `cache_embeddings: true` in every cache-safe
+config.
+
+---
+
 ## --concurrency: parallel layers on one GPU
 
 Each layer probe needs ~5–6 GB VRAM. On a 16 GB GPU two can run
