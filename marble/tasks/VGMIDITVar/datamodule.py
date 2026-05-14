@@ -100,6 +100,9 @@ class _VGMIDITVarAudioBase(Dataset):
         self.min_clip_ratio = min_clip_ratio
         self.channel_mode = channel_mode
         self.backend = backend
+        # Set by the task at setup() time when the per-clip embedding
+        # cache is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
+        self.cache_check_fn = None
         self.split = split
 
         with open(jsonl, encoding="utf-8") as f:
@@ -145,6 +148,13 @@ class _VGMIDITVarAudioBase(Dataset):
         path = info["audio_path"]
         work_id = int(info["work_id"])
         clip_id = make_clip_id(path, slice_idx)
+
+        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+            # Cache hit — skip audio I/O entirely. The task's forward()
+            # ignores ``x`` on cache hits and uses the cached (L, H) tensor.
+            target_len = int(self.clip_seconds * self.sample_rate)
+            waveform = torch.zeros(self.channels, target_len)
+            return waveform, work_id, path, clip_id
 
         offset = slice_idx * orig_clip_frames
         waveform, _ = torchaudio.load(

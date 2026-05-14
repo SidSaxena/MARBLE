@@ -1,15 +1,28 @@
 # marble/core/base_task.py
+from abc import ABC
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from abc import ABC
 from lightning.pytorch import LightningModule
-from torchmetrics import MetricCollection, Accuracy
+from torchmetrics import Accuracy, MetricCollection
 
 from marble.modules.ema import LitEma
+from marble.utils.emb_cache import EmbeddingCacheMixin
 
 
-class BaseTask(LightningModule, ABC):
+def _unpack_batch(batch):
+    """Split a 3-tuple ``(x, y, paths)`` or 4-tuple ``(x, y, paths, clip_ids)``
+    into ``(x, y, paths, clip_ids_or_None)``. Keeps backward-compatibility
+    with datamodules that still emit the legacy 3-tuple."""
+    if isinstance(batch, (tuple, list)) and len(batch) >= 4:
+        return batch[0], batch[1], batch[2], batch[3]
+    if isinstance(batch, (tuple, list)) and len(batch) == 3:
+        return batch[0], batch[1], batch[2], None
+    # Fallback for unusual shapes
+    return batch[0], batch[1], None, None
+
+
+class BaseTask(LightningModule, EmbeddingCacheMixin, ABC):
     """
     Base Task class to encapsulate encoder-decoder models with:
       - support for multiple embedding transforms
@@ -17,6 +30,9 @@ class BaseTask(LightningModule, ABC):
       - multiple loss functions
       - split‐specific MetricCollections
       - optional EMA on encoder weights
+      - opt-in per-clip embedding cache via ``cache_embeddings=True``
+        (see :class:`marble.utils.emb_cache.EmbeddingCacheMixin` and
+        ``docs/embedding_cache.md``)
     """
 
     def __init__(
@@ -29,17 +45,21 @@ class BaseTask(LightningModule, ABC):
         metrics: dict[str, dict[str, nn.Module]] | None = None,
         sample_rate: int | None = None,
         use_ema: bool = False,
+        cache_embeddings: bool = False,
         **kwargs,
     ):
         super().__init__()
         # save all args passed to init (for LightningCLI, checkpointing, etc.)
-        self.save_hyperparameters(ignore=['encoder', 'emb_transforms', 'decoders', 'losses', 'metrics'])
+        self.save_hyperparameters(
+            ignore=["encoder", "emb_transforms", "decoders", "losses", "metrics"]
+        )
 
         # core modules
         self.encoder = encoder
         self.emb_transforms = nn.ModuleList(emb_transforms or [])
         self.decoders = nn.ModuleList(decoders or [])
         self.loss_fns = nn.ModuleList(losses or [])
+        self.sample_rate = sample_rate
 
         # optional EMA on encoder parameters
         self.use_ema = use_ema
@@ -48,21 +68,40 @@ class BaseTask(LightningModule, ABC):
 
         # build and register metrics per split
         if metrics:
-            for split in ('train', 'val', 'test'):
+            for split in ("train", "val", "test"):
                 split_cfg = metrics.get(split)
                 if split_cfg:
                     mc = MetricCollection(
-                        {name: m for name, m in split_cfg.items()},
-                        prefix=f"{split}/"
+                        {name: m for name, m in split_cfg.items()}, prefix=f"{split}/"
                     )
                     setattr(self, f"{split}_metrics", mc)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor | list[torch.Tensor]:
+        # Per-clip embedding cache (lazy-built on first forward via
+        # _ensure_cache from the mixin).
+        self.cache_embeddings = bool(cache_embeddings)
+        self._init_cache_state()
+
+    def setup(self, stage: str | None = None) -> None:
+        """Hook into Lightning's per-stage setup to wire the cache check
+        into the datasets so they can skip audio I/O on cache hits."""
+        super().setup(stage)
+        self._ensure_cache()
+        self._inject_cache_check_into_datasets()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        clip_ids: list[str] | None = None,
+    ) -> torch.Tensor | list[torch.Tensor]:
         """
         Default forward: encoder → transforms → each decoder head.
         Returns single Tensor if only one head, else list of Tensors.
+
+        When ``cache_embeddings=True`` and ``clip_ids`` is provided, the
+        post-time-pool ``(L, H)`` per-clip embedding is loaded from /
+        written to the cache and the encoder forward is skipped on hits.
         """
-        h = self.encoder(x)
+        h = self._cached_forward_layer_tuple(x, clip_ids)
         for t in self.emb_transforms:
             h = t(h)
         outputs = [dec(h) for dec in self.decoders]
@@ -71,13 +110,13 @@ class BaseTask(LightningModule, ABC):
     def _shared_step(self, batch, batch_idx: int, split: str) -> torch.Tensor:
         """
         Common logic for train/val:
-          - unpack batch
-          - forward
+          - unpack batch (3-tuple or 4-tuple with clip_ids)
+          - forward (with optional clip_ids for cache lookup)
           - sum all loss_fns
           - log loss and metrics
         """
-        x, y, uids_or_paths = batch
-        logits = self(x)
+        x, y, _paths, clip_ids = _unpack_batch(batch)
+        logits = self(x, clip_ids=list(clip_ids) if clip_ids is not None else None)
 
         # Explicit batch_size for self.log so Lightning's epoch-end averaging is
         # exact instead of inferred — silences the "ambiguous collection"
@@ -88,15 +127,28 @@ class BaseTask(LightningModule, ABC):
         # compute and log loss
         losses = [fn(logits, y) for fn in self.loss_fns]
         loss = sum(losses)
-        self.log(f"{split}/loss", loss, prog_bar=True, on_step=False,
-                 on_epoch=True, sync_dist=True, batch_size=bs)
+        self.log(
+            f"{split}/loss",
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+            batch_size=bs,
+        )
 
         # compute and log metrics
         mc: MetricCollection = getattr(self, f"{split}_metrics", None)
         if mc is not None:
             metrics_out = mc(logits, y)
-            self.log_dict(metrics_out, prog_bar=(split == "val"), on_step=False,
-                          on_epoch=True, sync_dist=True, batch_size=bs)
+            self.log_dict(
+                metrics_out,
+                prog_bar=(split == "val"),
+                on_step=False,
+                on_epoch=True,
+                sync_dist=True,
+                batch_size=bs,
+            )
 
         return loss
 
@@ -116,8 +168,8 @@ class BaseTask(LightningModule, ABC):
         Default test: returns raw logits and labels for aggregation.
         Override in subclass for custom behavior.
         """
-        x, y = batch[:2]
-        logits = self(x)
+        x, y, _paths, clip_ids = _unpack_batch(batch)
+        logits = self(x, clip_ids=list(clip_ids) if clip_ids is not None else None)
         return {"logits": logits, "labels": y}
 
     def configure_optimizers(self):
@@ -148,9 +200,9 @@ class BaseFewShotTask(LightningModule, ABC):
           • (N, 1)           unsqueezed indices
           • (N, C, …)        one-hot (argmax over dim=1)
         """
-        if y.ndim == 2 and y.size(1) == 1:        # (N,1)
+        if y.ndim == 2 and y.size(1) == 1:  # (N,1)
             y = y.squeeze(1)
-        elif y.ndim >= 2:                         # (N,C,…)
+        elif y.ndim >= 2:  # (N,C,…)
             y = y.argmax(dim=1)
         return y.long().view(-1)
 
@@ -213,13 +265,11 @@ class BaseFewShotTask(LightningModule, ABC):
         if not self._train_embeddings:
             return
 
-        embs = torch.cat(self._train_embeddings, dim=0)   # (N, D)
-        labels = torch.cat(self._train_labels, dim=0)     # (N,)
+        embs = torch.cat(self._train_embeddings, dim=0)  # (N, D)
+        labels = torch.cat(self._train_labels, dim=0)  # (N,)
 
         classes = torch.unique(labels).sort()[0]
-        centroids = torch.stack(
-            [embs[labels == c].mean(dim=0) for c in classes], dim=0
-        )  # (C, D)
+        centroids = torch.stack([embs[labels == c].mean(dim=0) for c in classes], dim=0)  # (C, D)
 
         self.class_centroids = centroids.to(self.device)
 
@@ -237,18 +287,14 @@ class BaseFewShotTask(LightningModule, ABC):
         centroids : (C, D)
         → (B,)
         """
-        dists = torch.norm(
-            emb.unsqueeze(1) - centroids.unsqueeze(0), dim=2
-        )  # (B, C)
+        dists = torch.norm(emb.unsqueeze(1) - centroids.unsqueeze(0), dim=2)  # (B, C)
         return dists.argmin(dim=1)
 
     # ──────────────────────────────────────────────────────────────
     # validation / test
     def validation_step(self, batch, batch_idx):
         if self.class_centroids.numel() == 0:
-            raise RuntimeError(
-                "Centroids empty – ensure `on_validation_epoch_start` has run."
-            )
+            raise RuntimeError("Centroids empty – ensure `on_validation_epoch_start` has run.")
 
         x, y = batch[:2]
         y = self._to_label_indices(y)  # Ensure y is of shape (B,) - class indices
@@ -265,15 +311,16 @@ class BaseFewShotTask(LightningModule, ABC):
             sync_dist=True,
             batch_size=x.size(0),
         )
-        
-        
+
     def test_step(self, batch, batch_idx):
         if self.class_centroids.numel() == 0:
             # Compute centroids using the training data loader (mimic valid's approach)
-            train_loader = self.trainer.datamodule.train_dataloader()  # Assuming you have a DataModule
+            train_loader = (
+                self.trainer.datamodule.train_dataloader()
+            )  # Assuming you have a DataModule
             self._train_embeddings.clear()
             self._train_labels.clear()
-            
+
             # Collect embeddings and labels from the training data
             for batch in train_loader:
                 x, y = batch[:2]
@@ -304,14 +351,15 @@ class BaseFewShotTask(LightningModule, ABC):
         # Log accuracy using class indices for both preds and y, ensuring both are on the same device
         self.log(
             "test/acc",
-            self.test_accuracy(preds.to(self.device), y.to(self.device)),  # Move both to the same device
+            self.test_accuracy(
+                preds.to(self.device), y.to(self.device)
+            ),  # Move both to the same device
             prog_bar=True,
             on_epoch=True,
             sync_dist=True,
             batch_size=x.size(0),
         )
-    
+
     def configure_optimizers(self):
         # No optimizers needed for nearest-centroid, but required by Lightning
         return []
-        

@@ -1,19 +1,15 @@
 # marble/tasks/EMO/datamodule.py
 
 import json
-import random
-from typing import List, Tuple
 
 import numpy as np
 import torch
-import torchaudio
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-import lightning.pytorch as pl
+import torchaudio
+from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
-
-
+from marble.utils.emb_cache import make_clip_id
 
 
 class _EMOAudioBase(Dataset):
@@ -22,21 +18,19 @@ class _EMOAudioBase(Dataset):
     - Splits each audio file into non-overlapping clips of length `clip_seconds` (last clip zero-padded).
     - This is a regression task with two labels: arousal and valence.
     """
-    LABEL2IDX = {
-        'arousal': 0, 
-        'valence': 1
-    }
+
+    LABEL2IDX = {"arousal": 0, "valence": 1}
 
     EXAMPLE_JSONL = {
-        "audio_path": "data/EMO/emomusic/wav/0005.wav", 
-        "label": [-0.2568980419200396, 0.25994786922319774], 
-        "duration": 45.01004535147392, 
-        "sample_rate": 44100, 
-        "num_samples": 1984943, 
-        "bit_depth": 16, 
-        "channels": 1
+        "audio_path": "data/EMO/emomusic/wav/0005.wav",
+        "label": [-0.2568980419200396, 0.25994786922319774],
+        "duration": 45.01004535147392,
+        "sample_rate": 44100,
+        "num_samples": 1984943,
+        "bit_depth": 16,
+        "channels": 1,
     }
-    
+
     def __init__(
         self,
         sample_rate: int,
@@ -56,21 +50,24 @@ class _EMOAudioBase(Dataset):
         self.min_clip_ratio = min_clip_ratio
 
         # 读取元数据
-        with open(jsonl, 'r') as f:
+        with open(jsonl) as f:
             self.meta = [json.loads(line) for line in f]
 
         # Build index map: (file_idx, slice_idx, orig_sr, orig_clip_frames, orig_channels)
-        self.index_map: List[Tuple[int, int, int, int, int]] = []
+        self.index_map: list[tuple[int, int, int, int, int]] = []
         self.resamplers = {}
+        # Set by the task at setup() time when the per-clip embedding cache
+        # is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
+        self.cache_check_fn = None
         for file_idx, info in enumerate(self.meta):
-            orig_sr = info['sample_rate']
+            orig_sr = info["sample_rate"]
             # Prepare resampler if needed
             if orig_sr != self.sample_rate and orig_sr not in self.resamplers:
                 self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
             orig_clip_frames = int(self.clip_seconds * orig_sr)
-            orig_channels = info['channels']
-            total_samples = info['num_samples']
+            orig_channels = info["channels"]
+            total_samples = info["num_samples"]
 
             # Number of full clips and remainder
             n_full = total_samples // orig_clip_frames
@@ -85,7 +82,6 @@ class _EMOAudioBase(Dataset):
                 self.index_map.append(
                     (file_idx, slice_idx, orig_sr, orig_clip_frames, orig_channels)
                 )
-
 
     def __len__(self):
         return len(self.index_map)
@@ -105,15 +101,20 @@ class _EMOAudioBase(Dataset):
         # Unpack mapping info
         file_idx, slice_idx, orig_sr, orig_clip, orig_channels = self.index_map[idx]
         info = self.meta[file_idx]
-        path = info['audio_path']
-        label = torch.from_numpy(np.array(info['label'], dtype=np.float32))  # (2,)
+        path = info["audio_path"]
+        label = torch.from_numpy(np.array(info["label"], dtype=np.float32))  # (2,)
+        clip_id = make_clip_id(path, slice_idx)
+
+        # Cache hit — skip audio I/O entirely. The task's forward()
+        # ignores ``x`` on cache hits and uses the cached (L, H) tensor.
+        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+            waveform = torch.zeros(self.channels, self.clip_len_target)
+            return waveform, label, path, clip_id
 
         # Compute frame offset and load clip
         offset = slice_idx * orig_clip
         waveform, _ = torchaudio.load(
-            path,
-            frame_offset=offset,
-            num_frames=orig_clip
+            path, frame_offset=offset, num_frames=orig_clip
         )  # (orig_channels, orig_clip)
 
         # Channel alignment / downmixing
@@ -129,11 +130,11 @@ class _EMOAudioBase(Dataset):
                     if choice == orig_channels:
                         waveform = waveform.mean(dim=0, keepdim=True)
                     else:
-                        waveform = waveform[choice:choice+1]
+                        waveform = waveform[choice : choice + 1]
                 else:
                     raise ValueError(f"Unknown channel_mode: {self.channel_mode}")
             else:
-                waveform = waveform[:self.channels]
+                waveform = waveform[: self.channels]
         else:
             # Repeat last channel to pad to desired channels
             last = waveform[-1:].repeat(self.channels - orig_channels, 1)
@@ -147,15 +148,16 @@ class _EMOAudioBase(Dataset):
         if waveform.size(1) < self.clip_len_target:
             pad = self.clip_len_target - waveform.size(1)
             waveform = F.pad(waveform, (0, pad))
-        
+
         # Final shape: (self.channels, self.clip_len_target)
-        return waveform, label, path
+        return waveform, label, path, clip_id
 
 
 class EMOAudioTrain(_EMOAudioBase):
     """
     训练集：DataModule 中设置 shuffle=True。
     """
+
     pass
 
 
@@ -163,6 +165,7 @@ class EMOAudioVal(_EMOAudioBase):
     """
     验证集：DataModule 中设置 shuffle=False。
     """
+
     pass
 
 
@@ -170,6 +173,7 @@ class EMOAudioTest(EMOAudioVal):
     """
     测试集：同验证集逻辑。
     """
+
     pass
 
 

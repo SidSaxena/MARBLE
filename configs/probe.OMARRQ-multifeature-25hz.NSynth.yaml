@@ -45,6 +45,7 @@ model:
   class_path: marble.tasks.NSynth.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000   # OMARRQ input rate; dataset resamples 16kHz → 24kHz
+    cache_embeddings: true
     use_ema: false
 
     encoder:

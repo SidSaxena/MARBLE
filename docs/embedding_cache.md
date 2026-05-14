@@ -82,11 +82,11 @@ at train time. `cache_embeddings: true` is enabled in their configs.
 | Retrieval (zero-shot, max_epochs=0) | `Covers80`, `SHS100K`, `VGMIDITVar` |
 | Clip-level supervised | `GS`, `EMO`, `GTZANGenre`, `NSynth`, `HookTheoryKey`, `HookTheoryStructure`, `MTGGenre`, `MTGInstrument`, `MTGMood`, `MTGTop50`, `MTT` |
 
-> **Status (2026-05-14):** retrieval task integration is shipped
-> (commit `58871bc`). Clip-level supervised integration is on the TODO
-> list — they all share the same `BaseTask` pattern, so the lift is
-> mostly mechanical (return `clip_id` from datamodule, accept
-> `clip_ids` in `forward`).
+> **Status (2026-05-14):** all 14 cache-safe tasks are shipped.
+> Retrieval landed in commit `58871bc`; clip-level supervised + the
+> audio-I/O bypass landed as a follow-up. Cache plumbing is now
+> factored into `EmbeddingCacheMixin` (in `marble/utils/emb_cache.py`);
+> both `BaseTask` and `CoverRetrievalTask` inherit it.
 
 ### Cache-unsafe tasks (3)
 
@@ -351,16 +351,33 @@ and the second machine will see all hits.
 
 | Component | File |
 |---|---|
-| Cache class + key derivation + atomic I/O | `marble/utils/emb_cache.py` |
+| Cache class + key derivation + atomic I/O | `marble/utils/emb_cache.py:EmbeddingCache` |
+| Reusable cache plumbing (mixin) | `marble/utils/emb_cache.py:EmbeddingCacheMixin` — shared by BaseTask + CoverRetrievalTask |
+| Cache-aware base task (covers 11 supervised tasks) | `marble/core/base_task.py:BaseTask` |
 | Cache-aware retrieval task | `marble/tasks/Covers80/probe.py` (used by SHS100K + VGMIDITVar via re-export) |
-| Per-clip `clip_id` generation in datamodules | `marble/tasks/{Covers80,SHS100K,VGMIDITVar}/datamodule.py` |
+| `clip_id` + audio-I/O bypass in base datamodule (inherited by 10 supervised + symbolic tasks) | `marble/core/base_datamodule.py:BaseAudioDataset` |
+| `clip_id` + audio-I/O bypass in 7 custom datasets | `marble/tasks/{Covers80,SHS100K,VGMIDITVar,GS,EMO,GTZANGenre,NSynth}/datamodule.py` |
 | Pass-through of extras in audio-transform wrapper | `marble/modules/transforms.py:AudioTransformDataset` |
 | Pre-warm CLI | `scripts/embeddings/extract.py` |
 | Inspect + cleanup CLI | `scripts/embeddings/manage.py` |
-| Smoke test (round-trip, disk math) | `/tmp/emb_cache_test.py` (one-shot validation; see commit `58871bc` log) |
 
-The runtime cache lookup happens in `CoverRetrievalTask.forward()`:
-hit path uses `stacked_to_layer_tuple(cached)` to round-trip a
+**Audio-I/O bypass** plumbing:
+- Each cache-aware dataset has a `cache_check_fn: Callable[[str], bool]
+  | None` field (default `None`). The task's `setup()` injects
+  `self._cache.has` via
+  `EmbeddingCacheMixin._inject_cache_check_into_datasets` after the
+  trainer + datamodule are wired up.
+- `__getitem__` computes `clip_id` BEFORE doing audio I/O. If
+  `cache_check_fn(clip_id)` returns True, it returns a
+  `torch.zeros(channels, clip_len_target)` placeholder waveform and
+  skips `torchaudio.load + resample + pad` entirely. The task's
+  `forward()` ignores `x` on cache hits and uses the cached
+  `(L, H)` tensor instead — so the placeholder zeros are never seen
+  by the encoder.
+
+The runtime cache lookup happens in `BaseTask.forward()` (and
+`CoverRetrievalTask.forward()`, which uses the same mixin helper).
+Hit path uses `stacked_to_layer_tuple(cached)` to round-trip a
 `(B, L, H)` tensor back into the tuple-of-layers format
 `LayerSelector` expects; miss path uses
 `encoder_tuple_to_pooled(layer_outputs)` to time-pool every layer in

@@ -34,16 +34,13 @@ class ProbeAudioTask(BaseTask):
         losses: list[dict],
         metrics: dict[str, dict[str, dict]],
     ):
-        enc      = instantiate_from_config(encoder)
-        tfs      = [instantiate_from_config(c) for c in emb_transforms]
-        decs     = [instantiate_from_config(c) for c in decoders]
+        enc = instantiate_from_config(encoder)
+        tfs = [instantiate_from_config(c) for c in emb_transforms]
+        decs = [instantiate_from_config(c) for c in decoders]
         loss_fns = [instantiate_from_config(c) for c in losses]
 
         metric_maps = {
-            split: {
-                name: instantiate_from_config(cfg)
-                for name, cfg in metrics[split].items()
-            }
+            split: {name: instantiate_from_config(cfg) for name, cfg in metrics[split].items()}
             for split in ("train", "val", "test")
         }
 
@@ -63,14 +60,22 @@ class ProbeAudioTask(BaseTask):
         self._test_outputs: list[dict] = []
 
     def test_step(self, batch, batch_idx):
-        x, labels, paths = batch
-        logits = self(x)
-        for path, logit, lb in zip(paths, logits, labels):
-            self._test_outputs.append({
-                "path":  path,
-                "logit": logit.detach(),
-                "label": lb,
-            })
+        # 4-tuple (waveform, label, path, clip_id) when caching is on;
+        # fall back to legacy 3-tuple shape for older datamodules.
+        if isinstance(batch, (tuple, list)) and len(batch) >= 4:
+            x, labels, paths, clip_ids = batch[0], batch[1], batch[2], batch[3]
+        else:
+            x, labels, paths = batch
+            clip_ids = None
+        logits = self(x, clip_ids=list(clip_ids) if clip_ids is not None else None)
+        for path, logit, lb in zip(paths, logits, labels, strict=False):
+            self._test_outputs.append(
+                {
+                    "path": path,
+                    "logit": logit.detach(),
+                    "label": lb,
+                }
+            )
 
     def on_test_epoch_end(self) -> None:
         # Aggregate slices per file (mean logit)
@@ -85,12 +90,12 @@ class ProbeAudioTask(BaseTask):
         batched_logits = []
         batched_labels = []
         for info in file_dict.values():
-            arr = torch.stack(info["logits"])   # (n_slices, 88)
+            arr = torch.stack(info["logits"])  # (n_slices, 88)
             batched_logits.append(arr.mean(0))  # (88,)
             batched_labels.append(info["label"])
 
-        logits = torch.stack(batched_logits)    # (N, 88)
-        labels = torch.stack(batched_labels)    # (N,)
+        logits = torch.stack(batched_logits)  # (N, 88)
+        labels = torch.stack(batched_labels)  # (N,)
 
         mc: MetricCollection = getattr(self, "test_metrics", None)
         if mc is not None:

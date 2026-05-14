@@ -1,19 +1,14 @@
 # marble/tasks/GS/datamodule.py
 
 import json
-import random
-from typing import List, Tuple
 
-import numpy as np
 import torch
-import torchaudio
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-import lightning.pytorch as pl
+import torchaudio
+from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
-
-
+from marble.utils.emb_cache import make_clip_id
 
 
 class _GSAudioBase(Dataset):
@@ -22,46 +17,47 @@ class _GSAudioBase(Dataset):
     - Splits each audio file into non-overlapping clips of length `clip_seconds` (last clip zero-padded).
     - This is a regression task with two labels: arousal and valence.
     """
-    LABEL2IDX = {     # mir_eval format key annotation
-        'C major': 0,
-        'Db major': 1,
-        'D major': 2,
-        'Eb major': 3,
-        'E major': 4,
-        'F major': 5,
-        'Gb major': 6,
-        'G major': 7,
-        'Ab major': 8,
-        'A major': 9,
-        'Bb major': 10,
-        'B major': 11,
-        'C minor': 12,
-        'Db minor': 13,
-        'D minor': 14,
-        'Eb minor': 15,
-        'E minor': 16,
-        'F minor': 17,
-        'Gb minor': 18,
-        'G minor': 19,
-        'Ab minor': 20,
-        'A minor': 21,
-        'Bb minor': 22,
-        'B minor': 23
+
+    LABEL2IDX = {  # mir_eval format key annotation
+        "C major": 0,
+        "Db major": 1,
+        "D major": 2,
+        "Eb major": 3,
+        "E major": 4,
+        "F major": 5,
+        "Gb major": 6,
+        "G major": 7,
+        "Ab major": 8,
+        "A major": 9,
+        "Bb major": 10,
+        "B major": 11,
+        "C minor": 12,
+        "Db minor": 13,
+        "D minor": 14,
+        "Eb minor": 15,
+        "E minor": 16,
+        "F minor": 17,
+        "Gb minor": 18,
+        "G minor": 19,
+        "Ab minor": 20,
+        "A minor": 21,
+        "Bb minor": 22,
+        "B minor": 23,
     }
 
     IDX2LABEL = {v: k for k, v in LABEL2IDX.items()}
 
     EXAMPLE_JSONL = {
-        "audio_path": "data/GS/giantsteps_clips/wav/0005061-0.wav", # clips
-        "ori_uid": "0005061", # for ensemble purpose, merge clips to a song
-        "label": "Eb minor", 
-        "duration": 30.0, 
-        "sample_rate": 44100, 
-        "num_samples": 1323000, 
-        "bit_depth": 16, 
-        "channels": 1
+        "audio_path": "data/GS/giantsteps_clips/wav/0005061-0.wav",  # clips
+        "ori_uid": "0005061",  # for ensemble purpose, merge clips to a song
+        "label": "Eb minor",
+        "duration": 30.0,
+        "sample_rate": 44100,
+        "num_samples": 1323000,
+        "bit_depth": 16,
+        "channels": 1,
     }
-    
+
     def __init__(
         self,
         sample_rate: int,
@@ -81,21 +77,24 @@ class _GSAudioBase(Dataset):
         self.min_clip_ratio = min_clip_ratio
 
         # 读取元数据
-        with open(jsonl, 'r') as f:
+        with open(jsonl) as f:
             self.meta = [json.loads(line) for line in f]
 
         # Build index map: (file_idx, slice_idx, orig_sr, orig_clip_frames, orig_channels)
-        self.index_map: List[Tuple[int, int, int, int, int]] = []
+        self.index_map: list[tuple[int, int, int, int, int]] = []
         self.resamplers = {}
+        # Set by the task at setup() time when the per-clip embedding cache
+        # is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
+        self.cache_check_fn = None
         for file_idx, info in enumerate(self.meta):
-            orig_sr = info['sample_rate']
+            orig_sr = info["sample_rate"]
             # Prepare resampler if needed
             if orig_sr != self.sample_rate and orig_sr not in self.resamplers:
                 self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
             orig_clip_frames = int(self.clip_seconds * orig_sr)
-            orig_channels = info['channels']
-            total_samples = info['num_samples']
+            orig_channels = info["channels"]
+            total_samples = info["num_samples"]
 
             # Number of full clips and remainder
             n_full = total_samples // orig_clip_frames
@@ -110,7 +109,6 @@ class _GSAudioBase(Dataset):
                 self.index_map.append(
                     (file_idx, slice_idx, orig_sr, orig_clip_frames, orig_channels)
                 )
-
 
     def __len__(self):
         return len(self.index_map)
@@ -130,16 +128,20 @@ class _GSAudioBase(Dataset):
         # Unpack mapping info
         file_idx, slice_idx, orig_sr, orig_clip, orig_channels = self.index_map[idx]
         info = self.meta[file_idx]
-        path = info['audio_path']
-        ori_uid = info['ori_uid']
-        label = self.LABEL2IDX[info['label']]  # (1,)
+        path = info["audio_path"]
+        ori_uid = info["ori_uid"]
+        label = self.LABEL2IDX[info["label"]]  # (1,)
+        clip_id = make_clip_id(path, slice_idx)
+
+        # Cache hit — skip audio I/O entirely.
+        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+            waveform = torch.zeros(self.channels, self.clip_len_target)
+            return waveform, label, ori_uid, clip_id
 
         # Compute frame offset and load clip
         offset = slice_idx * orig_clip
         waveform, _ = torchaudio.load(
-            path,
-            frame_offset=offset,
-            num_frames=orig_clip
+            path, frame_offset=offset, num_frames=orig_clip
         )  # (orig_channels, orig_clip)
 
         # Channel alignment / downmixing
@@ -155,11 +157,11 @@ class _GSAudioBase(Dataset):
                     if choice == orig_channels:
                         waveform = waveform.mean(dim=0, keepdim=True)
                     else:
-                        waveform = waveform[choice:choice+1]
+                        waveform = waveform[choice : choice + 1]
                 else:
                     raise ValueError(f"Unknown channel_mode: {self.channel_mode}")
             else:
-                waveform = waveform[:self.channels]
+                waveform = waveform[: self.channels]
         else:
             # Repeat last channel to pad to desired channels
             last = waveform[-1:].repeat(self.channels - orig_channels, 1)
@@ -173,15 +175,21 @@ class _GSAudioBase(Dataset):
         if waveform.size(1) < self.clip_len_target:
             pad = self.clip_len_target - waveform.size(1)
             waveform = F.pad(waveform, (0, pad))
-        
+
         # Final shape: (self.channels, self.clip_len_target)
-        return waveform, label, ori_uid # we do not use path in GS since it is pre split into clips
+        return (
+            waveform,
+            label,
+            ori_uid,
+            clip_id,
+        )  # we do not use path in GS since it is pre split into clips
 
 
 class GSAudioTrain(_GSAudioBase):
     """
     训练集：DataModule 中设置 shuffle=True。
     """
+
     pass
 
 
@@ -189,6 +197,7 @@ class GSAudioVal(_GSAudioBase):
     """
     验证集：DataModule 中设置 shuffle=False。
     """
+
     pass
 
 
@@ -196,6 +205,7 @@ class GSAudioTest(GSAudioVal):
     """
     测试集：同验证集逻辑。
     """
+
     pass
 
 
