@@ -1,15 +1,17 @@
-import torch
-import numpy as np
 import mir_eval
+import numpy as np
+import torch
+
 from marble.tasks.GTZANBeatTracking.modules import TimeEventFMeasure
 from marble.utils.utils import mask_to_times
+
 
 def test_time_event_fmeasure():
     """
     Test suite for TimeEventFMeasure. Uses synthetic masks to validate behavior.
     """
     label_freq = 10  # 10 frames per second
-    tol = 0.07       # 70 ms tolerance
+    tol = 0.07  # 70 ms tolerance
 
     # Helper: builds a mask of length T with events at given times (in seconds)
     def make_mask(event_times, T, fps):
@@ -74,6 +76,6 @@ def test_time_event_fmeasure():
     f1_5b = metric5b.compute().item()
     print(f"Test 5b (1 ref vs. 2 pred, one match): F1 = {f1_5b:.2f} (expected ~0.67)")
 
+
 if __name__ == "__main__":
     test_time_event_fmeasure()
-    

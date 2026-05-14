@@ -69,6 +69,7 @@ PYTHON = sys.executable
 # Helpers
 # ──────────────────────────────────────────────
 
+
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     print(f"$ {' '.join(cmd)}", flush=True)
     return subprocess.run(cmd, check=True, **kw)
@@ -106,7 +107,7 @@ def _has_test_metrics(summary_path: Path) -> bool:
         data = json.loads(summary_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return any(k.startswith("test/") for k in data.keys())
+    return any(k.startswith("test/") for k in data)
 
 
 def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
@@ -192,34 +193,46 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
     """
     cfg = _meanall_config_for(args.base_config)
     if cfg is None:
-        print(f"  ! No meanall sibling found for {args.base_config} "
-              f"(expected probe.<encoder>-meanall.<task>.yaml). Skipping.")
+        print(
+            f"  ! No meanall sibling found for {args.base_config} "
+            f"(expected probe.<encoder>-meanall.<task>.yaml). Skipping."
+        )
         return
     if (not args.no_skip) and _meanall_done(args.task_tag, args.model_tag):
-        print(f"  ✓ meanall already complete — skipping (–no-skip to redo).")
+        print("  ✓ meanall already complete — skipping (–no-skip to redo).")
         return
 
-    print(f"\n{'='*60}\n meanall (mean-of-all-layers baseline)  "
-          f"[{args.model_tag} | {args.task_tag}]\n{'='*60}", flush=True)
+    print(
+        f"\n{'=' * 60}\n meanall (mean-of-all-layers baseline)  "
+        f"[{args.model_tag} | {args.task_tag}]\n{'=' * 60}",
+        flush=True,
+    )
 
     # Supervised tasks: fit then test.  Zero-shot (max_epochs=0): test only.
     for stage, kind in (("fit", "fit"), ("test", "test")):
         cmd = [
-            PYTHON, "cli.py", stage, "-c", str(cfg),
+            PYTHON,
+            "cli.py",
+            stage,
+            "-c",
+            str(cfg),
             f"--trainer.logger.init_args.name=layer-meanall-{kind}",
             f"--trainer.logger.init_args.job_type={kind}",
         ] + common_overrides
         print(f"$ {' '.join(cmd)}", flush=True)
         rc = subprocess.run(cmd).returncode
         if rc != 0:
-            print(f"  ⚠ meanall {stage} failed (exit {rc}); continuing to per-layer sweep.",
-                  file=sys.stderr)
+            print(
+                f"  ⚠ meanall {stage} failed (exit {rc}); continuing to per-layer sweep.",
+                file=sys.stderr,
+            )
             return
 
 
 # ──────────────────────────────────────────────
 # Live-streaming subprocess helper
 # ──────────────────────────────────────────────
+
 
 def _stream_subprocess(
     cmd: list[str],
@@ -242,9 +255,9 @@ def _stream_subprocess(
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,   # merge into one stream
+        stderr=subprocess.STDOUT,  # merge into one stream
         text=True,
-        bufsize=1,                  # line-buffered
+        bufsize=1,  # line-buffered
     )
     try:
         for line in proc.stdout:
@@ -270,6 +283,7 @@ def _layer_log_path(model_tag: str, task_tag: str, layer: int) -> Path:
 # ──────────────────────────────────────────────
 # Per-layer worker
 # ──────────────────────────────────────────────
+
 
 def _run_one_layer(
     layer: int,
@@ -297,8 +311,12 @@ def _run_one_layer(
 
     if already_done and not args.retest:
         return {
-            "layer": layer, "skipped": True, "elapsed": 0.0,
-            "metrics": {}, "log": "", "test_returncode": 0,
+            "layer": layer,
+            "skipped": True,
+            "elapsed": 0.0,
+            "metrics": {},
+            "log": "",
+            "test_returncode": 0,
         }
 
     # CLI overrides shared by fit and test
@@ -308,16 +326,19 @@ def _run_one_layer(
     if precision_override is not None:
         common_overrides.append(f"--trainer.precision={precision_override}")
     if num_workers_override is not None:
-        common_overrides.append(
-            f"--data.init_args.num_workers={num_workers_override}"
-        )
+        common_overrides.append(f"--data.init_args.num_workers={num_workers_override}")
 
     log_parts: list[str] = []
     log_file = None
     if not stream_fit:
-        log_file = open(
+        # NOTE: log_file is intentionally NOT a context manager — its
+        # lifetime spans the whole try/finally block below, which closes
+        # it explicitly. Wrapping in `with` would close it before the
+        # subprocesses finish writing. (ruff SIM115)
+        log_file = open(  # noqa: SIM115
             _layer_log_path(args.model_tag, args.task_tag, layer),
-            "w", encoding="utf-8",
+            "w",
+            encoding="utf-8",
         )
 
     try:
@@ -334,7 +355,11 @@ def _run_one_layer(
                     sys.stdout.flush()
         else:
             fit_cmd = [
-                PYTHON, "cli.py", "fit", "-c", cfg,
+                PYTHON,
+                "cli.py",
+                "fit",
+                "-c",
+                cfg,
                 f"--trainer.logger.init_args.name=layer-{layer}-fit",
                 "--trainer.logger.init_args.job_type=fit",
             ] + common_overrides
@@ -348,7 +373,11 @@ def _run_one_layer(
 
         # ── Test ─────────────────────────────────────────────────────────────
         test_cmd = [
-            PYTHON, "cli.py", "test", "-c", cfg,
+            PYTHON,
+            "cli.py",
+            "test",
+            "-c",
+            cfg,
             f"--trainer.logger.init_args.name=layer-{layer}-test",
             "--trainer.logger.init_args.job_type=test",
         ] + common_overrides
@@ -365,7 +394,7 @@ def _run_one_layer(
         else:
             # Parallel mode — live stream, tee to log file.
             test_returncode, test_stdout = _stream_subprocess(test_cmd, layer, log_file)
-            test_stderr = ""   # merged into stdout via stderr=STDOUT
+            test_stderr = ""  # merged into stdout via stderr=STDOUT
 
         metrics = _extract_test_metrics(test_stdout)
         elapsed = time.time() - t0
@@ -375,7 +404,7 @@ def _run_one_layer(
             "skipped": False,
             "elapsed": elapsed,
             "metrics": metrics,
-            "log": "\n".join(log_parts),   # only populated in stream_fit=True
+            "log": "\n".join(log_parts),  # only populated in stream_fit=True
             "test_returncode": test_returncode,
             "test_stderr": test_stderr,
         }
@@ -388,62 +417,124 @@ def _run_one_layer(
 # Main
 # ──────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run a MARBLE layer sweep locally (fit + test per layer)."
     )
-    parser.add_argument("--base-config", required=True,
-                        help="Path to the base YAML config (e.g. configs/probe.OMARRQ-multifeature25hz.GS.yaml)")
-    parser.add_argument("--num-layers", type=int, required=True,
-                        help="Total number of transformer layers (e.g. 24 for OMARRQ, 13 for CLaMP3)")
-    parser.add_argument("--model-tag", required=True,
-                        help="Model identifier used in output paths (e.g. OMARRQ-multifeature25hz)")
-    parser.add_argument("--task-tag", required=True,
-                        help="Task identifier used in output paths (e.g. GS, EMO, Chords1217)")
-    parser.add_argument("--layers", type=int, nargs="*",
-                        help="Subset of layer indices to run (default: all 0..num_layers-1)")
-    parser.add_argument("--no-skip", action="store_true",
-                        help="Ignore completion markers; re-run fit+test for every layer.")
-    parser.add_argument("--retest", action="store_true",
-                        help="For already-completed layers: skip fit but re-run test. "
-                             "Useful when you want fresh WandB test logs without retraining. "
-                             "Default (without this flag) is to skip both fit and test.")
-    parser.add_argument("--accelerator", default=None,
-                        help="Override trainer accelerator (gpu/mps/cpu). Defaults to config value.")
-    parser.add_argument("--precision", default=None,
-                        help="Override trainer.precision (e.g. 16-mixed, bf16-mixed, 32-true). "
-                             "Defaults to config value, except when --accelerator=mps which "
-                             "auto-overrides to 16-mixed (MPS does not support bf16-mixed). "
-                             "Pass this flag explicitly to override the auto behavior.")
-    parser.add_argument("--concurrency", type=int, default=1,
-                        help="Run N layers in parallel as separate subprocesses (default: 1, "
-                             "sequential — bit-identical to the original behavior). "
-                             "Each layer needs ~5–6 GB VRAM; for a 16 GB GPU use --concurrency 2.")
-    parser.add_argument("--num-workers-per-proc", type=int, default=None,
-                        help="Per-subprocess dataloader workers (--data.init_args.num_workers). "
-                             "Only injected when --concurrency > 1. Defaults to max(2, 8 // concurrency) "
-                             "so the total worker count stays bounded.")
-    parser.add_argument("--skip-meanall", action="store_true",
-                        help="Don't run the meanall (mean-of-all-layers) baseline before the "
-                             "per-layer sweep. By default, if a sibling config "
-                             "`probe.<encoder>-meanall.<task>.yaml` exists, it is run first so "
-                             "you have an early baseline before launching N per-layer jobs.")
+    parser.add_argument(
+        "--base-config",
+        required=True,
+        help="Path to the base YAML config (e.g. configs/probe.OMARRQ-multifeature25hz.GS.yaml)",
+    )
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        required=True,
+        help="Total number of transformer layers (e.g. 24 for OMARRQ, 13 for CLaMP3)",
+    )
+    parser.add_argument(
+        "--model-tag",
+        required=True,
+        help="Model identifier used in output paths (e.g. OMARRQ-multifeature25hz)",
+    )
+    parser.add_argument(
+        "--task-tag",
+        required=True,
+        help="Task identifier used in output paths (e.g. GS, EMO, Chords1217)",
+    )
+    parser.add_argument(
+        "--layers",
+        type=int,
+        nargs="*",
+        help="Subset of layer indices to run (default: all 0..num_layers-1)",
+    )
+    parser.add_argument(
+        "--no-skip",
+        action="store_true",
+        help="Ignore completion markers; re-run fit+test for every layer.",
+    )
+    parser.add_argument(
+        "--retest",
+        action="store_true",
+        help="For already-completed layers: skip fit but re-run test. "
+        "Useful when you want fresh WandB test logs without retraining. "
+        "Default (without this flag) is to skip both fit and test.",
+    )
+    parser.add_argument(
+        "--accelerator",
+        default=None,
+        help="Override trainer accelerator (gpu/mps/cpu). Defaults to config value.",
+    )
+    parser.add_argument(
+        "--precision",
+        default=None,
+        help="Override trainer.precision (e.g. 16-mixed, bf16-mixed, 32-true). "
+        "Defaults to config value, except when --accelerator=mps which "
+        "auto-overrides to 16-mixed (MPS does not support bf16-mixed). "
+        "Pass this flag explicitly to override the auto behavior.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Run N layers in parallel as separate subprocesses (default: 1, "
+        "sequential — bit-identical to the original behavior). "
+        "Each layer needs ~5–6 GB VRAM; for a 16 GB GPU use --concurrency 2.",
+    )
+    parser.add_argument(
+        "--num-workers-per-proc",
+        type=int,
+        default=None,
+        help="Per-subprocess dataloader workers (--data.init_args.num_workers). "
+        "Only injected when --concurrency > 1. Defaults to max(2, 8 // concurrency) "
+        "so the total worker count stays bounded.",
+    )
+    parser.add_argument(
+        "--skip-meanall",
+        action="store_true",
+        help="Don't run the meanall (mean-of-all-layers) baseline before the "
+        "per-layer sweep. By default, if a sibling config "
+        "`probe.<encoder>-meanall.<task>.yaml` exists, it is run first so "
+        "you have an early baseline before launching N per-layer jobs.",
+    )
+    parser.add_argument(
+        "--only-meanall",
+        action="store_true",
+        help="Run ONLY the meanall baseline (skip the per-layer sweep). Useful "
+        "for getting a baseline matrix of (encoder × task) without paying "
+        "for the full N-layer sweep — one fit+test per pair instead of N.",
+    )
     args = parser.parse_args()
 
     if args.concurrency < 1:
         parser.error("--concurrency must be >= 1")
+    if args.only_meanall and args.skip_meanall:
+        parser.error("--only-meanall and --skip-meanall are mutually exclusive.")
 
     sweep_dir = f"configs/sweeps/{args.model_tag}.{args.task_tag}"
 
     # ── 1. Generate per-layer configs ────────────────────────────────────────
-    _run([
-        PYTHON, "scripts/sweeps/gen_sweep_configs.py",
-        "--base-config", args.base_config,
-        "--num-layers",  str(args.num_layers),
-        "--model-tag",   args.model_tag,
-        "--task-tag",    args.task_tag,
-        "--out-dir",     sweep_dir,
-    ])
+    # Skip generation when --only-meanall is set: the meanall config is a
+    # hand-edited sibling config, not generated here, so per-layer YAML
+    # generation has no purpose for that mode.
+    if not args.only_meanall:
+        _run(
+            [
+                PYTHON,
+                "scripts/sweeps/gen_sweep_configs.py",
+                "--base-config",
+                args.base_config,
+                "--num-layers",
+                str(args.num_layers),
+                "--model-tag",
+                args.model_tag,
+                "--task-tag",
+                args.task_tag,
+                "--out-dir",
+                sweep_dir,
+            ]
+        )
 
     run_layers = args.layers if args.layers is not None else list(range(args.num_layers))
     results: dict[int, dict] = {}
@@ -478,28 +569,49 @@ def main():
     if not args.skip_meanall:
         _run_meanall_first(args, common_overrides)
 
+    # ── 2c. --only-meanall short-circuit (skip the per-layer sweep entirely)
+    if args.only_meanall:
+        print(
+            f"\n  --only-meanall: skipping per-layer sweep for "
+            f"{args.model_tag} × {args.task_tag}.\n"
+        )
+        return
+
     # ── 3. Run each layer ────────────────────────────────────────────────────
     if args.concurrency == 1:
         # Sequential — keep original behavior (streaming fit output) so CUDA
         # workflows remain bit-identical to the pre-concurrency version.
         for layer in run_layers:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f" Layer {layer}/{args.num_layers - 1}  [{args.model_tag} | {args.task_tag}]")
-            print(f"{'='*60}", flush=True)
+            print(f"{'=' * 60}", flush=True)
             try:
                 result = _run_one_layer(
-                    layer, args, sweep_dir, stream_fit=True,
+                    layer,
+                    args,
+                    sweep_dir,
+                    stream_fit=True,
                     num_workers_override=num_workers_override,
                     precision_override=precision_override,
                 )
             except subprocess.CalledProcessError as e:
-                print(f"\n  Layer {layer} fit failed (exit {e.returncode}). "
-                      f"Continuing.", file=sys.stderr)
-                result = {"layer": layer, "skipped": False, "elapsed": 0.0,
-                          "metrics": {}, "log": "", "test_returncode": e.returncode}
+                print(
+                    f"\n  Layer {layer} fit failed (exit {e.returncode}). Continuing.",
+                    file=sys.stderr,
+                )
+                result = {
+                    "layer": layer,
+                    "skipped": False,
+                    "elapsed": 0.0,
+                    "metrics": {},
+                    "log": "",
+                    "test_returncode": e.returncode,
+                }
             if result.get("skipped"):
-                print(f"  ✓ Already complete — skipping."
-                      f"  (--retest to re-run test, --no-skip to redo everything)")
+                print(
+                    "  ✓ Already complete — skipping."
+                    "  (--retest to re-run test, --no-skip to redo everything)"
+                )
             else:
                 print(result.get("log", ""))
                 if result.get("test_returncode", 0) != 0:
@@ -508,13 +620,21 @@ def main():
     else:
         # Parallel — N fit+test pairs in flight, output captured per-layer and
         # printed on completion to keep tqdm progress bars from interleaving.
-        print(f"\nRunning {len(run_layers)} layers with --concurrency={args.concurrency}"
-              f"  (num_workers per proc = {num_workers_override})\n", flush=True)
+        print(
+            f"\nRunning {len(run_layers)} layers with --concurrency={args.concurrency}"
+            f"  (num_workers per proc = {num_workers_override})\n",
+            flush=True,
+        )
         with ThreadPoolExecutor(max_workers=args.concurrency) as ex:
             futures = {
                 ex.submit(
-                    _run_one_layer, layer, args, sweep_dir,
-                    False, num_workers_override, precision_override,
+                    _run_one_layer,
+                    layer,
+                    args,
+                    sweep_dir,
+                    False,
+                    num_workers_override,
+                    precision_override,
                 ): layer
                 for layer in run_layers
             }
@@ -523,48 +643,56 @@ def main():
                 try:
                     result = fut.result()
                 except subprocess.CalledProcessError as e:
-                    print(f"\nLayer {layer} fit failed (exit {e.returncode}):\n"
-                          f"{e.stderr}", file=sys.stderr)
-                    result = {"layer": layer, "skipped": False, "elapsed": 0.0,
-                              "metrics": {}, "log": "",
-                              "test_returncode": e.returncode}
-                print(f"\n{'='*60}")
+                    print(
+                        f"\nLayer {layer} fit failed (exit {e.returncode}):\n{e.stderr}",
+                        file=sys.stderr,
+                    )
+                    result = {
+                        "layer": layer,
+                        "skipped": False,
+                        "elapsed": 0.0,
+                        "metrics": {},
+                        "log": "",
+                        "test_returncode": e.returncode,
+                    }
+                print(f"\n{'=' * 60}")
                 if result.get("skipped"):
                     print(f" Layer {layer}  [skipped]  (already complete)")
                 else:
-                    print(f" Layer {layer}  done  [{result['elapsed']/60:.1f}m]"
-                          f"  [{args.model_tag} | {args.task_tag}]")
-                print(f"{'='*60}", flush=True)
+                    print(
+                        f" Layer {layer}  done  [{result['elapsed'] / 60:.1f}m]"
+                        f"  [{args.model_tag} | {args.task_tag}]"
+                    )
+                print(f"{'=' * 60}", flush=True)
                 if result.get("log"):
                     print(result["log"])
                 results[layer] = result
 
     # ── 4. Summary table ─────────────────────────────────────────────────────
     total_elapsed = time.time() - t_sweep_start
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f" Sweep complete  [{args.model_tag} | {args.task_tag}]")
-    print(f" Total wall time: {total_elapsed/60:.1f} min  "
-          f"(concurrency={args.concurrency})")
-    print(f"{'='*60}")
+    print(f" Total wall time: {total_elapsed / 60:.1f} min  (concurrency={args.concurrency})")
+    print(f"{'=' * 60}")
     for layer in run_layers:
         r = results.get(layer, {})
         if r.get("skipped"):
             print(f"  layer {layer:2d}  [------]  (skipped — already complete)")
         else:
             m_str = _format_metrics(r.get("metrics", {}))
-            t_str = f"{r.get('elapsed', 0)/60:.1f}m"
+            t_str = f"{r.get('elapsed', 0) / 60:.1f}m"
             print(f"  layer {layer:2d}  [{t_str:>5}]  {m_str}")
 
     # ── 5. Best layer ─────────────────────────────────────────────────────────
     # Rank by the first test metric found (works for both weighted_score and r2)
     scored = {
-        layer: list(r["metrics"].values())[0]
-        for layer, r in results.items()
-        if r.get("metrics")
+        layer: list(r["metrics"].values())[0] for layer, r in results.items() if r.get("metrics")
     }
     if scored:
         best_layer = max(scored, key=scored.__getitem__)
-        print(f"\n  Best layer: {best_layer}  ({list(results[best_layer]['metrics'].keys())[0]}={scored[best_layer]:.4f})")
+        print(
+            f"\n  Best layer: {best_layer}  ({list(results[best_layer]['metrics'].keys())[0]}={scored[best_layer]:.4f})"
+        )
 
 
 if __name__ == "__main__":

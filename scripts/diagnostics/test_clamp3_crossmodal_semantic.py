@@ -38,18 +38,18 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Tuple
 
 import torch
 import torchaudio
 
 
-def _load_pairs(args) -> List[Tuple[Path, Path]]:
+def _load_pairs(args) -> list[tuple[Path, Path]]:
     """Build a list of (midi_path, audio_path) tuples from CLI args."""
     if args.pairs:
         if len(args.pairs) % 2 != 0:
-            raise ValueError("--pairs requires an even number of values "
-                             "(alternating midi then audio).")
+            raise ValueError(
+                "--pairs requires an even number of values (alternating midi then audio)."
+            )
         pairs = []
         for i in range(0, len(args.pairs), 2):
             pairs.append((Path(args.pairs[i]), Path(args.pairs[i + 1])))
@@ -91,17 +91,21 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--jsonl", type=Path,
-                    help="VGMIDITVar JSONL with audio_path / midi_path fields")
-    ap.add_argument("--midi-dir", type=Path,
-                    help="Root directory containing extracted MIDI files")
-    ap.add_argument("--num-pairs", type=int, default=5,
-                    help="Number of MIDI/audio pairs to test (default: 5)")
-    ap.add_argument("--split", default=None,
-                    help="Filter JSONL by split (train/test); default uses all")
-    ap.add_argument("--pairs", nargs="+",
-                    help="Explicit list of (midi audio) paths to test, "
-                         "alternating: midi1 wav1 midi2 wav2 ...")
+    ap.add_argument(
+        "--jsonl", type=Path, help="VGMIDITVar JSONL with audio_path / midi_path fields"
+    )
+    ap.add_argument("--midi-dir", type=Path, help="Root directory containing extracted MIDI files")
+    ap.add_argument(
+        "--num-pairs", type=int, default=5, help="Number of MIDI/audio pairs to test (default: 5)"
+    )
+    ap.add_argument(
+        "--split", default=None, help="Filter JSONL by split (train/test); default uses all"
+    )
+    ap.add_argument(
+        "--pairs",
+        nargs="+",
+        help="Explicit list of (midi audio) paths to test, alternating: midi1 wav1 midi2 wav2 ...",
+    )
     args = ap.parse_args()
 
     pairs = _load_pairs(args)
@@ -116,30 +120,29 @@ def main():
     # Load encoder once
     print("\nLoading CLaMP3_Symbolic_Encoder ...")
     from marble.encoders.CLaMP3.model import CLaMP3_Symbolic_Encoder
+
     enc = CLaMP3_Symbolic_Encoder().eval()
     print("  ✓ loaded")
 
     # ── Build MIDI patches for all pairs ────────────────────────────────────
     print("\nTokenising MIDIs ...")
-    from marble.encoders.CLaMP3.midi_util import midi_to_mtf
     from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+    from marble.encoders.CLaMP3.midi_util import midi_to_mtf
     from marble.encoders.CLaMP3.model import CLaMP3Config
 
     patchilizer = M3Patchilizer()
     max_patches = CLaMP3Config.PATCH_LENGTH
-    patch_size  = CLaMP3Config.PATCH_SIZE
-    pad_token   = patchilizer.pad_token_id
+    patch_size = CLaMP3Config.PATCH_SIZE
+    pad_token = patchilizer.pad_token_id
 
-    midi_patches: List[torch.Tensor] = []
+    midi_patches: list[torch.Tensor] = []
     for m, _ in pairs:
         mtf = midi_to_mtf(str(m))
-        patches_list = patchilizer.encode(mtf, patch_size=patch_size,
-                                          add_special_patches=True)
-        patches_list = patches_list[: max_patches]
+        patches_list = patchilizer.encode(mtf, patch_size=patch_size, add_special_patches=True)
+        patches_list = patches_list[:max_patches]
         t = torch.tensor(patches_list, dtype=torch.long)
         if t.size(0) < max_patches:
-            pad = torch.full((max_patches - t.size(0), patch_size),
-                             pad_token, dtype=torch.long)
+            pad = torch.full((max_patches - t.size(0), patch_size), pad_token, dtype=torch.long)
             t = torch.cat([t, pad], dim=0)
         midi_patches.append(t)
     midi_batch = torch.stack(midi_patches, dim=0)
@@ -147,7 +150,7 @@ def main():
 
     # ── Load audio for all pairs at 24 kHz mono ─────────────────────────────
     print("\nLoading audio at 24 kHz mono ...")
-    audio_wavs: List[torch.Tensor] = []
+    audio_wavs: list[torch.Tensor] = []
     target_sr = 24000
     for _, a in pairs:
         wav, sr = torchaudio.load(str(a))
@@ -164,14 +167,14 @@ def main():
     # ── Compute shared-space embeddings ──────────────────────────────────────
     print("\nComputing embeddings ...")
     with torch.no_grad():
-        e_mid = enc.embed_symbolic(midi_batch)        # (K, 768)
-        e_aud = enc.embed_audio(audio_batch)           # (K, 768)
+        e_mid = enc.embed_symbolic(midi_batch)  # (K, 768)
+        e_aud = enc.embed_audio(audio_batch)  # (K, 768)
     print(f"  symbolic: {e_mid.shape}")
     print(f"  audio:    {e_aud.shape}")
 
     # ── K×K similarity matrix ────────────────────────────────────────────────
-    sim = e_aud @ e_mid.T   # rows=audio, cols=midi; diagonal = matching pairs
-    print(f"\nSimilarity matrix (audio_i ↔ midi_j):")
+    sim = e_aud @ e_mid.T  # rows=audio, cols=midi; diagonal = matching pairs
+    print("\nSimilarity matrix (audio_i ↔ midi_j):")
     print("       " + "  ".join(f"midi[{j}]" for j in range(len(pairs))))
     for i in range(len(pairs)):
         row = "  ".join(f"{sim[i, j].item():+.4f}" for j in range(len(pairs)))
@@ -184,27 +187,31 @@ def main():
     for i in range(K):
         row = sim[i]
         diag = row[i].item()
-        rest = torch.cat([row[:i], row[i + 1:]])
+        rest = torch.cat([row[:i], row[i + 1 :]])
         max_off = rest.max().item()
         margin = diag - max_off
         diag_margins.append(margin)
         if margin > 0:
             n_diag_best += 1
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Diagonal-best rows: {n_diag_best}/{K}")
     print(f"  Mean diagonal margin: {sum(diag_margins) / K:+.4f}")
     print(f"  Min margin:           {min(diag_margins):+.4f}")
     print(f"  Max margin:           {max(diag_margins):+.4f}")
 
-    pass_threshold = max(int(0.8 * K), K - 1)   # at least 4/5, or K-1
+    pass_threshold = max(int(0.8 * K), K - 1)  # at least 4/5, or K-1
     if n_diag_best >= pass_threshold:
-        print(f"\n  ✓ PASS — {n_diag_best}/{K} ≥ {pass_threshold}: "
-              f"audio embeddings are closer to their own MIDIs than to others.")
+        print(
+            f"\n  ✓ PASS — {n_diag_best}/{K} ≥ {pass_threshold}: "
+            f"audio embeddings are closer to their own MIDIs than to others."
+        )
         sys.exit(0)
     else:
-        print(f"\n  ✗ FAIL — {n_diag_best}/{K} < {pass_threshold}: "
-              f"cross-modal alignment is weaker than expected.")
+        print(
+            f"\n  ✗ FAIL — {n_diag_best}/{K} < {pass_threshold}: "
+            f"cross-modal alignment is weaker than expected."
+        )
         sys.exit(1)
 
 

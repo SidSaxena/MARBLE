@@ -62,13 +62,24 @@ _MIN_BYTES = 10_000
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _ffprobe(path: Path) -> dict | None:
     """Return ffprobe metadata, or None on failure."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_streams", "-show_format", str(path)],
-            capture_output=True, text=True, timeout=20,
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_streams",
+                "-show_format",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
@@ -103,14 +114,14 @@ def _ffprobe(path: Path) -> dict | None:
             pass
     if dur <= 0:
         return None
-    return {"sample_rate": sr, "channels": channels,
-            "duration": dur, "num_samples": int(sr * dur)}
+    return {"sample_rate": sr, "channels": channels, "duration": dur, "num_samples": int(sr * dur)}
 
 
 def _torchaudio_load(path: Path) -> bool:
     """Return True if torchaudio can open and read at least one frame."""
     try:
         import torchaudio
+
         info = torchaudio.info(str(path))
         return info.num_frames > 0 and info.sample_rate > 0
     except Exception:
@@ -126,7 +137,7 @@ def _check_entry(
     """Run all checks against one JSONL record. Returns a result dict."""
     out = {
         "rec": rec,
-        "status": "ok",          # ok | missing | empty | corrupt | mismatch
+        "status": "ok",  # ok | missing | empty | corrupt | mismatch
         "issue": "",
     }
     path = Path(rec["audio_path"])
@@ -152,9 +163,7 @@ def _check_entry(
         if meta["channels"] != rec["channels"]:
             diffs.append(f"ch {rec['channels']}≠{meta['channels']}")
         if abs(meta["duration"] - rec["duration"]) > tolerance_sec:
-            diffs.append(
-                f"dur {rec['duration']:.2f}≠{meta['duration']:.2f}"
-            )
+            diffs.append(f"dur {rec['duration']:.2f}≠{meta['duration']:.2f}")
         if diffs:
             out["status"] = "mismatch"
             out["issue"] = "; ".join(diffs)
@@ -179,9 +188,11 @@ def _format_bytes(n: int) -> str:
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def main():
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
 
@@ -190,34 +201,70 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    ap.add_argument("--jsonl", default="data/SHS100K/SHS100K.test.jsonl",
-                    help="Path to JSONL file (default: %(default)s)")
-    ap.add_argument("--audio-dir", default=None,
-                    help="Directory containing the audio files. "
-                         "If omitted, inferred from the first JSONL entry.")
-    ap.add_argument("--ffprobe", action="store_true",
-                    help="Run ffprobe on each file and compare to JSONL metadata.")
-    ap.add_argument("--torchaudio", action="store_true",
-                    help="Verify every file opens with torchaudio (slowest).")
-    ap.add_argument("--workers", type=int, default=8,
-                    help="Parallel workers for ffprobe / torchaudio (default: 8)")
-    ap.add_argument("--tolerance-sec", type=float, default=0.5,
-                    help="Duration mismatch tolerance in seconds (default: 0.5)")
-    ap.add_argument("--clean-appledouble", action="store_true",
-                    help="Delete macOS AppleDouble sidecar files (._*).")
-    ap.add_argument("--convert-mp4", action="store_true",
-                    help="Remux .mp4 files to .m4a (audio stream copied, no re-encode). "
-                         "Updates the JSONL audio_path entries to point at the new files.")
-    ap.add_argument("--show-first", type=int, default=20,
-                    help="Print at most this many problem entries (default: 20)")
-    ap.add_argument("--rewrite", action="store_true",
-                    help="Write a cleaned JSONL with only ok+mismatch records "
-                         "(missing/empty/corrupt are dropped). Combine with "
-                         "--audio-dir to repoint audio_path to a different "
-                         "directory before verifying.")
-    ap.add_argument("--rewrite-out", type=Path, default=None,
-                    help="Output path for the rewritten JSONL (default: "
-                         "overwrite --jsonl in place).")
+    ap.add_argument(
+        "--jsonl",
+        default="data/SHS100K/SHS100K.test.jsonl",
+        help="Path to JSONL file (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--audio-dir",
+        default=None,
+        help="Directory containing the audio files. "
+        "If omitted, inferred from the first JSONL entry.",
+    )
+    ap.add_argument(
+        "--ffprobe",
+        action="store_true",
+        help="Run ffprobe on each file and compare to JSONL metadata.",
+    )
+    ap.add_argument(
+        "--torchaudio",
+        action="store_true",
+        help="Verify every file opens with torchaudio (slowest).",
+    )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Parallel workers for ffprobe / torchaudio (default: 8)",
+    )
+    ap.add_argument(
+        "--tolerance-sec",
+        type=float,
+        default=0.5,
+        help="Duration mismatch tolerance in seconds (default: 0.5)",
+    )
+    ap.add_argument(
+        "--clean-appledouble",
+        action="store_true",
+        help="Delete macOS AppleDouble sidecar files (._*).",
+    )
+    ap.add_argument(
+        "--convert-mp4",
+        action="store_true",
+        help="Remux .mp4 files to .m4a (audio stream copied, no re-encode). "
+        "Updates the JSONL audio_path entries to point at the new files.",
+    )
+    ap.add_argument(
+        "--show-first",
+        type=int,
+        default=20,
+        help="Print at most this many problem entries (default: 20)",
+    )
+    ap.add_argument(
+        "--rewrite",
+        action="store_true",
+        help="Write a cleaned JSONL with only ok+mismatch records "
+        "(missing/empty/corrupt are dropped). Combine with "
+        "--audio-dir to repoint audio_path to a different "
+        "directory before verifying.",
+    )
+    ap.add_argument(
+        "--rewrite-out",
+        type=Path,
+        default=None,
+        help="Output path for the rewritten JSONL (default: overwrite --jsonl in place).",
+    )
     args = ap.parse_args()
 
     # ── Load JSONL ────────────────────────────────────────────────────────────
@@ -231,11 +278,11 @@ def main():
 
     if not records:
         log.error(
-            f"JSONL is empty.  Most likely the downloader was re-run with "
-            f"--skip-audio pointing at the wrong audio dir, overwriting it.\n"
-            f"  Fix: regenerate the JSONL from the actual audio dir:\n"
-            f"    python scripts/data/download_shs100k.py --skip-audio "
-            f"--audio-dir <your-audio-dir>"
+            "JSONL is empty.  Most likely the downloader was re-run with "
+            "--skip-audio pointing at the wrong audio dir, overwriting it.\n"
+            "  Fix: regenerate the JSONL from the actual audio dir:\n"
+            "    python scripts/data/download_shs100k.py --skip-audio "
+            "--audio-dir <your-audio-dir>"
         )
         sys.exit(1)
 
@@ -282,8 +329,7 @@ def main():
 
     # ── mp4 → m4a remux (in-place audio copy) ────────────────────────────────
     if args.convert_mp4:
-        mp4_paths = [Path(r["audio_path"]) for r in records
-                     if r["audio_path"].endswith(".mp4")]
+        mp4_paths = [Path(r["audio_path"]) for r in records if r["audio_path"].endswith(".mp4")]
         if mp4_paths:
             log.info(f"Remuxing {len(mp4_paths):,} .mp4 → .m4a ...")
             ytid_to_newpath: dict[str, str] = {}
@@ -294,8 +340,18 @@ def main():
                     ytid_to_newpath[src.stem] = str(dst)
                     continue
                 r = subprocess.run(
-                    ["ffmpeg", "-v", "quiet", "-y",
-                     "-i", str(src), "-vn", "-c:a", "copy", str(dst)],
+                    [
+                        "ffmpeg",
+                        "-v",
+                        "quiet",
+                        "-y",
+                        "-i",
+                        str(src),
+                        "-vn",
+                        "-c:a",
+                        "copy",
+                        str(dst),
+                    ],
                     capture_output=True,
                 )
                 if r.returncode == 0 and dst.exists() and dst.stat().st_size > _MIN_BYTES:
@@ -323,12 +379,15 @@ def main():
     )
 
     by_status: dict[str, list[dict]] = {
-        "ok": [], "missing": [], "empty": [], "corrupt": [], "mismatch": [],
+        "ok": [],
+        "missing": [],
+        "empty": [],
+        "corrupt": [],
+        "mismatch": [],
     }
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
         futs = {
-            pool.submit(_check_entry, rec, args.ffprobe, args.torchaudio,
-                        args.tolerance_sec): rec
+            pool.submit(_check_entry, rec, args.ffprobe, args.torchaudio, args.tolerance_sec): rec
             for rec in records
         }
         n_done = 0
@@ -345,9 +404,7 @@ def main():
     on_disk = {
         p.resolve()
         for p in audio_dir.iterdir()
-        if p.is_file()
-        and p.suffix.lower() in _AUDIO_EXTS
-        and not p.name.startswith("._")
+        if p.is_file() and p.suffix.lower() in _AUDIO_EXTS and not p.name.startswith("._")
     }
     orphans = sorted(on_disk - referenced)
 
@@ -360,54 +417,62 @@ def main():
             pass
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    n_ok        = len(by_status["ok"])
-    n_missing   = len(by_status["missing"])
-    n_empty     = len(by_status["empty"])
-    n_corrupt   = len(by_status["corrupt"])
-    n_mismatch  = len(by_status["mismatch"])
-    total       = len(records)
+    n_ok = len(by_status["ok"])
+    n_missing = len(by_status["missing"])
+    n_empty = len(by_status["empty"])
+    n_corrupt = len(by_status["corrupt"])
+    n_mismatch = len(by_status["mismatch"])
+    total = len(records)
 
     print()
     print("=" * 64)
-    print(f" SHS-100K verification summary")
+    print(" SHS-100K verification summary")
     print("=" * 64)
     print(f"  JSONL entries     {total:>6,}")
-    print(f"    ✓ ok            {n_ok:>6,}  ({100*n_ok/total:.1f}%)")
-    if n_missing:  print(f"    ✗ missing       {n_missing:>6,}")
-    if n_empty:    print(f"    ✗ empty         {n_empty:>6,}")
-    if n_corrupt:  print(f"    ✗ corrupt       {n_corrupt:>6,}")
-    if n_mismatch: print(f"    ⚠ mismatch      {n_mismatch:>6,}  (metadata diverges)")
+    print(f"    ✓ ok            {n_ok:>6,}  ({100 * n_ok / total:.1f}%)")
+    if n_missing:
+        print(f"    ✗ missing       {n_missing:>6,}")
+    if n_empty:
+        print(f"    ✗ empty         {n_empty:>6,}")
+    if n_corrupt:
+        print(f"    ✗ corrupt       {n_corrupt:>6,}")
+    if n_mismatch:
+        print(f"    ⚠ mismatch      {n_mismatch:>6,}  (metadata diverges)")
     print()
     print(f"  Files on disk     {len(on_disk):>6,}  ({_format_bytes(total_bytes)})")
     print(f"  Orphans on disk   {len(orphans):>6,}  (not in JSONL)")
-    print(f"  AppleDouble files {len(sidecars):>6,}  "
-          + ("(remaining)" if not args.clean_appledouble else "(deleted)"))
+    print(
+        f"  AppleDouble files {len(sidecars):>6,}  "
+        + ("(remaining)" if not args.clean_appledouble else "(deleted)")
+    )
     print()
     print(f"  Unique works      {len({r['work_id'] for r in records}):>6,}")
     durations = [r["duration"] for r in records]
     if durations:
-        print(f"  Audio duration    "
-              f"total={sum(durations)/3600:.1f}h  "
-              f"avg={sum(durations)/len(durations):.1f}s  "
-              f"min={min(durations):.1f}s  max={max(durations):.1f}s")
+        print(
+            f"  Audio duration    "
+            f"total={sum(durations) / 3600:.1f}h  "
+            f"avg={sum(durations) / len(durations):.1f}s  "
+            f"min={min(durations):.1f}s  max={max(durations):.1f}s"
+        )
     print("=" * 64)
 
     # ── Detail listings ──────────────────────────────────────────────────────
     def _list_problems(label: str, items: list[dict]):
-        if not items: return
+        if not items:
+            return
         print(f"\n── {label} ({len(items)}) — first {args.show_first} ──")
-        for it in items[:args.show_first]:
-            print(f"  {it['rec']['youtube_id']}  {it['issue']}  "
-                  f"→ {it['rec']['audio_path']}")
+        for it in items[: args.show_first]:
+            print(f"  {it['rec']['youtube_id']}  {it['issue']}  → {it['rec']['audio_path']}")
 
-    _list_problems("MISSING",  by_status["missing"])
-    _list_problems("EMPTY",    by_status["empty"])
-    _list_problems("CORRUPT",  by_status["corrupt"])
+    _list_problems("MISSING", by_status["missing"])
+    _list_problems("EMPTY", by_status["empty"])
+    _list_problems("CORRUPT", by_status["corrupt"])
     _list_problems("MISMATCH", by_status["mismatch"])
 
     if orphans:
         print(f"\n── ORPHANS on disk ({len(orphans)}) — first {args.show_first} ──")
-        for p in orphans[:args.show_first]:
+        for p in orphans[: args.show_first]:
             print(f"  {p.name}")
 
     # ── Optional: rewrite cleaned JSONL ──────────────────────────────────────
@@ -425,10 +490,9 @@ def main():
                 meta = _ffprobe(Path(rec["audio_path"]))
                 if meta is not None:
                     rec["sample_rate"] = meta["sample_rate"]
-                    rec["channels"]    = meta["channels"]
-                    rec["duration"]    = meta["duration"]
-                    rec["num_samples"] = int(round(meta["duration"] *
-                                                   meta["sample_rate"]))
+                    rec["channels"] = meta["channels"]
+                    rec["duration"] = meta["duration"]
+                    rec["num_samples"] = int(round(meta["duration"] * meta["sample_rate"]))
         out_path = args.rewrite_out or jsonl
         with open(out_path, "w", encoding="utf-8") as f:
             for rec in keep_records:

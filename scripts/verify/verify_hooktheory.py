@@ -51,14 +51,13 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
 
 import torchaudio
 
 log = logging.getLogger(__name__)
 
 
-def _probe(path: Path) -> Optional[tuple[int, int, int]]:
+def _probe(path: Path) -> tuple[int, int, int] | None:
     """Return (num_frames, sample_rate, channels) via torchaudio.info."""
     try:
         info = torchaudio.info(str(path))
@@ -97,9 +96,9 @@ def _audit_one(rec: dict) -> dict:
     out["diff_seconds"] = diff / sr
     # Categorise: tiny mismatches are normal MP3-decoder differences;
     # large ones might indicate a different file entirely.
-    if abs(diff) <= sr * 0.05:                     # ≤50 ms drift — harmless
+    if abs(diff) <= sr * 0.05:  # ≤50 ms drift — harmless
         out["status"] = "ok"
-    elif abs(diff) <= sr * 1.0:                    # ≤1 s drift — typical MP3 quirk
+    elif abs(diff) <= sr * 1.0:  # ≤1 s drift — typical MP3 quirk
         out["status"] = "minor-drift"
     else:
         out["status"] = "large-drift"
@@ -175,8 +174,8 @@ def _rewrite_jsonl(jsonl: Path, results: list[dict], keep_drifted: bool):
             if audit.get("found") is not None:
                 rec["num_samples"] = audit["found"]
                 rec["sample_rate"] = audit["found_sr"]
-                rec["channels"]    = audit["found_channels"]
-                rec["duration"]    = round(audit["found"] / audit["found_sr"], 3)
+                rec["channels"] = audit["found_channels"]
+                rec["duration"] = round(audit["found"] / audit["found_sr"], 3)
             out_lines.append(json.dumps(rec, ensure_ascii=False))
             n_kept += 1
 
@@ -195,7 +194,8 @@ def _rewrite_jsonl(jsonl: Path, results: list[dict], keep_drifted: bool):
 
 def main():
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
     ap = argparse.ArgumentParser(
@@ -204,21 +204,27 @@ def main():
         epilog=__doc__,
     )
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--jsonl",     type=Path, help="audit a single JSONL")
+    g.add_argument("--jsonl", type=Path, help="audit a single JSONL")
     g.add_argument("--jsonl-dir", type=Path, help="audit every *.jsonl in this dir")
-    ap.add_argument("--workers",  type=int, default=8)
-    ap.add_argument("--rewrite",  action="store_true",
-                    help="Overwrite JSONLs with torchaudio frame counts "
-                         "(creates a .bak first).  Drops 'missing', "
-                         "'unreadable', and 'large-drift' entries — the "
-                         "audio either isn't on disk or doesn't match "
-                         "the JSONL's stated content.")
-    ap.add_argument("--keep-drifted", action="store_true",
-                    help="With --rewrite, keep 'large-drift' entries "
-                         "instead of dropping them.  Their content "
-                         "doesn't match the JSONL but they may still be "
-                         "usable if the label still applies to the "
-                         "actual audio.")
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument(
+        "--rewrite",
+        action="store_true",
+        help="Overwrite JSONLs with torchaudio frame counts "
+        "(creates a .bak first).  Drops 'missing', "
+        "'unreadable', and 'large-drift' entries — the "
+        "audio either isn't on disk or doesn't match "
+        "the JSONL's stated content.",
+    )
+    ap.add_argument(
+        "--keep-drifted",
+        action="store_true",
+        help="With --rewrite, keep 'large-drift' entries "
+        "instead of dropping them.  Their content "
+        "doesn't match the JSONL but they may still be "
+        "usable if the label still applies to the "
+        "actual audio.",
+    )
     args = ap.parse_args()
 
     if args.jsonl_dir:
@@ -238,11 +244,13 @@ def main():
         for status, n in sorted(summary["counts"].items()):
             print(f"    {status:>15s}: {n:>6,}")
         if summary["worst"]:
-            print(f"    Worst offenders (largest |jsonl - actual| in seconds):")
+            print("    Worst offenders (largest |jsonl - actual| in seconds):")
             for w in summary["worst"][:5]:
-                print(f"      {Path(w['path']).name:>40s}  "
-                      f"jsonl={w['jsonl_ns']:>10,}  actual={w['found']:>10,}  "
-                      f"diff={w['diff_seconds']:+.3f}s")
+                print(
+                    f"      {Path(w['path']).name:>40s}  "
+                    f"jsonl={w['jsonl_ns']:>10,}  actual={w['found']:>10,}  "
+                    f"diff={w['diff_seconds']:+.3f}s"
+                )
         print()
 
         if args.rewrite:

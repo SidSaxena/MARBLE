@@ -81,8 +81,8 @@ import argparse
 import subprocess
 import sys
 import time
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 
 # Use the same Python interpreter that is running this script so that the
 # correct venv is used on all platforms (important on Windows where "python"
@@ -94,20 +94,21 @@ PYTHON = sys.executable
 # Sweep definitions
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class SweepDef:
-    model:       str   # display name / --model-tag
-    task:        str   # display name / --task-tag
-    base_config: str   # path to base YAML
-    num_layers:  int
-    note:        str   # one-line description
+    model: str  # display name / --model-tag
+    task: str  # display name / --task-tag
+    base_config: str  # path to base YAML
+    num_layers: int
+    note: str  # one-line description
+
 
 SWEEPS: list[SweepDef] = [
     # ══════════════════════════════════════════════════════════════════════════
     # ZERO-SHOT retrieval — no training, just embed + cosine MAP per layer
     # Fastest possible: a few minutes per layer (inference only, no backprop)
     # ══════════════════════════════════════════════════════════════════════════
-
     # ── Covers80 (~80 songs, 160 clips) — finishes in under an hour total ────
     SweepDef(
         model="CLaMP3",
@@ -130,7 +131,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Cover retrieval | MAP | zero-shot | 80 songs | OMARRQ 24 layers",
     ),
-
     # ── SHS100K (~5K tracks) — zero-shot, but larger so takes a few hours ────
     SweepDef(
         model="CLaMP3",
@@ -153,7 +153,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Cover retrieval | MAP | zero-shot | 5K tracks | OMARRQ 24 layers",
     ),
-
     # ── VGMIDI-TVar theme/variation retrieval (zero-shot, MIDI-rendered audio) ─
     # Small dataset — fast.  Tests whether the encoders represent intra-piece
     # variation invariance, which is the leitmotif relationship in miniature.
@@ -188,11 +187,9 @@ SWEEPS: list[SweepDef] = [
         num_layers=13,
         note="Theme→variation | MAP | zero-shot | MIDI-native | CLaMP3-symbolic 13 layers",
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # FAST supervised — small datasets, clip-level (single prediction per clip)
     # ══════════════════════════════════════════════════════════════════════════
-
     # ── GS key detection ──────────────────────────────────────────────────────
     SweepDef(
         model="OMARRQ-multifeature-25hz",
@@ -215,7 +212,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=13,
         note="Key detection  | 24 classes | weighted_score | MERT 13 layers",
     ),
-
     # ── HookTheory key estimation ─────────────────────────────────────────────
     SweepDef(
         model="CLaMP3",
@@ -238,7 +234,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Key estimation | 24 classes | weighted_score | OMARRQ 24 layers",
     ),
-
     # ── HookTheory structure classification ──────────────────────────────────
     SweepDef(
         model="CLaMP3",
@@ -261,12 +256,10 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Structure class| 7 classes  | acc metric   | OMARRQ 24 layers",
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # MEDIUM — frame-level tasks (many predictions per clip → slower backprop)
     # CLaMP3 excluded: variable token rate incompatible with frame-level labels
     # ══════════════════════════════════════════════════════════════════════════
-
     # ── GTZAN beat tracking (frame-level, 25 Hz OMARRQ / 75 Hz MERT) ─────────
     SweepDef(
         model="MERT-v1-95M",
@@ -282,7 +275,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Beat tracking  | beat_f1   | frame-level 25Hz | OMARRQ 24 layers",
     ),
-
     # ── Chords1217 chord recognition (frame-level, larger dataset) ───────────
     SweepDef(
         model="MERT-v1-95M",
@@ -298,7 +290,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Chord recog.   | 25 classes | frame-level 25Hz | OMARRQ 24 layers",
     ),
-
     # ── HookTheory melody pitch transcription (frame-level) ──────────────────
     # 128 MIDI classes; -1 sentinel for silent frames; metrics: RPA + RCA.
     SweepDef(
@@ -315,7 +306,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ 24 layers",
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # LONG — NSynth pitch classification (50K train cap, still multi-hour/layer)
     # ══════════════════════════════════════════════════════════════════════════
@@ -340,7 +330,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Pitch class.   | 88 MIDI   | 50K cap | OMARRQ 24 layers",
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # MERT-v1-330M — 24-layer transformer (+1 CNN feature extractor = 25 hidden
     # states), 1024-dim, 75 Hz. Parameter-scaled-up sibling of MERT-v1-95M.
@@ -416,7 +405,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=25,
         note="Pitch class.   | 88 MIDI   | 50K cap | MERT-330M 25 layers",
     ),
-
     # ══════════════════════════════════════════════════════════════════════════
     # MuQ + MusicFM — 12-layer transformer (+1 input = 13 hidden states),
     # 1024-dim, 25 Hz. The paper at arXiv:2505.16306 has layer-wise probes
@@ -486,15 +474,14 @@ SWEEPS: list[SweepDef] = [
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _completed_layers(model: str, task: str, num_layers: int) -> list[int]:
     """Return indices of layers that already have a best.ckpt."""
     done = []
     for layer in range(num_layers):
-        candidates = list(Path("output").glob(
-            f"*{model}*{task}*layer{layer}*/checkpoints/best.ckpt"
-        )) + list(Path("output").glob(
-            f"*{task}*{model}*layer{layer}*/checkpoints/best.ckpt"
-        ))
+        candidates = list(
+            Path("output").glob(f"*{model}*{task}*layer{layer}*/checkpoints/best.ckpt")
+        ) + list(Path("output").glob(f"*{task}*{model}*layer{layer}*/checkpoints/best.ckpt"))
         if candidates:
             done.append(layer)
     return done
@@ -503,27 +490,27 @@ def _completed_layers(model: str, task: str, num_layers: int) -> list[int]:
 def _data_present(task: str) -> bool:
     """Check that the primary JSONL for a task exists."""
     jsonl_map = {
-        "GS":                 "data/GS/GS.train.jsonl",
-        "EMO":                "data/EMO/EMO.train.jsonl",
-        "Chords1217":         "data/Chords1217/Chords1217.train.jsonl",
-        "GTZANBeatTracking":  "data/GTZAN/GTZANBeatTracking.train.jsonl",
-        "GTZANGenre":         "data/GTZAN/GTZANGenre.train.jsonl",
+        "GS": "data/GS/GS.train.jsonl",
+        "EMO": "data/EMO/EMO.train.jsonl",
+        "Chords1217": "data/Chords1217/Chords1217.train.jsonl",
+        "GTZANBeatTracking": "data/GTZAN/GTZANBeatTracking.train.jsonl",
+        "GTZANGenre": "data/GTZAN/GTZANGenre.train.jsonl",
         # NSynth: ~19 GB training split required
-        "NSynth":             "data/NSynth/NSynth.train.jsonl",
+        "NSynth": "data/NSynth/NSynth.train.jsonl",
         # Covers80: single evaluation JSONL (no train/val split)
-        "Covers80":           "data/Covers80/Covers80.test.jsonl",
+        "Covers80": "data/Covers80/Covers80.test.jsonl",
         # SHS-100K: community-standard cover retrieval benchmark (test split)
-        "SHS100K":            "data/SHS100K/SHS100K.test.jsonl",
+        "SHS100K": "data/SHS100K/SHS100K.test.jsonl",
         # HookTheory: requires download_hooktheory.py (YouTube audio via yt-dlp)
-        "HookTheoryKey":       "data/HookTheory/HookTheoryKey.train.jsonl",
+        "HookTheoryKey": "data/HookTheory/HookTheoryKey.train.jsonl",
         "HookTheoryStructure": "data/HookTheory/HookTheoryStructure.train.jsonl",
         # HookTheoryMelody needs the rich raw schema + full-song audio:
         # build with `scripts/data/build_hooktheory_melody_jsonl.py` after a
         # full HookTheory download (zips/audio/*.tar, ~104 GB).
-        "HookTheoryMelody":    "data/HookTheory/HookTheory.train.jsonl",
+        "HookTheoryMelody": "data/HookTheory/HookTheory.train.jsonl",
         # VGMIDITVar: built from MIDI zip via scripts/data/build_vgmiditvar_dataset.py
         # (single JSONL covering both train + test splits; no .train/.test variant).
-        "VGMIDITVar":          "data/VGMIDITVar/VGMIDITVar.jsonl",
+        "VGMIDITVar": "data/VGMIDITVar/VGMIDITVar.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()
@@ -533,31 +520,57 @@ def _data_present(task: str) -> bool:
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Run all MARBLE layer sweeps sequentially."
+    parser = argparse.ArgumentParser(description="Run all MARBLE layer sweeps sequentially.")
+    parser.add_argument(
+        "--models", nargs="*", help="Filter to specific model tags (e.g. OMARRQ CLaMP3)"
     )
-    parser.add_argument("--models", nargs="*",
-                        help="Filter to specific model tags (e.g. OMARRQ CLaMP3)")
-    parser.add_argument("--tasks", nargs="*",
-                        help="Filter to specific task tags (e.g. GS Chords1217 EMO)")
-    parser.add_argument("--no-skip", action="store_true",
-                        help="Re-run layers even if checkpoints exist")
-    parser.add_argument("--accelerator", default=None,
-                        help="Override trainer accelerator (gpu/mps/cpu)")
-    parser.add_argument("--precision", default=None,
-                        help="Override trainer.precision (e.g. 16-mixed, bf16-mixed, 32-true). "
-                             "Auto-applied as 16-mixed when --accelerator=mps.")
-    parser.add_argument("--concurrency", type=int, default=1,
-                        help="Run N layers per sweep in parallel (default: 1). "
-                             "For a 16 GB CUDA GPU use --concurrency 2.")
-    parser.add_argument("--num-workers-per-proc", type=int, default=None,
-                        help="Dataloader workers per subprocess when --concurrency>1.")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print planned sweeps without running anything")
-    parser.add_argument("--skip-meanall", action="store_true",
-                        help="Don't run the meanall (mean-of-all-layers) baseline first. "
-                             "Forwarded to run_sweep_local.py.")
+    parser.add_argument(
+        "--tasks", nargs="*", help="Filter to specific task tags (e.g. GS Chords1217 EMO)"
+    )
+    parser.add_argument(
+        "--no-skip", action="store_true", help="Re-run layers even if checkpoints exist"
+    )
+    parser.add_argument(
+        "--accelerator", default=None, help="Override trainer accelerator (gpu/mps/cpu)"
+    )
+    parser.add_argument(
+        "--precision",
+        default=None,
+        help="Override trainer.precision (e.g. 16-mixed, bf16-mixed, 32-true). "
+        "Auto-applied as 16-mixed when --accelerator=mps.",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Run N layers per sweep in parallel (default: 1). "
+        "For a 16 GB CUDA GPU use --concurrency 2.",
+    )
+    parser.add_argument(
+        "--num-workers-per-proc",
+        type=int,
+        default=None,
+        help="Dataloader workers per subprocess when --concurrency>1.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print planned sweeps without running anything"
+    )
+    parser.add_argument(
+        "--skip-meanall",
+        action="store_true",
+        help="Don't run the meanall (mean-of-all-layers) baseline first. "
+        "Forwarded to run_sweep_local.py.",
+    )
+    parser.add_argument(
+        "--only-meanall",
+        action="store_true",
+        help="Run ONLY the meanall baseline for each (encoder, task) pair — "
+        "skip the full per-layer sweep. Useful for filling in a baseline "
+        "matrix cheaply across all encoders×tasks. Forwarded to "
+        "run_sweep_local.py.",
+    )
     args = parser.parse_args()
 
     # Filter sweep list
@@ -572,9 +585,9 @@ def main():
         sys.exit(1)
 
     # Print plan
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  MARBLE Layer Sweep Plan  ({len(sweeps)} sweeps)")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     total_layers = 0
     for i, s in enumerate(sweeps, 1):
         done = _completed_layers(s.model, s.task, s.num_layers)
@@ -586,7 +599,7 @@ def main():
         print(f"       {s.note}")
         total_layers += remaining
     print(f"\n  Total remaining layers: {total_layers}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     if args.dry_run:
         print("Dry run — exiting without running.")
@@ -609,17 +622,22 @@ def main():
     t_start = time.time()
 
     for i, s in enumerate(sweeps, 1):
-        print(f"\n{'#'*70}")
+        print(f"\n{'#' * 70}")
         print(f"  Sweep {i}/{len(sweeps)}: {s.model} × {s.task}")
         print(f"  {s.note}")
-        print(f"{'#'*70}\n")
+        print(f"{'#' * 70}\n")
 
         cmd = [
-            PYTHON, "scripts/sweeps/run_sweep_local.py",
-            "--base-config", s.base_config,
-            "--num-layers",  str(s.num_layers),
-            "--model-tag",   s.model,
-            "--task-tag",    s.task,
+            PYTHON,
+            "scripts/sweeps/run_sweep_local.py",
+            "--base-config",
+            s.base_config,
+            "--num-layers",
+            str(s.num_layers),
+            "--model-tag",
+            s.model,
+            "--task-tag",
+            s.task,
         ]
         if args.no_skip:
             cmd.append("--no-skip")
@@ -633,6 +651,8 @@ def main():
             cmd += ["--num-workers-per-proc", str(args.num_workers_per_proc)]
         if args.skip_meanall:
             cmd.append("--skip-meanall")
+        if args.only_meanall:
+            cmd.append("--only-meanall")
 
         print(f"$ {' '.join(cmd)}\n", flush=True)
 
@@ -642,16 +662,16 @@ def main():
 
         key = f"{s.model} × {s.task}"
         if result.returncode == 0:
-            sweep_results[key] = f"OK  ({elapsed/3600:.1f}h)"
+            sweep_results[key] = f"OK  ({elapsed / 3600:.1f}h)"
         else:
             sweep_results[key] = f"FAILED (exit {result.returncode})"
-            print(f"\n  ⚠ Sweep failed — continuing with next.", file=sys.stderr)
+            print("\n  ⚠ Sweep failed — continuing with next.", file=sys.stderr)
 
     # Final summary
     total_elapsed = time.time() - t_start
-    print(f"\n{'='*70}")
-    print(f"  All sweeps complete  (total: {total_elapsed/3600:.1f}h)")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print(f"  All sweeps complete  (total: {total_elapsed / 3600:.1f}h)")
+    print(f"{'=' * 70}")
     for key, status in sweep_results.items():
         print(f"  {key:<45}  {status}")
     print()

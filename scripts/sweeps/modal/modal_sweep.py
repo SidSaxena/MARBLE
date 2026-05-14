@@ -51,5 +51,4 @@ def main(
 
     completed = sum(1 for r in results if r["status"] == "completed")
     skipped = sum(1 for r in results if r["status"] == "skipped")
-    print(f"\nDone: {completed} completed, {skipped} skipped "
-          f"(of {len(results)} layers)")
+    print(f"\nDone: {completed} completed, {skipped} skipped (of {len(results)} layers)")

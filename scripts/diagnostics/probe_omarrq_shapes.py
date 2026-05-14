@@ -29,7 +29,9 @@ import torch
 import torchaudio
 
 
-def _gather_clips(clips_dir: Path, n_clips: int, sample_rate: int) -> tuple[torch.Tensor, list[Path]]:
+def _gather_clips(
+    clips_dir: Path, n_clips: int, sample_rate: int
+) -> tuple[torch.Tensor, list[Path]]:
     """Load N audio files (resample to target sr, mono, 5s clip)."""
     paths = sorted(p for p in clips_dir.rglob("*.wav") if not p.name.startswith("._"))[:n_clips]
     if not paths:
@@ -39,7 +41,7 @@ def _gather_clips(clips_dir: Path, n_clips: int, sample_rate: int) -> tuple[torc
     for p in paths:
         w, sr = torchaudio.load(str(p))
         if w.size(0) > 1:
-            w = w.mean(dim=0, keepdim=True)   # mono
+            w = w.mean(dim=0, keepdim=True)  # mono
         if sr != sample_rate:
             w = torchaudio.functional.resample(w, sr, sample_rate)
         # Truncate or pad to exactly 5s
@@ -50,7 +52,7 @@ def _gather_clips(clips_dir: Path, n_clips: int, sample_rate: int) -> tuple[torc
             w = torch.nn.functional.pad(w, (0, target - w.size(1)))
         wavs.append(w)
 
-    batch = torch.stack(wavs, dim=0)   # (B, 1, T)
+    batch = torch.stack(wavs, dim=0)  # (B, 1, T)
     return batch, paths
 
 
@@ -66,14 +68,17 @@ def _stat_row(name: str, t: torch.Tensor) -> str:
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--clips-dir", type=Path,
-                    default=Path("/Users/sid/leitmotifs/results/smoke_test/browsable/mert95m_L7_5s/clips"),
-                    help="Directory containing .wav clips to feed the encoder")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--clips-dir",
+        type=Path,
+        default=Path("/Users/sid/leitmotifs/results/smoke_test/browsable/mert95m_L7_5s/clips"),
+        help="Directory containing .wav clips to feed the encoder",
+    )
     ap.add_argument("--n-clips", type=int, default=8)
-    ap.add_argument("--save-embeddings", type=Path,
-                    default=Path("/tmp/omarrq_layer_embeddings.pt"))
+    ap.add_argument("--save-embeddings", type=Path, default=Path("/tmp/omarrq_layer_embeddings.pt"))
     args = ap.parse_args()
 
     # ── Import the MARBLE encoder ───────────────────────────────────────────
@@ -115,7 +120,7 @@ def main():
 
     # Now: what does the dataloader collate? If each item is (T,) it stacks to (B, T).
     if all(t.dim() == 1 for t in transformed):
-        post_feat = torch.stack(transformed, dim=0)   # (B, T)
+        post_feat = torch.stack(transformed, dim=0)  # (B, T)
     else:
         post_feat = torch.stack(transformed, dim=0)
     print(_stat_row("after FeatureExtractor", post_feat))
@@ -135,7 +140,9 @@ def main():
     if sample0.dim() != 3:
         print(f"\n  ⚠ unexpected dim {sample0.dim()} (expected 3 = B, T, C)")
     last_dim = sample0.shape[-1]
-    print(f"\n  ✓ feature dim per layer: {last_dim} (expected {OMARRQ_Multifeature25hz_Encoder.NUM_FEATURES})")
+    print(
+        f"\n  ✓ feature dim per layer: {last_dim} (expected {OMARRQ_Multifeature25hz_Encoder.NUM_FEATURES})"
+    )
     expected = OMARRQ_Multifeature25hz_Encoder.NUM_FEATURES
     if last_dim != expected:
         print(f"  ✗ MISMATCH: encoder reports {last_dim}, class declares {expected}")
@@ -154,18 +161,23 @@ def main():
         # cosine to layer 0
         flat_n = flat / (flat.norm(dim=-1, keepdim=True) + 1e-8)
         cos_to_l0 = (flat_n * l0_flat).sum(-1).mean().item()
-        print(f"  {li:>3}  {t.float().mean().item():>+8.4f}  "
-              f"{t.float().std().item():>6.4f}  {nrm:>13.4f}  {cos_to_l0:>8.4f}")
+        print(
+            f"  {li:>3}  {t.float().mean().item():>+8.4f}  "
+            f"{t.float().std().item():>6.4f}  {nrm:>13.4f}  {cos_to_l0:>8.4f}"
+        )
 
     # ── Save per-layer mean-pooled embeddings for the anisotropy diagnostic ──
     pooled = torch.stack([t.mean(dim=1) for t in layer_outputs], dim=0)  # (L, B, C)
     args.save_embeddings.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        "embeddings": pooled,         # (L, B, C)
-        "raw_layer_outputs": [t for t in layer_outputs],   # frame-level for later
-        "clip_paths": [str(p) for p in paths],
-        "model_name": "OMARRQ-multifeature25hz",
-    }, args.save_embeddings)
+    torch.save(
+        {
+            "embeddings": pooled,  # (L, B, C)
+            "raw_layer_outputs": [t for t in layer_outputs],  # frame-level for later
+            "clip_paths": [str(p) for p in paths],
+            "model_name": "OMARRQ-multifeature25hz",
+        },
+        args.save_embeddings,
+    )
     print(f"\n→ Saved layer embeddings to {args.save_embeddings}")
     print("  use this file with anisotropy_diag.py for the isotropy/rank analysis.")
 

@@ -55,12 +55,11 @@ import re
 import sys
 import time
 
-
 # Groups we will touch — anything else is left strictly alone.
 # Value (when set) overrides per-run model-from-tags inference; None means
 # infer from each run's existing tags (whichever model tag is present).
 BROKEN_GROUPS_NO_MODEL_PREFIX = {
-    "GTZANBeatTracking": None,   # actually OMARRQ-multifeature25hz per tags
+    "GTZANBeatTracking": None,  # actually OMARRQ-multifeature25hz per tags
 }
 MODAL_SHS100K_GROUPS = {
     "CLaMP3 / SHS100K",
@@ -83,8 +82,8 @@ LEGACY_OMARRQ_GROUP_RENAMES: dict[str, str] = {
 KNOWN_MODEL_TAGS = {
     "MERT-v1-95M",
     "CLaMP3",
-    "OMARRQ-multifeature25hz",       # legacy spelling (no hyphen)
-    "OMARRQ-multifeature-25hz",      # new convention
+    "OMARRQ-multifeature25hz",  # legacy spelling (no hyphen)
+    "OMARRQ-multifeature-25hz",  # new convention
     "OMARRQ-multifeature-25hz-fsq",  # explicit-fsq retro label
     "MuQ",
     "MusicFM",
@@ -115,7 +114,7 @@ def _infer_model(run) -> str | None:
 
 
 def _has_test_metric(run) -> bool:
-    return any(str(k).startswith("test/") for k in run.summary.keys())
+    return any(str(k).startswith("test/") for k in run.summary)
 
 
 def _layer_index(run) -> int | None:
@@ -160,8 +159,11 @@ def _planned_changes(run, *, new_name=None, new_group=None, tag_add=(), tag_remo
 
 def _apply(run, *, new_name=None, new_group=None, tag_add=(), tag_remove=()):
     changes = _planned_changes(
-        run, new_name=new_name, new_group=new_group,
-        tag_add=tag_add, tag_remove=tag_remove,
+        run,
+        new_name=new_name,
+        new_group=new_group,
+        tag_add=tag_add,
+        tag_remove=tag_remove,
     )
     fields = []
     for field, value in changes:
@@ -171,15 +173,24 @@ def _apply(run, *, new_name=None, new_group=None, tag_add=(), tag_remove=()):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--project", default="marble")
-    ap.add_argument("--entity", default=None,
-                    help="WandB entity (default: authenticated user's default)")
-    ap.add_argument("--apply", action="store_true",
-                    help="Actually write changes. Without this, prints intended changes only.")
-    ap.add_argument("--sleep", type=float, default=0.3,
-                    help="Sleep (s) between API writes to avoid rate limits (default: 0.3)")
+    ap.add_argument(
+        "--entity", default=None, help="WandB entity (default: authenticated user's default)"
+    )
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually write changes. Without this, prints intended changes only.",
+    )
+    ap.add_argument(
+        "--sleep",
+        type=float,
+        default=0.3,
+        help="Sleep (s) between API writes to avoid rate limits (default: 0.3)",
+    )
     args = ap.parse_args()
 
     try:
@@ -233,10 +244,12 @@ def main():
         if legacy_rename is not None:
             intent["new_group"] = legacy_rename
             # Tag both the new variant slug AND fsq for filterability
-            intent.setdefault("tag_add", []).extend([
-                "OMARRQ-multifeature-25hz-fsq",
-                "fsq",
-            ])
+            intent.setdefault("tag_add", []).extend(
+                [
+                    "OMARRQ-multifeature-25hz-fsq",
+                    "fsq",
+                ]
+            )
             # If the new group has -meanall, also tag the aggregation
             if "meanall" in legacy_rename:
                 intent["tag_add"].append("mean-all")
@@ -264,10 +277,14 @@ def main():
         #   - add `mean-all` + `layer-meanall` tags; drop legacy `mean-agg`
         cur_tags = set(r.tags or [])
         legacy_meanall_names = {
-            "nonfsq-test", "base-test", "25hz-nonfsq-test", "variant-swap",
+            "nonfsq-test",
+            "base-test",
+            "25hz-nonfsq-test",
+            "variant-swap",
         }
         is_meanall = (
-            ("mean-agg" in cur_tags) or ("mean-all" in cur_tags)
+            ("mean-agg" in cur_tags)
+            or ("mean-all" in cur_tags)
             or ("layer-meanall" in cur_tags)
             or "meanall" in (name or "")
             or ("variant-swap" in cur_tags)
@@ -296,8 +313,8 @@ def main():
                 existing_remove = set(existing_remove)
             # Drop conflicting / superseded tags.
             intent["tag_remove"] = existing_remove | {
-                "single-layer",   # contradicts mean-all
-                "mean-agg",       # superseded by mean-all
+                "single-layer",  # contradicts mean-all
+                "mean-agg",  # superseded by mean-all
             }
 
         # ── Fix #4: ensure encoder-family tag is present on every run ───────
@@ -334,10 +351,14 @@ def main():
         # Print the planned change
         print(f"{r.id}  cur: group={r.group!r}  name={r.name!r}  tags={r.tags}")
         bits = []
-        if "new_group" in intent: bits.append(f"group→{intent['new_group']!r}")
-        if "new_name"  in intent: bits.append(f"name→{intent['new_name']!r}")
-        if intent.get("tag_add"): bits.append(f"+tags={intent['tag_add']}")
-        if intent.get("tag_remove"): bits.append(f"-tags={list(intent['tag_remove'])}")
+        if "new_group" in intent:
+            bits.append(f"group→{intent['new_group']!r}")
+        if "new_name" in intent:
+            bits.append(f"name→{intent['new_name']!r}")
+        if intent.get("tag_add"):
+            bits.append(f"+tags={intent['tag_add']}")
+        if intent.get("tag_remove"):
+            bits.append(f"-tags={list(intent['tag_remove'])}")
         print(f"           {'   |   '.join(bits)}")
 
         if args.apply:
@@ -357,14 +378,14 @@ def main():
                     print(f"           ✗ write failed: {e}")
                 time.sleep(args.sleep)
         else:
-            n_touched += 1   # counted as "would touch"
+            n_touched += 1  # counted as "would touch"
         print()
 
-    print(f"\n── Summary ──")
+    print("\n── Summary ──")
     print(f"  {'Would touch' if not args.apply else 'Touched'}:  {n_touched}")
     print(f"  Skipped (already correct):  {n_skipped}")
     if not args.apply:
-        print(f"\nRe-run with --apply to actually write the changes.")
+        print("\nRe-run with --apply to actually write the changes.")
 
 
 if __name__ == "__main__":

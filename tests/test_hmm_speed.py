@@ -1,6 +1,7 @@
 # tests/test_hmm_speed.py
 
 import time
+
 import numpy as np
 
 from marble.tasks.GTZANBeatTracking.madmom import hmm as cy_hmm_mod
@@ -76,7 +77,7 @@ def benchmark_viterbi(hmm_c, hmm_n, obs_seq):
 
     print(f"Cython viterbi time: {dur_c:.4f} s")
     print(f"Numba  viterbi time: {dur_n:.4f} s")
-    print(f"Numba/Cython ratio:  {dur_n/dur_c:.2f}")
+    print(f"Numba/Cython ratio:  {dur_n / dur_c:.2f}")
 
 
 def benchmark_forward(hmm_c, hmm_n, obs_seq):
@@ -101,7 +102,7 @@ def benchmark_forward(hmm_c, hmm_n, obs_seq):
 
     print(f"Cython forward time: {dur_c:.4f} s")
     print(f"Numba  forward time: {dur_n:.4f} s")
-    print(f"Numba/Cython ratio:  {dur_n/dur_c:.2f}")
+    print(f"Numba/Cython ratio:  {dur_n / dur_c:.2f}")
 
 
 def benchmark_forward_generator(hmm_c, hmm_n, obs_seq):
@@ -134,7 +135,7 @@ def benchmark_forward_generator(hmm_c, hmm_n, obs_seq):
 
     print(f"Cython forward_generator time: {dur_c:.4f} s")
     print(f"Numba  forward_generator time: {dur_n:.4f} s")
-    print(f"Numba/Cython ratio:            {dur_n/dur_c:.2f}")
+    print(f"Numba/Cython ratio:            {dur_n / dur_c:.2f}")
 
 
 def main():
