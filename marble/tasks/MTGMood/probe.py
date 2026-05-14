@@ -23,6 +23,7 @@ class ProbeAudioTask(BaseTask):
         decoders: list[dict],
         losses: list[dict],
         metrics: dict[str, dict[str, dict]],
+        cache_embeddings: bool = False,
     ):
         # ... (constructor remains unchanged) ...
         # 1) build all submodules from your YAML configs
@@ -46,6 +47,7 @@ class ProbeAudioTask(BaseTask):
             metrics=metric_maps,
             sample_rate=sample_rate,
             use_ema=use_ema,
+            cache_embeddings=cache_embeddings,
         )
 
     def _shared_step(self, batch, batch_idx: int, split: str) -> torch.Tensor:

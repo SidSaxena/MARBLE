@@ -22,6 +22,7 @@ class ProbeAudioTask(BaseTask):
         decoders: list[dict],
         losses: list[dict],
         metrics: dict[str, dict[str, dict]],
+        cache_embeddings: bool = False,
     ):
         # 1) build all submodules from your YAML configs
         enc = instantiate_from_config(encoder)
@@ -44,6 +45,7 @@ class ProbeAudioTask(BaseTask):
             metrics=metric_maps,
             sample_rate=sample_rate,
             use_ema=use_ema,
+            cache_embeddings=cache_embeddings,
         )
 
     def on_test_start(self) -> None:
