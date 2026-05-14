@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "CLaMP3 / NSynth"
-      tags: ["CLaMP3", "NSynth", "layer-sweep", "probe", "mean-all", "layer-meanall"]
+      tags: ["CLaMP3", "NSynth", "layer-sweep", "probe", "mean-all"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.NSynth.CLaMP3-meanall/"

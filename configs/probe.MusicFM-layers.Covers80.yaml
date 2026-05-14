@@ -27,7 +27,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MusicFM / Covers80"
-      tags: ["MusicFM", "Covers80", "probe"]
+      tags: ["MusicFM", "Covers80", "probe", "layer-sweep"]
       job_type: "probe"
       name: "MusicFM"
       save_dir: "./output/probe.Covers80.MusicFM/"

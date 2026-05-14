@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANGenre"
-      tags: ["Xcodec", "GTZANGenre", "probe"]
+      tags: ["Xcodec", "GTZANGenre", "probe", "layer-sweep"]
       job_type: "probe"
       name: "Xcodec"
       save_dir: "./output/probe.GTZANGenre.Xcodec/"
@@ -50,22 +50,22 @@ model:
       class_path: marble.encoders.Xcodec.model.Xcodec_Encoder
       init_args:
         pre_trained_folder: null
-        mode: vq_emb  # vq_emb / pre_vq_emb  
+        mode: vq_emb  # vq_emb / pre_vq_emb
         target_bw: 6.0  # one of [0.5, 1.0, ..., 6.0] kbps
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: [0]  # something like [1, 3, "10..72"]
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 1024
           out_dim: 10 # 10 genres
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -93,7 +93,7 @@ model:
           init_args:
             num_classes: 10
             task: multiclass
-    
+
 data:
   class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreDataModule
   init_args:

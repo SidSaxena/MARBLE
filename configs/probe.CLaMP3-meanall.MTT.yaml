@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "CLaMP3 / MTT"
-      tags: ["MTT", "probe", "mean-all", "CLaMP3", "layer-meanall", "layer-sweep"]
+      tags: ["MTT", "probe", "mean-all", "CLaMP3", "layer-sweep"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.MTT.CLaMP3-meanall/"
@@ -52,21 +52,21 @@ model:
       init_args:
         pre_trained_folder: null
         train_mode: freeze  # also supports lora, or full
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: ["0..12"]
           mode: mean
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 768
           out_dim: 50
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -137,7 +137,7 @@ model:
             task: multilabel
             num_labels: 50
             average: macro
-    
+
 data:
   class_path: marble.tasks.MTT.datamodule.MTTDataModule
   init_args:

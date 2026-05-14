@@ -38,7 +38,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MERT-v1-95M / GTZANBeatTracking"
-      tags: ["MERT-v1-95M", "GTZANBeatTracking", "layer-sweep", "probe"]
+      tags: ["MERT-v1-95M", "GTZANBeatTracking", "layer-sweep", "probe", "MERT"]
       job_type: "probe"
       name: "MERT-v1-95M-layers"
       save_dir: "./output/probe.GTZANBeatTracking.MERT-v1-95M-layers/"

@@ -21,7 +21,9 @@ What it fixes
    historical OMARRQ-multifeature25hz runs were the -fsq variant).
 
 4. Cross-cutting encoder-family tag (`OMARRQ`, `MERT`, `CLaMP3`,
-   `CLaMP3-symbolic`) added to every run for filterability.
+   `CLaMP3-symbolic`, `MuQ`, `MusicFM`, `DaSheng`) added to every run
+   for filterability, and `layer-sweep` added to every per-sweep run
+   that was missing it (some early base configs forgot to include it).
 
 5. Meanall runs live in the per-layer sweep group, NOT a sibling
    `<encoder>-meanall / <task>` group. Detected by tags/name signals
@@ -29,8 +31,9 @@ What it fixes
    legacy variant-audit run names). For each match:
      - strip any `-meanall` suffix from the group  →  parent group
      - rename to `layer-meanall-<fit|test>` (kind from test/* keys)
-     - ensure tags: `mean-all`, `layer-meanall`; drop legacy `mean-agg`
-       and contradictory `single-layer`.
+     - ensure tag `mean-all`; drop the now-redundant `layer-meanall`
+       (the run name already conveys layer-position) and legacy
+       `mean-agg` + contradictory `single-layer`.
    The earlier convention put meanall in its own group; this fix
    migrates those runs back to live alongside layer-0..N-1.
 
@@ -114,7 +117,10 @@ def _infer_model(run) -> str | None:
 
 
 def _has_test_metric(run) -> bool:
-    return any(str(k).startswith("test/") for k in run.summary)
+    # NOTE: wandb's `Summary` object iterates over integer indices when
+    # you `for k in run.summary` — you must call `.keys()` explicitly to
+    # get string metric names. (ruff's SIM118 autofix gets this wrong.)
+    return any(str(k).startswith("test/") for k in run.summary.keys())  # noqa: SIM118
 
 
 def _layer_index(run) -> int | None:
@@ -307,7 +313,7 @@ def main():
             if current_name != target_name:
                 intent["new_name"] = target_name
 
-            intent.setdefault("tag_add", []).extend(["mean-all", "layer-meanall"])
+            intent.setdefault("tag_add", []).append("mean-all")
             existing_remove = intent.get("tag_remove", set())
             if not isinstance(existing_remove, set):
                 existing_remove = set(existing_remove)
@@ -315,21 +321,38 @@ def main():
             intent["tag_remove"] = existing_remove | {
                 "single-layer",  # contradicts mean-all
                 "mean-agg",  # superseded by mean-all
+                "layer-meanall",  # superseded by mean-all + the run name
             }
 
-        # ── Fix #4: ensure encoder-family tag is present on every run ───────
-        # (cross-cutting filter for "show me all OMARRQ runs" etc.)
+        # ── Fix #4: ensure encoder-family tag + `layer-sweep` are present ───
+        # Family is the cross-cutting filter ("show me all OMARRQ runs"
+        # across every variant). For single-variant encoders (MuQ, MusicFM,
+        # DaSheng) family == encoder, so adding it is a no-op duplicate
+        # rejected by the no-op filter downstream.
+        sp = group.split(" / ", 1)
+        enc_part = sp[0] if len(sp) == 2 else group
         family = None
-        if "OMARRQ" in group:
+        if enc_part.startswith("OMARRQ"):
             family = "OMARRQ"
-        elif group.startswith("MERT"):
+        elif enc_part.startswith("MERT"):
             family = "MERT"
-        elif group.startswith("CLaMP3-symbolic"):
+        elif enc_part.startswith("CLaMP3-symbolic"):
             family = "CLaMP3-symbolic"
-        elif group.startswith("CLaMP3"):
+        elif enc_part.startswith("CLaMP3"):
             family = "CLaMP3"
-        if family is not None and family not in (r.tags or []):
+        elif enc_part.startswith("MuQ"):
+            family = "MuQ"
+        elif enc_part.startswith("MusicFM"):
+            family = "MusicFM"
+        elif enc_part.startswith("DaSheng"):
+            family = "DaSheng"
+        cur_tags_list = r.tags or []
+        if family is not None and family not in cur_tags_list:
             intent.setdefault("tag_add", []).append(family)
+        # `layer-sweep` was missing from some recent base configs; ensure it
+        # ends up on every run that belongs to a per-layer or meanall sweep.
+        if "layer-sweep" not in cur_tags_list and " / " in group:
+            intent.setdefault("tag_add", []).append("layer-sweep")
 
         if not intent:
             n_skipped += 1

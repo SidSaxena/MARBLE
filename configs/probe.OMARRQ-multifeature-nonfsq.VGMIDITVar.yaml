@@ -26,7 +26,7 @@ trainer:
     init_args:
       project: "marble"
       group: "OMARRQ-multifeature-nonfsq / VGMIDITVar"
-      tags: ["OMARRQ-multifeature", "VGMIDITVar", "variant-swap", "probe"]
+      tags: ["OMARRQ-multifeature", "VGMIDITVar", "variant-swap", "probe", "OMARRQ-multifeature-nonfsq", "OMARRQ", "layer-sweep"]
       job_type: "probe"
       name: "nonfsq-test"
       save_dir: "./output/probe.VGMIDITVar.OMARRQ-multifeature-nonfsq/"

@@ -24,7 +24,7 @@ trainer:
     init_args:
       project: "marble"
       group: "OMARRQ-multifeature-nonfsq / Covers80"
-      tags: ["OMARRQ-multifeature", "Covers80", "variant-swap", "probe"]
+      tags: ["OMARRQ-multifeature", "Covers80", "variant-swap", "probe", "OMARRQ-multifeature-nonfsq", "OMARRQ", "layer-sweep"]
       job_type: "probe"
       name: "nonfsq-test"
       save_dir: "./output/probe.Covers80.OMARRQ-multifeature-nonfsq/"

@@ -38,7 +38,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MERT-v1-95M / HookTheoryStructure"
-      tags: ["MERT-v1-95M", "HookTheoryStructure", "layer-sweep", "probe"]
+      tags: ["MERT-v1-95M", "HookTheoryStructure", "layer-sweep", "probe", "MERT"]
       job_type: "probe"
       name: "MERT-v1-95M-layers"
       save_dir: "./output/probe.HookTheoryStructure.MERT-v1-95M-layers/"

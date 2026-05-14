@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MERT-v1-95M / MTGMood"
-      tags: ["MTGMood", "probe", "mean-all", "MERT-v1-95M", "layer-meanall", "layer-sweep"]
+      tags: ["MTGMood", "probe", "mean-all", "MERT-v1-95M", "layer-sweep", "MERT"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.MTGMood.MERT-v1-95M-meanall/"
@@ -54,21 +54,21 @@ model:
         train_mode: freeze  # also supports lora, or full
         force_half: false
         preprocess_in_forward: false
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: ["0..12"]
           mode: mean
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 768
           out_dim: 56
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -139,7 +139,7 @@ model:
             task: multilabel
             num_labels: 56
             average: macro
-    
+
 data:
   class_path: marble.tasks.MTGMood.datamodule.MTGMoodDataModule
   init_args:

@@ -33,7 +33,7 @@ trainer:
     init_args:
       project: "marble"
       group: "OMARRQ-multifeature-25hz / EMO"
-      tags: ["OMARRQ-multifeature-25hz", "EMO", "probe"]
+      tags: ["OMARRQ-multifeature-25hz", "EMO", "probe", "OMARRQ", "layer-sweep"]
       job_type: "probe"
       name: "OMARRQ-multifeature-25hz"
       save_dir: "./output/probe.EMO.OMARRQ-multifeature-25hz/"

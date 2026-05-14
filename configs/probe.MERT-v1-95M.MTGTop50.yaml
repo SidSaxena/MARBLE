@@ -35,7 +35,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MTGTop50"
-      tags: ["MERT-v1-95M", "MTGTop50", "probe"]
+      tags: ["MERT-v1-95M", "MTGTop50", "probe", "MERT", "layer-sweep"]
       job_type: "probe"
       name: "MERT-v1-95M"
       save_dir: "./output/probe.MTGTop50.MERT-v1-95M/"
@@ -54,21 +54,21 @@ model:
         train_mode: freeze  # also supports lora, or full
         force_half: false
         preprocess_in_forward: false
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.MLPReduce
         init_args:
           num_layers: 13
           hidden_size: 768
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 768
           out_dim: 50
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -139,7 +139,7 @@ model:
             task: multilabel
             num_labels: 50
             average: macro
-    
+
 data:
   class_path: marble.tasks.MTGTop50.datamodule.MTGTop50DataModule
   init_args:

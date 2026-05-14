@@ -25,7 +25,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MuQ / VGMIDITVar"
-      tags: ["MuQ", "VGMIDITVar", "layer-sweep", "probe", "mean-all", "layer-meanall"]
+      tags: ["MuQ", "VGMIDITVar", "layer-sweep", "probe", "mean-all"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.VGMIDITVar.MuQ-meanall/"

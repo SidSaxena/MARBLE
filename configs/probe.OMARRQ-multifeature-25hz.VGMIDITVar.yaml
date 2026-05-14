@@ -19,7 +19,7 @@ trainer:
     init_args:
       project: "marble"
       group: "OMARRQ-multifeature-25hz / VGMIDITVar"
-      tags: ["OMARRQ-multifeature-25hz", "VGMIDITVar", "layer-sweep", "probe"]
+      tags: ["OMARRQ-multifeature-25hz", "VGMIDITVar", "layer-sweep", "probe", "OMARRQ"]
       job_type: "probe"
       name: "OMARRQ-multifeature-25hz"
       save_dir: "./output/probe.VGMIDITVar.OMARRQ-multifeature-25hz/"

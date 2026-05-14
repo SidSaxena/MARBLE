@@ -57,20 +57,47 @@ def patch_wandb_name(text: str, layer: int) -> str:
     )
 
 
-def append_layer_tag(text: str, layer: int) -> str:
-    """Append ``layer-N`` to the existing WandB tags array if not present.
+def encoder_family(encoder: str) -> str:
+    """Map encoder slug to its family tag for cross-variant filtering.
+
+    Mirrors the mapping in scripts/analysis/fix_wandb_runs.py — kept here
+    too so generated configs land with the right tags at run start (so
+    we don't have to rely on fix_wandb_runs.py running afterward).
+    """
+    if encoder.startswith("OMARRQ"):
+        return "OMARRQ"
+    if encoder.startswith("MERT"):
+        return "MERT"
+    if encoder.startswith("CLaMP3-symbolic"):
+        return "CLaMP3-symbolic"
+    if encoder.startswith("CLaMP3"):
+        return "CLaMP3"
+    if encoder.startswith("MuQ"):
+        return "MuQ"
+    if encoder.startswith("MusicFM"):
+        return "MusicFM"
+    if encoder.startswith("DaSheng"):
+        return "DaSheng"
+    return encoder
+
+
+def ensure_tags(text: str, required: list[str]) -> str:
+    """Additively ensure each tag in ``required`` is present in the YAML
+    tags array, regardless of whether the base config already had tags
+    injected. Preserves any existing tags (e.g. task-specific markers).
 
     Runs unconditionally (independent of inject_wandb_group_tags) so the
-    per-layer tag is always added even when the base config already had
-    group/tags injected by an earlier migration.
+    canonical tag set is always complete on the generated config.
     """
-    layer_tag = f'"layer-{layer}"'
 
     def replacer(m: re.Match) -> str:
         existing = m.group(2).strip()
-        if layer_tag in existing:
+        # Crude split — values are quoted strings, no commas inside.
+        present = {t.strip().strip('"').strip("'") for t in existing.split(",") if t.strip()}
+        additions = [f'"{t}"' for t in required if t not in present]
+        if not additions:
             return m.group(0)
-        new_inner = f"{existing}, {layer_tag}" if existing else layer_tag
+        new_inner = f"{existing}, {', '.join(additions)}" if existing else ", ".join(additions)
         return f"{m.group(1)}[{new_inner}]"
 
     return re.sub(r"(tags:\s*)\[([^\]\n]*)\]", replacer, text, count=1)
@@ -136,7 +163,11 @@ def main():
 
     # WandB group: groups all layers of one model×task sweep together
     group = f"{model_base} / {args.task_tag}"
-    base_tags = [model_base, args.task_tag, "layer-sweep", "probe"]
+    family = encoder_family(model_base)
+    # Canonical tag set for every per-layer run. `ensure_tags` is
+    # additive — duplicates and existing tags (e.g. CLaMP3-symbolic's
+    # `symbolic`) are preserved.
+    base_tags = [model_base, family, args.task_tag, "layer-sweep", "probe"]
 
     for layer in layers:
         text = base_text
@@ -167,10 +198,12 @@ def main():
 
         # 5. Inject group / tags / job_type into WandB init_args.
         #    inject_wandb_group_tags is idempotent — it no-ops if the base
-        #    config has already been migrated.  For per-layer enrichment we
-        #    always append the layer-specific tag separately.
+        #    config has already been migrated.  We then always ensure the
+        #    canonical tag set (including the per-layer tag) regardless
+        #    of whether the injection ran — this keeps the generated
+        #    config self-consistent even if the base lacks any tags.
         text = inject_wandb_group_tags(text, group, base_tags)
-        text = append_layer_tag(text, layer)
+        text = ensure_tags(text, [*base_tags, f"layer-{layer}"])
 
         out_path = out_dir / f"sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
         out_path.write_text(text)

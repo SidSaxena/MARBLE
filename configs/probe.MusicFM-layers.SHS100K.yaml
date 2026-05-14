@@ -26,7 +26,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MusicFM / SHS100K"
-      tags: ["MusicFM", "SHS100K", "probe"]
+      tags: ["MusicFM", "SHS100K", "probe", "layer-sweep"]
       job_type: "probe"
       name: "MusicFM"
       save_dir: "./output/probe.SHS100K.MusicFM/"

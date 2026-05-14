@@ -41,7 +41,7 @@ trainer:
     init_args:
       project: "marble"
       group: "OMARRQ-multifeature-25hz / GTZANBeatTracking"
-      tags: ["OMARRQ-multifeature-25hz", "GTZANBeatTracking", "probe", "mean-all", "layer-meanall", "layer-sweep"]
+      tags: ["OMARRQ-multifeature-25hz", "GTZANBeatTracking", "probe", "mean-all", "layer-sweep", "OMARRQ"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.GTZANBeatTracking.OMARRQ-multifeature-25hz-meanall/"

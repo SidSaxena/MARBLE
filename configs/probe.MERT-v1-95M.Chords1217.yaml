@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "Chords1217"
-      tags: ["MERT-v1-95M", "Chords1217", "probe"]
+      tags: ["MERT-v1-95M", "Chords1217", "probe", "MERT", "layer-sweep"]
       job_type: "probe"
       name: "MERT-v1-95M"
       save_dir: "./output/probe.Chords1217.MERT-v1-95M/"
@@ -53,7 +53,7 @@ model:
         train_mode: freeze  # also supports lora, or full
         force_half: false
         preprocess_in_forward: false
-      
+
     emb_transforms:
       # - class_path: marble.modules.transforms.LayerSelector
       #   init_args:
@@ -62,19 +62,19 @@ model:
         init_args:
           num_layers: 13
           hidden_size: 768
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoderKeepTime
         init_args:
           in_dim: 768
           out_dim: 25 # 10 genres
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
     losses:
-      - class_path: marble.tasks.Chords1217.probe.ChordCrossEntropyLoss 
+      - class_path: marble.tasks.Chords1217.probe.ChordCrossEntropyLoss
         init_args:
           time_dim_mismatch_tol: 5
 
@@ -99,7 +99,7 @@ model:
           init_args:
             time_dim_mismatch_tol: 5
             ignore_index: -1 # ignore the non maj min chords
-    
+
 data:
   class_path: marble.tasks.Chords1217.datamodule.Chords1217DataModule
   init_args:

@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MuQ / EMO"
-      tags: ["EMO", "probe", "mean-all", "MuQ", "layer-meanall", "layer-sweep"]
+      tags: ["EMO", "probe", "mean-all", "MuQ", "layer-sweep"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.EMO.MuQ-meanall/"
@@ -51,21 +51,21 @@ model:
       init_args:
         pre_trained_folder: null
         train_mode: freeze  # also supports lora, or full
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: ["0..12"]
           mode: mean
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 1024
           out_dim: 2 # 2 genres
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -115,7 +115,7 @@ model:
           class_path: marble.tasks.EMO.probe.SliceR2
           init_args:
             dim: 1
-    
+
 data:
   class_path: marble.tasks.EMO.datamodule.EMODataModule
   init_args:

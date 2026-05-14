@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GS"
-      tags: ["Xcodec", "GS", "probe"]
+      tags: ["Xcodec", "GS", "probe", "layer-sweep"]
       job_type: "probe"
       name: "Xcodec"
       save_dir: "./output/probe.GS.Xcodec/"
@@ -50,22 +50,22 @@ model:
       class_path: marble.encoders.Xcodec.model.Xcodec_Encoder
       init_args:
         pre_trained_folder: null
-        mode: vq_emb  # vq_emb / pre_vq_emb  
+        mode: vq_emb  # vq_emb / pre_vq_emb
         target_bw: 6.0  # one of [0.5, 1.0, ..., 6.0] kbps
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.MLPReduce
         init_args:
           num_layers: 1
           hidden_size: 1024
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 1024
           out_dim: 24 # 24 KEYS
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -99,7 +99,7 @@ model:
             task: multiclass
         weighted_score:
           class_path: marble.tasks.GS.probe.KeyWeightedScore
-    
+
 data:
   class_path: marble.tasks.GS.datamodule.GSDataModule
   init_args:
