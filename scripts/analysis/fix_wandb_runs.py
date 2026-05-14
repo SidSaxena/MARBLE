@@ -16,6 +16,24 @@ What it fixes
    `test/*` keys), with matching `job_type` set via tags and the
    added `modal` source tag.
 
+3. Legacy OMARRQ-multifeature25hz (un-hyphenated) groups → explicit
+   `OMARRQ-multifeature-25hz-fsq / <task>` (the audit found that all
+   historical OMARRQ-multifeature25hz runs were the -fsq variant).
+
+4. Cross-cutting encoder-family tag (`OMARRQ`, `MERT`, `CLaMP3`,
+   `CLaMP3-symbolic`) added to every run for filterability.
+
+5. Meanall runs live in the per-layer sweep group, NOT a sibling
+   `<encoder>-meanall / <task>` group. Detected by tags/name signals
+   (mean-all, mean-agg, layer-meanall, "meanall" in name, variant-swap,
+   legacy variant-audit run names). For each match:
+     - strip any `-meanall` suffix from the group  →  parent group
+     - rename to `layer-meanall-<fit|test>` (kind from test/* keys)
+     - ensure tags: `mean-all`, `layer-meanall`; drop legacy `mean-agg`
+       and contradictory `single-layer`.
+   The earlier convention put meanall in its own group; this fix
+   migrates those runs back to live alongside layer-0..N-1.
+
 Skips runs that already follow the convention — idempotent re-run
 prints "no change".
 
@@ -122,22 +140,34 @@ def _remove_tags(tags: list[str], unwanted: set[str]) -> list[str]:
     return [t for t in tags if t not in unwanted]
 
 
-def _apply(run, *, new_name=None, new_group=None, tag_add=(), tag_remove=()):
-    changed_fields = []
+def _planned_changes(run, *, new_name=None, new_group=None, tag_add=(), tag_remove=()):
+    """Return [(field, value), ...] for changes that would actually flip
+    a run's state. Used by both dry-run (to skip no-op intents) and
+    _apply (so re-runs are idempotent end-to-end)."""
+    changes = []
     if new_name and run.name != new_name:
-        run.name = new_name
-        changed_fields.append(f"name={new_name}")
+        changes.append(("name", new_name))
     if new_group and run.group != new_group:
-        run.group = new_group
-        changed_fields.append(f"group={new_group}")
+        changes.append(("group", new_group))
     cur_tags = list(run.tags or [])
     new_tags = _remove_tags(cur_tags, set(tag_remove))
     for t in tag_add:
         new_tags = _ensure_tag(new_tags, t)
     if new_tags != cur_tags:
-        run.tags = new_tags
-        changed_fields.append(f"tags+={list(tag_add)}")
-    return changed_fields
+        changes.append(("tags", new_tags))
+    return changes
+
+
+def _apply(run, *, new_name=None, new_group=None, tag_add=(), tag_remove=()):
+    changes = _planned_changes(
+        run, new_name=new_name, new_group=new_group,
+        tag_add=tag_add, tag_remove=tag_remove,
+    )
+    fields = []
+    for field, value in changes:
+        setattr(run, field, value)
+        fields.append(f"{field}={value}")
+    return fields
 
 
 def main():
@@ -213,24 +243,32 @@ def main():
             else:
                 intent["tag_add"].append("single-layer")
 
-        # ── Fix #5: detect meanall runs and tag/rename them ─────────────────
-        # Lightning's WandbLogger doesn't expose the nested emb_transforms
-        # config, so we detect "meanall" runs by several signals:
-        #   1. tag "mean-agg" or "mean-all"  (config-driven new convention)
-        #   2. name contains "meanall"        (e.g. "meanall-fit", "meanall-test")
-        #   3. tag "variant-swap"             (early single-shot meanall tests
-        #      we ran during the OMAR-RQ variant audit — these were all
-        #      mean-of-all-layers per their YAML)
-        #   4. name in known legacy patterns: nonfsq-test, base-test,
-        #      25hz-nonfsq-test (same OMAR-RQ variant audit)
-        # For matches, ensure the group ends in "-meanall" to disambiguate
-        # from the per-layer sweep group with the same encoder.
+        # ── Fix #5: meanall runs live in the per-layer sweep group ──────────
+        # New convention (2026-05-14): mean-of-all-layers is just another
+        # aggregation choice for the same (encoder, task), so it belongs in
+        # the SAME WandB group as the per-layer sweep — named
+        # `layer-meanall-<fit|test>` alongside `layer-N-<fit|test>`. This
+        # lets WandB's group view show the full comparison in one panel.
+        #
+        # Detection (signal-based; Lightning's WandbLogger doesn't expose
+        # the nested `emb_transforms.init_args.mode` config):
+        #   1. tag "mean-all" / "mean-agg" / "layer-meanall"
+        #   2. name contains "meanall"           (e.g. meanall-fit, layer-meanall-test)
+        #   3. tag "variant-swap"                (legacy single-shot meanall tests
+        #      from the OMAR-RQ variant audit — all mean-of-all-layers per YAML)
+        #   4. legacy bare names: nonfsq-test, base-test, 25hz-nonfsq-test
+        #
+        # Action (idempotent):
+        #   - strip any trailing "-meanall" from group  →  parent group
+        #   - rename to `layer-meanall-<fit|test>` (kind inferred from test/* keys)
+        #   - add `mean-all` + `layer-meanall` tags; drop legacy `mean-agg`
         cur_tags = set(r.tags or [])
         legacy_meanall_names = {
             "nonfsq-test", "base-test", "25hz-nonfsq-test", "variant-swap",
         }
         is_meanall = (
             ("mean-agg" in cur_tags) or ("mean-all" in cur_tags)
+            or ("layer-meanall" in cur_tags)
             or "meanall" in (name or "")
             or ("variant-swap" in cur_tags)
             or (name in legacy_meanall_names)
@@ -239,14 +277,28 @@ def main():
         effective_group = intent.get("new_group", group)
         if is_meanall and " / " in effective_group:
             enc_part, task_part = effective_group.split(" / ", 1)
-            if not enc_part.endswith("-meanall"):
-                intent["new_group"] = f"{enc_part}-meanall / {task_part}"
-            intent.setdefault("tag_add", []).append("mean-all")
+            # Move out of any `-meanall` group back to the parent encoder
+            # group so meanall sits alongside the per-layer runs.
+            enc_canonical = enc_part.removesuffix("-meanall")
+            if enc_canonical != enc_part:
+                intent["new_group"] = f"{enc_canonical} / {task_part}"
+
+            # Normalize the run name to `layer-meanall-<fit|test>`.
+            kind = "test" if _has_test_metric(r) else "fit"
+            target_name = f"layer-meanall-{kind}"
+            current_name = intent.get("new_name", name)
+            if current_name != target_name:
+                intent["new_name"] = target_name
+
+            intent.setdefault("tag_add", []).extend(["mean-all", "layer-meanall"])
             existing_remove = intent.get("tag_remove", set())
             if not isinstance(existing_remove, set):
                 existing_remove = set(existing_remove)
-            # Drop a stale "single-layer" tag if present (it'd contradict)
-            intent["tag_remove"] = existing_remove | {"single-layer"}
+            # Drop conflicting / superseded tags.
+            intent["tag_remove"] = existing_remove | {
+                "single-layer",   # contradicts mean-all
+                "mean-agg",       # superseded by mean-all
+            }
 
         # ── Fix #4: ensure encoder-family tag is present on every run ───────
         # (cross-cutting filter for "show me all OMARRQ runs" etc.)
@@ -263,6 +315,19 @@ def main():
             intent.setdefault("tag_add", []).append(family)
 
         if not intent:
+            n_skipped += 1
+            continue
+
+        # Filter out no-op intents (e.g. tag_add that's already on the run,
+        # tag_remove of tags that aren't there). Keeps re-runs idempotent.
+        planned = _planned_changes(
+            r,
+            new_name=intent.get("new_name"),
+            new_group=intent.get("new_group"),
+            tag_add=intent.get("tag_add", ()),
+            tag_remove=intent.get("tag_remove", set()),
+        )
+        if not planned:
             n_skipped += 1
             continue
 

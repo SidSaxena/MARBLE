@@ -25,10 +25,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "MuQ-meanall / SHS100K"
-      tags: ["MuQ", "SHS100K", "probe", "mean-all"]
+      group: "MuQ / SHS100K"
+      tags: ["MuQ", "SHS100K", "probe", "mean-all", "layer-meanall", "layer-sweep"]
       job_type: "probe"
-      name: "meanall-fit"
+      name: "layer-meanall-fit"
       save_dir: "./output/probe.SHS100K.MuQ-meanall/"
 
 

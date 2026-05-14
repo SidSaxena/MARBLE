@@ -35,10 +35,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "MERT-v1-95M-meanall / GS"
-      tags: ["MERT-v1-95M", "GS", "layer-sweep", "probe", "mean-all"]
+      group: "MERT-v1-95M / GS"
+      tags: ["MERT-v1-95M", "GS", "layer-sweep", "probe", "mean-all", "layer-meanall"]
       job_type: "probe"
-      name: "meanall-fit"
+      name: "layer-meanall-fit"
       save_dir: "./output/probe.GS.MERT-v1-95M-meanall/"
 
 

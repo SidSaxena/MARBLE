@@ -33,10 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "MERT-v1-95M-meanall / GTZANGenre"
-      tags: ["MERT-v1-95M-meanall", "GTZANGenre", "probe", "mean-all"]
+      group: "MERT-v1-95M / GTZANGenre"
+      tags: ["GTZANGenre", "probe", "mean-all", "MERT-v1-95M", "layer-meanall", "layer-sweep"]
       job_type: "probe"
-      name: "meanall-fit"
+      name: "layer-meanall-fit"
       save_dir: "./output/probe.GTZANGenre.MERT-v1-95M-meanall/"
 
 
