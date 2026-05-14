@@ -51,9 +51,75 @@ xcodec = [
     "descript-audiotools @ git+https://github.com/descriptinc/audiotools",
 ]
 
+[dependency-groups]
+# Install with: uv sync --group dev
+dev = [
+    "ruff>=0.13",
+    "pre-commit>=4.0",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["marble", "marble.*"]
+
+# ── ruff: linter + formatter ────────────────────────────────────────────────
+# Run manually with `uv run ruff check .` and `uv run ruff format .`.
+# Pre-commit (`pre-commit install` once, then automatic on every commit)
+# wires both to the staged .py files via .pre-commit-config.yaml.
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    # Third-party encoder code vendored verbatim — don't touch upstream style.
+    "marble/encoders/CLaMP3/M2_modules",
+    "marble/encoders/CLaMP3/midi_util.py",
+    "marble/encoders/MERT",
+    "marble/encoders/MuQ",
+    "marble/encoders/MusicFM",
+    "marble/encoders/Xcodec",
+    "marble/encoders/Dasheng",
+    # Generated per-layer sweep configs — auto-emitted YAML, not Python anyway.
+    "configs/sweeps",
+    "output",
+    "wandb",
+]
+
+[tool.ruff.lint]
+# Conservative starter set; we can expand later. Rationale:
+#   E, F, W : pycodestyle errors + pyflakes — must-fix bugs
+#   I       : isort — keep imports sorted
+#   UP      : pyupgrade — modernise to py310+ syntax
+#   B       : flake8-bugbear — likely-bug patterns
+#   SIM     : flake8-simplify — clearer code, low false-positive rate
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    # Style rules we deliberately don't enforce on a research codebase:
+    "E501",   # line too long — line-length is 100 but enforcement is noisy
+    "E741",   # ambiguous variable name (l, I, O) — common in ML code
+    "B008",   # function call in default argument — used for Path/Tensor defaults
+    "SIM108", # ternary instead of if/else — readability-judgment call
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test / benchmark scripts: many cd-before-import patterns, unused
+# assignments-for-side-effect, and zip-without-strict that are
+# intentional in test scripts.
+"tests/**" = ["F401", "B007", "B011", "B023", "B905", "E402", "F841",
+              "SIM102", "SIM105", "SIM113", "SIM115", "SIM118", "UP035"]
+# Diagnostics scripts often print things — print statements are intentional
+"scripts/diagnostics/**" = ["T201", "E402", "SIM102", "SIM118"]
+# Data-prep & verify scripts: similar concerns to tests/
+"scripts/data/**"   = ["B007", "B905", "F841", "SIM102", "SIM105", "SIM113", "SIM118"]
+"scripts/verify/**" = ["B007", "B905", "F841", "SIM102", "SIM105", "SIM113", "SIM118"]
+# Modal sweep scripts mirror per-layer scripts and use the same idioms
+"scripts/sweeps/modal/**" = ["B007", "B905", "F841", "SIM102", "SIM105"]
+# Top-level scratch / SOTA reproduction code
+"sota/**" = ["F401", "F841", "E402", "B007", "B905", "SIM102", "SIM105", "UP035"]
+
+[tool.ruff.format]
+# Match ruff's defaults; mostly matches black.
+quote-style = "double"
+indent-style = "space"
 
 # ── uv: PyTorch CUDA wheels (Windows / Linux GPU machine) ────────────────────
 # On macOS, the default PyPI CPU-only builds are used automatically.

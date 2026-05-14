@@ -1,0 +1,39 @@
+# Pre-commit configuration for the MARBLE project.
+#
+# Install hooks (once per clone):
+#     uv tool install pre-commit            # or:  pipx install pre-commit
+#     pre-commit install
+#
+# After that, every `git commit` runs ruff lint + format on the staged
+# .py files. Config for ruff itself lives in pyproject.toml's
+# [tool.ruff] / [tool.ruff.lint] / [tool.ruff.format] sections.
+#
+# To run manually across the whole repo (e.g. on a fresh clone before
+# the first commit):
+#     uv run ruff check --fix .
+#     uv run ruff format .
+# or via pre-commit (uses exactly the versions pinned below):
+#     pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.13.0
+    hooks:
+      # Lint with autofix; unfixable errors block the commit.
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      # Format with ruff's own formatter (black-compatible).
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+        exclude: '\.ipynb$'
+      - id: check-yaml
+        # Lightning configs use `!omegaconf` etc. — skip those.
+        args: [--unsafe]
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=2000]
