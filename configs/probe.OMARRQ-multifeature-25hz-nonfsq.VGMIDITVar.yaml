@@ -1,0 +1,95 @@
+seed_everything: 1234
+ckpt_path: null
+
+# ── OMAR-RQ × VGMIDITVar — variant: multifeature-25hz (NO -fsq) ────────────
+# Isolates the FSQ effect from the token-rate effect.
+#   multifeature       : 18.75 Hz, no FSQ      → 0.1708 MAP
+#   multifeature-25hz  : 25.00 Hz, NO FSQ      → ???    (this run)
+#   multifeature-25hz-fsq : 25.00 Hz, FSQ      → 0.0737 MAP (broken)
+# If this scores ≈ multifeature (~0.17), FSQ is the entire problem.
+# If it scores lower, then 25 Hz vs 18.75 Hz also matters somehow.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks: []
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "OMARRQ-multifeature-25hz-nonfsq / VGMIDITVar"
+      tags: ["OMARRQ-multifeature-25hz", "VGMIDITVar", "variant-swap", "probe"]
+      job_type: "probe"
+      name: "25hz-nonfsq-test"
+      save_dir: "./output/probe.VGMIDITVar.OMARRQ-multifeature-25hz-nonfsq/"
+
+
+model:
+  class_path: marble.tasks.VGMIDITVar.probe.CoverRetrievalTask
+  init_args:
+    sample_rate: 24000
+
+    encoder:
+      class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: ["0..23"]
+          mode: mean
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+data:
+  class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 4
+
+    audio_transforms:
+      train:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      val:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      test:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+
+    train:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioDummy
+      init_args:
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+    val:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioDummy
+      init_args:
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+    test:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioAll
+      init_args:
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
