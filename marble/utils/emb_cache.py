@@ -169,6 +169,25 @@ class EmbeddingCache:
         self._log_used = 0
         self._lock = threading.Lock()
 
+    # ── pickling support ─────────────────────────────────────────────────
+    # `EmbeddingCache` instances get pickled when DataLoader workers spawn
+    # on Windows (spawn-mode multiprocessing) — `BaseTask` injects
+    # `cache_check_fn = self._cache.has` into datasets, so each dataset
+    # holds a bound method that pickles the parent cache. `threading.Lock`
+    # is not picklable, so __getstate__ drops it and __setstate__
+    # recreates a fresh lock in the worker. Workers only call `.has()`
+    # (file existence check, no locking needed); the lock guards
+    # `maybe_log` which only ever fires in the main process.
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
+
     # ── public API ──────────────────────────────────────────────────────
 
     def path_for(self, clip_id: str) -> Path:
