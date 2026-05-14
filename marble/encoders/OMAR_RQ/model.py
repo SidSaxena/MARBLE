@@ -71,7 +71,14 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
     """
 
     NAME = "OMAR-RQ-multifeature-25hz"
-    HUGGINGFACE_MODEL_NAME = "mtg-upf/omar-rq-multifeature-25hz-fsq"
+    # Default is the NON-FSQ variant. Variant comparison on VGMIDITVar
+    # (2026-05-14, see docs/data/omar_rq_audit.md) found the -fsq variant
+    # gets ~2.3× worse retrieval MAP than non-fsq, while supervised-task
+    # numbers in the paper are nearly identical. Non-fsq is the right
+    # default for both retrieval and classification probes; pass
+    # model_id="mtg-upf/omar-rq-multifeature-25hz-fsq" explicitly to
+    # restore the original variant for direct comparison.
+    HUGGINGFACE_MODEL_NAME = "mtg-upf/omar-rq-multifeature-25hz"
     SAMPLING_RATE = 24000   # model trained at 24 kHz (config.gin: new_freq=24000)
     TOKEN_RATE = 25.0       # patch_size=960 @ 24kHz → 960/24000 = 40ms = 25 Hz
     NUM_FEATURES = 1024     # config.gin: embed_dim=1024

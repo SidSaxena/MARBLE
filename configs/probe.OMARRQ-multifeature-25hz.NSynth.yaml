@@ -1,5 +1,5 @@
 seed_everything: 1234
-ckpt_path: null
+ckpt_path: null # to resume
 
 trainer:
   fast_dev_run: false
@@ -16,12 +16,12 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.HookTheoryStructure.OMARRQ-multifeature25hz/checkpoints/"
+        dirpath: "./output/probe.NSynth.OMARRQ-multifeature-25hz/checkpoints/"
         filename: "best"
         save_top_k: 1
         monitor: "val/acc"
         mode: "max"
-    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
+    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
@@ -34,33 +34,34 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "HookTheoryStructure"
-      tags: ["OMARRQ-multifeature25hz", "HookTheoryStructure", "probe"]
+      group: "OMARRQ-multifeature-25hz / NSynth"
+      tags: ["OMARRQ-multifeature-25hz", "NSynth", "probe"]
       job_type: "probe"
-      name: "OMARRQ-multifeature25hz"
-      save_dir: "./output/probe.HookTheoryStructure.OMARRQ-multifeature25hz/"
+      name: "OMARRQ-multifeature-25hz"
+      save_dir: "./output/probe.NSynth.OMARRQ-multifeature-25hz/"
 
 
 model:
-  class_path: marble.tasks.HookTheoryStructure.probe.ProbeAudioTask
+  class_path: marble.tasks.NSynth.probe.ProbeAudioTask
   init_args:
-    sample_rate: 24000
+    sample_rate: 24000   # OMARRQ input rate; dataset resamples 16kHz → 24kHz
     use_ema: false
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
-
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          layers: [6]   # sweep replaces this
+          layers: [6]   # single layer; sweep replaces this
       - class_path: marble.modules.transforms.TimeAvgPool
 
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 1024   # OMARRQ embed_dim
-          out_dim: 7     # 7 structure classes (intro/verse/pre-chorus/chorus/bridge/outro/inst)
+          out_dim: 88    # MIDI pitches 21–108 → 88 classes
           hidden_layers: [256]
           activation_fn:
             class_path: torch.nn.ReLU
@@ -77,24 +78,24 @@ model:
           class_path: torchmetrics.Accuracy
           init_args:
             task: multiclass
-            num_classes: 7
+            num_classes: 88
       val:
         acc:
           class_path: torchmetrics.Accuracy
           init_args:
             task: multiclass
-            num_classes: 7
+            num_classes: 88
       test:
         acc:
           class_path: torchmetrics.Accuracy
           init_args:
             task: multiclass
-            num_classes: 7
+            num_classes: 88
 
 data:
-  class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureDataModule
+  class_path: marble.tasks.NSynth.datamodule.NSynthDataModule
   init_args:
-    batch_size: 16
+    batch_size: 32
     num_workers: 8
 
     audio_transforms:
@@ -106,32 +107,30 @@ data:
         - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
 
     train:
-      class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioTrain
+      class_path: marble.tasks.NSynth.datamodule.NSynthAudioTrain
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 15
-        min_clip_ratio: 0.1
-        channel_mode: random
-        jsonl: data/HookTheory/HookTheoryStructure.train.jsonl
+        clip_seconds: 4.0
+        channel_mode: first
+        jsonl: data/NSynth/NSynth.train.jsonl
+        max_samples: 50000   # cap at 50K to keep sweep tractable (~289K total)
     val:
-      class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioVal
+      class_path: marble.tasks.NSynth.datamodule.NSynthAudioVal
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 15
-        min_clip_ratio: 0.1
-        channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryStructure.val.jsonl
+        clip_seconds: 4.0
+        channel_mode: first
+        jsonl: data/NSynth/NSynth.val.jsonl
     test:
-      class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioTest
+      class_path: marble.tasks.NSynth.datamodule.NSynthAudioTest
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 15
-        min_clip_ratio: 0.1
-        channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryStructure.test.jsonl
+        clip_seconds: 4.0
+        channel_mode: first
+        jsonl: data/NSynth/NSynth.test.jsonl
 
 optimizer:
   class_path: torch.optim.Adam

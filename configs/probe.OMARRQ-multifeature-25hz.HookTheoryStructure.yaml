@@ -11,109 +11,91 @@ trainer:
   max_epochs: 40
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 10
-  log_every_n_steps: 5
+  log_every_n_steps: 50
 
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.EMO.OMARRQ-multifeature25hz/checkpoints/"
+        dirpath: "./output/probe.HookTheoryStructure.OMARRQ-multifeature-25hz/checkpoints/"
         filename: "best"
         save_top_k: 1
+        monitor: "val/acc"
+        mode: "max"
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step
     - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
       init_args:
-        monitor: "val/r2"
-        patience: 8
+        monitor: "val/acc"
+        patience: 7
         mode: "max"
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "EMO"
-      tags: ["OMARRQ-multifeature25hz", "EMO", "probe"]
+      group: "OMARRQ-multifeature-25hz / HookTheoryStructure"
+      tags: ["OMARRQ-multifeature-25hz", "HookTheoryStructure", "probe"]
       job_type: "probe"
-      name: "OMARRQ-multifeature25hz"
-      save_dir: "./output/probe.EMO.OMARRQ-multifeature25hz/"
+      name: "OMARRQ-multifeature-25hz"
+      save_dir: "./output/probe.HookTheoryStructure.OMARRQ-multifeature-25hz/"
 
 
 model:
-  class_path: marble.tasks.EMO.probe.ProbeAudioTask
+  class_path: marble.tasks.HookTheoryStructure.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
     use_ema: false
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
-
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          layers: [6]
+          layers: [6]   # sweep replaces this
       - class_path: marble.modules.transforms.TimeAvgPool
 
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
-          in_dim: 1024   # OMAR-RQ embed_dim=1024
-          out_dim: 2     # arousal + valence
+          in_dim: 1024   # OMARRQ embed_dim
+          out_dim: 7     # 7 structure classes (intro/verse/pre-chorus/chorus/bridge/outro/inst)
           hidden_layers: [256]
           activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
     losses:
-      - class_path: torch.nn.MSELoss
+      - class_path: torch.nn.CrossEntropyLoss
         init_args:
           reduction: mean
 
     metrics:
       train:
-        r2:
-          class_path: torchmetrics.R2Score
+        acc:
+          class_path: torchmetrics.Accuracy
           init_args:
-            multioutput: uniform_average
-        arousal_r2:
-          class_path: marble.tasks.EMO.probe.SliceR2
-          init_args:
-            dim: 0
-        valence_r2:
-          class_path: marble.tasks.EMO.probe.SliceR2
-          init_args:
-            dim: 1
+            task: multiclass
+            num_classes: 7
       val:
-        r2:
-          class_path: torchmetrics.R2Score
+        acc:
+          class_path: torchmetrics.Accuracy
           init_args:
-            multioutput: uniform_average
-        arousal_r2:
-          class_path: marble.tasks.EMO.probe.SliceR2
-          init_args:
-            dim: 0
-        valence_r2:
-          class_path: marble.tasks.EMO.probe.SliceR2
-          init_args:
-            dim: 1
+            task: multiclass
+            num_classes: 7
       test:
-        r2:
-          class_path: torchmetrics.R2Score
+        acc:
+          class_path: torchmetrics.Accuracy
           init_args:
-            multioutput: uniform_average
-        arousal_r2:
-          class_path: marble.tasks.EMO.probe.SliceR2
-          init_args:
-            dim: 0
-        valence_r2:
-          class_path: marble.tasks.EMO.probe.SliceR2
-          init_args:
-            dim: 1
+            task: multiclass
+            num_classes: 7
 
 data:
-  class_path: marble.tasks.EMO.datamodule.EMODataModule
+  class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureDataModule
   init_args:
-    batch_size: 8
+    batch_size: 16
     num_workers: 8
 
     audio_transforms:
@@ -125,32 +107,32 @@ data:
         - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
 
     train:
-      class_path: marble.tasks.EMO.datamodule.EMOAudioTrain
+      class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioTrain
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
-        min_clip_ratio: 0.8
-        channel_mode: first
-        jsonl: data/EMO/EMO.train.jsonl
+        min_clip_ratio: 0.1
+        channel_mode: random
+        jsonl: data/HookTheory/HookTheoryStructure.train.jsonl
     val:
-      class_path: marble.tasks.EMO.datamodule.EMOAudioVal
+      class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioVal
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
-        min_clip_ratio: 0.8
-        channel_mode: first
-        jsonl: data/EMO/EMO.val.jsonl
+        min_clip_ratio: 0.1
+        channel_mode: mix
+        jsonl: data/HookTheory/HookTheoryStructure.val.jsonl
     test:
-      class_path: marble.tasks.EMO.datamodule.EMOAudioTest
+      class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioTest
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 15
-        min_clip_ratio: 0.8
-        channel_mode: first
-        jsonl: data/EMO/EMO.test.jsonl
+        min_clip_ratio: 0.1
+        channel_mode: mix
+        jsonl: data/HookTheory/HookTheoryStructure.test.jsonl
 
 optimizer:
   class_path: torch.optim.Adam
@@ -162,5 +144,5 @@ lr_scheduler:
   init_args:
     mode: "max"
     factor: 0.5
-    patience: 3
-    monitor: "val/r2"
+    patience: 5
+    monitor: "val/acc"
