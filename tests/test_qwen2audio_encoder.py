@@ -1,12 +1,13 @@
 # tests/test_qwen2audio_encoder.py
-import torch
 import librosa
+import torch
 
-from marble.encoders.Qwen2AudioInstructEncoder.processing_qwen2_audio import Qwen2AudioProcessor
 from marble.encoders.Qwen2AudioInstructEncoder.modeling_qwen2_audio import (
     Qwen2AudioEncoder,
     Qwen2AudioEncoderConfig,
 )
+from marble.encoders.Qwen2AudioInstructEncoder.processing_qwen2_audio import Qwen2AudioProcessor
+
 
 def main():
     # 1. 路径配置
@@ -61,6 +62,7 @@ def main():
     embeddings = outputs.last_hidden_state  # (batch, max_seq_len, hidden_dim)
 
     print("Embedding shape:", embeddings.shape)
+
 
 if __name__ == "__main__":
     main()

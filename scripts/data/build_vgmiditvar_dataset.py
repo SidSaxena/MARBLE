@@ -68,7 +68,6 @@ Usage
 """
 
 import argparse
-import io
 import json
 import logging
 import re
@@ -79,7 +78,6 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from hashlib import md5
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -154,8 +152,7 @@ def _extract_midi_zip(zip_path: Path, dest: Path) -> dict[str, list[Path]]:
                 with zf.open(name) as src, open(out_path, "wb") as dst:
                     shutil.copyfileobj(src, dst)
             splits[split].append(out_path)
-    msg = (f"  extracted: train={len(splits['train']):,}  "
-           f"test={len(splits['test']):,}  MIDI files")
+    msg = f"  extracted: train={len(splits['train']):,}  test={len(splits['test']):,}  MIDI files"
     if n_sanitized:
         msg += f"  ({n_sanitized} filename(s) sanitized for cross-platform safety)"
     log.info(msg)
@@ -164,15 +161,16 @@ def _extract_midi_zip(zip_path: Path, dest: Path) -> dict[str, list[Path]]:
 
 # ── parsing filenames → work IDs ─────────────────────────────────────────────
 
-def _parse_filename(stem: str) -> Optional[dict]:
+
+def _parse_filename(stem: str) -> dict | None:
     """Parse  '052_A_0'  →  {'piece': '052', 'section': 'A', 'idx': 0}."""
     m = _FILENAME_RE.match(stem + ".mid")
     if not m:
         return None
     return {
-        "piece":   m.group("piece"),
+        "piece": m.group("piece"),
         "section": m.group("section"),
-        "idx":     int(m.group("idx")),
+        "idx": int(m.group("idx")),
     }
 
 
@@ -182,12 +180,13 @@ def _work_id_for(piece: str, section: str) -> int:
     We avoid relying on Python's hash() because it's salted per process.
     md5 is plenty for the small label space (a few hundred works).
     """
-    h = md5(f"{piece}_{section}".encode("utf-8")).hexdigest()
+    h = md5(f"{piece}_{section}".encode()).hexdigest()
     # Take first 8 hex chars → fits in int32
     return int(h[:8], 16)
 
 
 # ── audio rendering ──────────────────────────────────────────────────────────
+
 
 def _render_midi(
     midi_path: Path,
@@ -201,11 +200,15 @@ def _render_midi(
     audio_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "fluidsynth",
-        "-ni",                          # no interactive, immediate exit
-        "-g", "1.0",                    # gain
-        "-r", str(sample_rate),
-        "-T", "wav",                    # write WAV
-        "-F", str(audio_path),
+        "-ni",  # no interactive, immediate exit
+        "-g",
+        "1.0",  # gain
+        "-r",
+        str(sample_rate),
+        "-T",
+        "wav",  # write WAV
+        "-F",
+        str(audio_path),
         str(soundfont),
         str(midi_path),
     ]
@@ -229,13 +232,24 @@ def _pick_soundfont(stem: str, soundfonts: list[Path]) -> Path:
 
 # ── metadata via ffprobe ─────────────────────────────────────────────────────
 
-def _ffprobe_info(path: Path) -> Optional[tuple[int, int, int]]:
+
+def _ffprobe_info(path: Path) -> tuple[int, int, int] | None:
     """Return (sample_rate, num_samples, channels), or None on failure."""
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-print_format", "json",
-             "-show_streams", "-show_format", str(path)],
-            capture_output=True, text=True, timeout=20,
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_streams",
+                "-show_format",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
     except Exception:
         return None
@@ -275,13 +289,14 @@ def _ffprobe_info(path: Path) -> Optional[tuple[int, int, int]]:
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+
 def _process_one(
     midi_path: Path,
     split: str,
     audio_dir: Path,
     soundfonts: list[Path],
     skip_render: bool,
-) -> Optional[dict]:
+) -> dict | None:
     parsed = _parse_filename(midi_path.stem)
     if parsed is None:
         log.debug(f"  unexpected filename: {midi_path.name}")
@@ -303,16 +318,16 @@ def _process_one(
     sr, n_samples, channels = info
 
     return {
-        "audio_path":  str(audio_path),
-        "work_id":     _work_id_for(parsed["piece"], parsed["section"]),
-        "variation":   parsed["idx"],
-        "piece_id":    parsed["piece"],
-        "section":     parsed["section"],
-        "split":       split,
+        "audio_path": str(audio_path),
+        "work_id": _work_id_for(parsed["piece"], parsed["section"]),
+        "variation": parsed["idx"],
+        "piece_id": parsed["piece"],
+        "section": parsed["section"],
+        "split": split,
         "sample_rate": sr,
         "num_samples": n_samples,
-        "channels":    channels,
-        "duration":    round(n_samples / sr, 3),
+        "channels": channels,
+        "duration": round(n_samples / sr, 3),
     }
 
 
@@ -328,30 +343,50 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    ap.add_argument("--midi-zip", default="data/source/VGMIDI-TVar.zip",
-                    help="Path to the source zip from the Variation-Transformer "
-                         "repo (default: %(default)s)")
-    ap.add_argument("--audio-dir", default="data/VGMIDITVar/audio",
-                    help="Where rendered WAVs go (default: %(default)s)")
-    ap.add_argument("--data-dir", default="data/VGMIDITVar",
-                    help="Where the JSONL is written (default: %(default)s)")
-    ap.add_argument("--soundfont", action="append", default=[],
-                    help="Path to a .sf2 SoundFont.  Pass multiple --soundfont "
-                         "flags for SoundFont rotation (recommended).")
-    ap.add_argument("--workers", type=int, default=4,
-                    help="Parallel rendering workers (default: 4)")
-    ap.add_argument("--skip-render", action="store_true",
-                    help="Don't render; rebuild JSONL from existing WAVs only.")
-    ap.add_argument("--midi-extract-dir", default=None,
-                    help="Where to extract the MIDI files (default: <data-dir>/midi)")
+    ap.add_argument(
+        "--midi-zip",
+        default="data/source/VGMIDI-TVar.zip",
+        help="Path to the source zip from the Variation-Transformer repo (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--audio-dir",
+        default="data/VGMIDITVar/audio",
+        help="Where rendered WAVs go (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--data-dir",
+        default="data/VGMIDITVar",
+        help="Where the JSONL is written (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--soundfont",
+        action="append",
+        default=[],
+        help="Path to a .sf2 SoundFont.  Pass multiple --soundfont "
+        "flags for SoundFont rotation (recommended).",
+    )
+    ap.add_argument(
+        "--workers", type=int, default=4, help="Parallel rendering workers (default: 4)"
+    )
+    ap.add_argument(
+        "--skip-render",
+        action="store_true",
+        help="Don't render; rebuild JSONL from existing WAVs only.",
+    )
+    ap.add_argument(
+        "--midi-extract-dir",
+        default=None,
+        help="Where to extract the MIDI files (default: <data-dir>/midi)",
+    )
     args = ap.parse_args()
 
     # ── Validate dependencies ────────────────────────────────────────────────
     if not args.skip_render:
         for tool in ("fluidsynth", "ffprobe"):
             if shutil.which(tool) is None:
-                log.error(f"{tool} not found on PATH.  See the script header for "
-                          f"install instructions.")
+                log.error(
+                    f"{tool} not found on PATH.  See the script header for install instructions."
+                )
                 sys.exit(1)
         soundfonts = [Path(p) for p in args.soundfont]
         if not soundfonts:
@@ -359,8 +394,10 @@ def main():
             if default_sf.exists():
                 soundfonts = [default_sf]
             else:
-                log.error("No --soundfont provided and $FLUIDR3_SF2 is unset.  "
-                          "Download SGM-V2.01 (free) and pass --soundfont path/to/SGM-V2.01.sf2")
+                log.error(
+                    "No --soundfont provided and $FLUIDR3_SF2 is unset.  "
+                    "Download SGM-V2.01 (free) and pass --soundfont path/to/SGM-V2.01.sf2"
+                )
                 sys.exit(1)
         for sf in soundfonts:
             if not sf.exists():
@@ -386,11 +423,12 @@ def main():
             d = midi_extract_dir / split
             if d.exists():
                 splits[split] = sorted(d.glob("*.mid"))
-        log.info(f"  found extracted MIDI: "
-                 f"train={len(splits['train']):,}  test={len(splits['test']):,}")
+        log.info(
+            f"  found extracted MIDI: train={len(splits['train']):,}  test={len(splits['test']):,}"
+        )
 
     audio_dir = Path(args.audio_dir)
-    data_dir  = Path(args.data_dir)
+    data_dir = Path(args.data_dir)
     audio_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -403,10 +441,11 @@ def main():
         futs = {}
         for split, paths in splits.items():
             for midi_path in paths:
-                futs[pool.submit(
-                    _process_one, midi_path, split, audio_dir,
-                    soundfonts, args.skip_render
-                )] = (midi_path, split)
+                futs[
+                    pool.submit(
+                        _process_one, midi_path, split, audio_dir, soundfonts, args.skip_render
+                    )
+                ] = (midi_path, split)
         for fut in as_completed(futs):
             n_done += 1
             rec = fut.result()
@@ -431,7 +470,7 @@ def main():
 
     n_works = len({(r["piece_id"], r["section"]) for r in records})
     n_train = sum(1 for r in records if r["split"] == "train")
-    n_test  = sum(1 for r in records if r["split"] == "test")
+    n_test = sum(1 for r in records if r["split"] == "test")
     log.info("")
     log.info("=" * 60)
     log.info(f" Wrote {len(records):,} entries → {out}")

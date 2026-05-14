@@ -63,8 +63,9 @@ def _resolve_input(rec: dict, audio_dir: Path | None) -> Path | None:
     return None
 
 
-def _convert_one(rec: dict, audio_dir: Path | None, out_dir: Path,
-                 keep_originals: bool) -> tuple[dict, str]:
+def _convert_one(
+    rec: dict, audio_dir: Path | None, out_dir: Path, keep_originals: bool
+) -> tuple[dict, str]:
     """Convert one record's audio to FLAC. Returns (updated_rec, status)."""
     src = _resolve_input(rec, audio_dir)
     if src is None:
@@ -80,9 +81,21 @@ def _convert_one(rec: dict, audio_dir: Path | None, out_dir: Path,
     # ffmpeg: keep audio stream, encode to FLAC (lossless), no re-encode
     # of any video stream (-vn drops video — SHS100K m4a often has art tracks)
     r = subprocess.run(
-        ["ffmpeg", "-nostdin", "-loglevel", "error", "-y",
-         "-i", str(src), "-vn", "-c:a", "flac", str(dst)],
-        capture_output=True, text=True,
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-vn",
+            "-c:a",
+            "flac",
+            str(dst),
+        ],
+        capture_output=True,
+        text=True,
     )
     if r.returncode != 0 or not dst.exists() or dst.stat().st_size < 4096:
         return rec, f"failed: {r.stderr.strip()[:120]}"
@@ -91,10 +104,20 @@ def _convert_one(rec: dict, audio_dir: Path | None, out_dir: Path,
     # Refresh metadata via ffprobe (path now points at the new FLAC)
     try:
         import json as _json
+
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-print_format", "json",
-             "-show_streams", "-show_format", str(dst)],
-            capture_output=True, text=True,
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_streams",
+                "-show_format",
+                str(dst),
+            ],
+            capture_output=True,
+            text=True,
         )
         if probe.returncode == 0:
             info = _json.loads(probe.stdout)
@@ -123,26 +146,38 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--jsonl", type=Path, default=Path("data/SHS100K/SHS100K.test.jsonl"),
-                    help="JSONL to convert/rewrite (default: %(default)s)")
-    ap.add_argument("--audio-dir", type=Path, default=None,
-                    help="Fallback directory to search for <ytid>.m4a if the "
-                         "JSONL's audio_path isn't reachable (e.g. files moved "
-                         "to a different drive)")
-    ap.add_argument("--out-dir", type=Path, default=None,
-                    help="Directory to write .flac files (default: same dir "
-                         "as each source file)")
-    ap.add_argument("--workers", type=int, default=8,
-                    help="Parallel ffmpeg processes (default: 8)")
-    ap.add_argument("--keep-originals", action="store_true",
-                    help="Don't delete .m4a after successful conversion")
+    ap.add_argument(
+        "--jsonl",
+        type=Path,
+        default=Path("data/SHS100K/SHS100K.test.jsonl"),
+        help="JSONL to convert/rewrite (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--audio-dir",
+        type=Path,
+        default=None,
+        help="Fallback directory to search for <ytid>.m4a if the "
+        "JSONL's audio_path isn't reachable (e.g. files moved "
+        "to a different drive)",
+    )
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Directory to write .flac files (default: same dir as each source file)",
+    )
+    ap.add_argument("--workers", type=int, default=8, help="Parallel ffmpeg processes (default: 8)")
+    ap.add_argument(
+        "--keep-originals",
+        action="store_true",
+        help="Don't delete .m4a after successful conversion",
+    )
     args = ap.parse_args()
 
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         print("ERROR: ffmpeg / ffprobe not found on PATH.", file=sys.stderr)
         print("  macOS:   brew install ffmpeg", file=sys.stderr)
-        print("  Windows: winget install Gyan.FFmpeg  (or scoop install ffmpeg)",
-              file=sys.stderr)
+        print("  Windows: winget install Gyan.FFmpeg  (or scoop install ffmpeg)", file=sys.stderr)
         print("  Linux:   apt install ffmpeg", file=sys.stderr)
         sys.exit(1)
 
@@ -159,8 +194,7 @@ def main():
         # Default: write FLAC alongside each source file
         first_src = _resolve_input(records[0], args.audio_dir)
         if first_src is None:
-            print("ERROR: can't resolve first record's audio_path; pass --out-dir",
-                  file=sys.stderr)
+            print("ERROR: can't resolve first record's audio_path; pass --out-dir", file=sys.stderr)
             sys.exit(1)
         out_dir = first_src.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -184,11 +218,13 @@ def main():
             if n % 200 == 0 or n == len(records):
                 elapsed = time.time() - t0
                 rate = n / elapsed if elapsed else 0
-                print(f"  [{n:>5}/{len(records)}]  {rate:.1f} files/s   "
-                      f"converted={counters['converted']}  "
-                      f"already={counters['already']}  "
-                      f"missing={counters['missing']}  "
-                      f"failed={counters['failed']}")
+                print(
+                    f"  [{n:>5}/{len(records)}]  {rate:.1f} files/s   "
+                    f"converted={counters['converted']}  "
+                    f"already={counters['already']}  "
+                    f"missing={counters['missing']}  "
+                    f"failed={counters['failed']}"
+                )
 
     print()
     print("=" * 64)
@@ -197,7 +233,7 @@ def main():
     for k, v in counters.items():
         print(f"  {k:<10} {v:>6,}")
     print(f"  total      {len(records):>6,}")
-    print(f"  elapsed    {(time.time()-t0)/60:.1f} min")
+    print(f"  elapsed    {(time.time() - t0) / 60:.1f} min")
     print("=" * 64)
 
     if counters["failed"] == len(records):
@@ -210,11 +246,13 @@ def main():
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     print(f"\nRewrote {args.jsonl} with FLAC paths.")
     if counters["missing"] > 0:
-        print(f"Note: {counters['missing']} records had no resolvable source "
-              f"audio — they still have their original audio_path in the JSONL "
-              f"and will fail at sweep time. Consider --audio-dir or "
-              f"verify_shs100k.py --rewrite to drop them.",
-              file=sys.stderr)
+        print(
+            f"Note: {counters['missing']} records had no resolvable source "
+            f"audio — they still have their original audio_path in the JSONL "
+            f"and will fail at sweep time. Consider --audio-dir or "
+            f"verify_shs100k.py --rewrite to drop them.",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

@@ -41,12 +41,11 @@ import numpy as np
 import torch
 import torchaudio
 
-
 # ── Encoder registry ───────────────────────────────────────────────────────
 # (label, module_path:class_name, sample_rate, num_layers)
 ENCODERS = {
     "omarrq": ("marble.encoders.OMAR_RQ.model:OMARRQ_Multifeature25hz_Encoder", 24000, 24),
-    "mert":   ("marble.encoders.MERT.model:MERT_v1_95M_Encoder", 24000, 13),
+    "mert": ("marble.encoders.MERT.model:MERT_v1_95M_Encoder", 24000, 13),
     "clamp3": ("marble.encoders.CLaMP3.model:CLaMP3_Encoder", 24000, 13),
 }
 
@@ -87,7 +86,7 @@ def _extract_layer_embeddings(encoder_spec: str, audio: torch.Tensor) -> torch.T
         # Different encoders expect different shapes. Try (B, T) first (squeezed),
         # then fall back to (B, 1, T).
         try:
-            x = audio.squeeze(1)   # (B, T)
+            x = audio.squeeze(1)  # (B, T)
             outs = enc(x)
         except Exception:
             outs = enc(audio)
@@ -109,6 +108,7 @@ def _extract_layer_embeddings(encoder_spec: str, audio: torch.Tensor) -> torch.T
 
 
 # ── Diagnostic metrics ──────────────────────────────────────────────────────
+
 
 def _isotropy_metrics(frames: np.ndarray, n_pairs: int = 5000, seed: int = 0) -> dict:
     """
@@ -203,21 +203,34 @@ def _judgement(raw: dict, centered: dict) -> str:
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--encoders", nargs="+", default=list(ENCODERS),
-                    choices=list(ENCODERS),
-                    help="Encoders to diagnose")
-    ap.add_argument("--clips-dir", type=Path,
-                    default=Path("/Users/sid/leitmotifs/results/smoke_test/browsable/mert95m_L7_5s/clips"))
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--encoders",
+        nargs="+",
+        default=list(ENCODERS),
+        choices=list(ENCODERS),
+        help="Encoders to diagnose",
+    )
+    ap.add_argument(
+        "--clips-dir",
+        type=Path,
+        default=Path("/Users/sid/leitmotifs/results/smoke_test/browsable/mert95m_L7_5s/clips"),
+    )
     ap.add_argument("--n-clips", type=int, default=16)
     ap.add_argument("--clip-seconds", type=float, default=5.0)
-    ap.add_argument("--layers", type=int, nargs="*", default=None,
-                    help="Subset of layers to evaluate (default: all)")
+    ap.add_argument(
+        "--layers",
+        type=int,
+        nargs="*",
+        default=None,
+        help="Subset of layers to evaluate (default: all)",
+    )
     ap.add_argument("--n-pairs", type=int, default=5000)
-    ap.add_argument("--out-json", type=Path,
-                    default=Path("/tmp/anisotropy_diag.json"))
+    ap.add_argument("--out-json", type=Path, default=Path("/tmp/anisotropy_diag.json"))
     args = ap.parse_args()
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -225,9 +238,9 @@ def main():
     all_results: dict[str, dict] = {}
     for enc_name in args.encoders:
         spec, sr, n_layers = ENCODERS[enc_name]
-        print(f"\n{'═'*72}")
+        print(f"\n{'═' * 72}")
         print(f"  {enc_name}  ({n_layers} layers @ {sr} Hz)")
-        print(f"{'═'*72}")
+        print(f"{'═' * 72}")
 
         audio = _load_clips(args.clips_dir, args.n_clips, sr, args.clip_seconds)
         print(f"  audio: {tuple(audio.shape)}  ({args.n_clips} clips × {args.clip_seconds}s)")
@@ -243,8 +256,10 @@ def main():
 
         layer_indices = args.layers if args.layers is not None else list(range(L))
         results = {}
-        print(f"\n  {'L':>3}  {'avg_pair':>8}  {'std_pair':>8}  {'mean_norm':>9}  "
-              f"{'top1_sv':>7}  {'eff_rank':>8}  {'centered_pair':>13}  verdict")
+        print(
+            f"\n  {'L':>3}  {'avg_pair':>8}  {'std_pair':>8}  {'mean_norm':>9}  "
+            f"{'top1_sv':>7}  {'eff_rank':>8}  {'centered_pair':>13}  verdict"
+        )
         for li in layer_indices:
             if li >= L:
                 continue
@@ -252,15 +267,19 @@ def main():
             results[li] = d
             r, c = d["raw"], d["centered"]
             verdict = _judgement(r, c)
-            print(f"  {li:>3}  {r['avg_pair_cos']:>8.4f}  {r['std_pair_cos']:>8.4f}  "
-                  f"{r['mean_vec_norm']:>9.4f}  {r['top1_sv_share']:>7.4f}  "
-                  f"{r['effective_rank']:>8.1f}  {c['avg_pair_cos']:>13.4f}  {verdict}")
+            print(
+                f"  {li:>3}  {r['avg_pair_cos']:>8.4f}  {r['std_pair_cos']:>8.4f}  "
+                f"{r['mean_vec_norm']:>9.4f}  {r['top1_sv_share']:>7.4f}  "
+                f"{r['effective_rank']:>8.1f}  {c['avg_pair_cos']:>13.4f}  {verdict}"
+            )
 
         all_results[enc_name] = results
 
         # Free GPU/CPU mem before next encoder
         del stacked
-        import gc; gc.collect()
+        import gc
+
+        gc.collect()
 
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(json.dumps(all_results, indent=2, default=str))

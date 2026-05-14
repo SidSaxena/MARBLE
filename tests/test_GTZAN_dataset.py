@@ -1,38 +1,50 @@
 import json
 import math
-import torch
-import pytest
 
-import torchaudio
+import pytest
+import torch
 import torch.nn.functional as F
+import torchaudio
+
+from marble.core.utils import instantiate_from_config
 from marble.tasks.GTZANGenre.datamodule import (
-    _GTZANGenreAudioBase,
+    LABEL2IDX,
+    GTZANGenreAudioTest,
     GTZANGenreAudioTrain,
     GTZANGenreAudioVal,
-    GTZANGenreAudioTest,
     GTZANGenreDataModule,
-    LABEL2IDX,
+    _GTZANGenreAudioBase,
 )
-from marble.core.utils import instantiate_from_config
+
 
 @pytest.fixture(autouse=True)
 def dummy_meta(tmp_path, monkeypatch):
     # Create a dummy JSONL metadata file
     jsonl_path = tmp_path / "meta.jsonl"
     entries = [
-        {"audio_path": "dummy.wav", "label": "blues", "duration": 1.0, "sample_rate": 10, "num_samples": 25, "bit_depth": 16, "channels": 2}
+        {
+            "audio_path": "dummy.wav",
+            "label": "blues",
+            "duration": 1.0,
+            "sample_rate": 10,
+            "num_samples": 25,
+            "bit_depth": 16,
+            "channels": 2,
+        }
     ]
     with open(jsonl_path, "w") as f:
         for e in entries:
             f.write(json.dumps(e) + "\n")
+
     # Monkeypatch torchaudio.load to return a deterministic waveform
     def dummy_load(path, frame_offset, num_frames):
         # waveform shape: (2 channels, num_frames)
         waveform = torch.stack([torch.arange(num_frames), torch.arange(num_frames)], dim=0).float()
         return waveform, 10
+
     monkeypatch.setattr(torchaudio, "load", dummy_load)
     # Monkeypatch torchaudio.transforms.Resample to identity
-    monkeypatch.setattr(torchaudio.transforms, "Resample", lambda orig_sr, sr: (lambda x: x))
+    monkeypatch.setattr(torchaudio.transforms, "Resample", lambda orig_sr, sr: lambda x: x)
     return str(jsonl_path)
 
 
@@ -81,6 +93,7 @@ def test_padding_short_clip(dummy_meta, monkeypatch):
         # return fewer frames than requested
         waveform = torch.ones((2, num_frames - 5))
         return waveform, 10
+
     monkeypatch.setattr(torchaudio, "load", short_load)
     sample_rate = 10
     channels = 2
@@ -105,6 +118,7 @@ def test_datamodule_and_dataloaders(dummy_meta, monkeypatch):
             clip_seconds=2.5,
             jsonl=dummy_meta,
         )
+
     monkeypatch.setattr("marble.tasks.GTZANGenre.datamodule.instantiate_from_config", dummy_inst)
     # Create DataModule without additional transforms
     dm = GTZANGenreDataModule(

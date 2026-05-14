@@ -1,6 +1,8 @@
-import os
-from huggingface_hub import Repository
 import argparse
+import os
+
+from huggingface_hub import Repository
+
 
 def main():
     parser = argparse.ArgumentParser(description="Download a model from Hugging Face Hub.")
@@ -8,13 +10,13 @@ def main():
         "--repo_id",
         type=str,
         required=True,
-        help="The Hugging Face model repository ID (e.g., 'm-a-p/key_sota_20250618')"
+        help="The Hugging Face model repository ID (e.g., 'm-a-p/key_sota_20250618')",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
         required=True,
-        help="The local path where the model will be downloaded (e.g., 'output/key_sota_20250618')"
+        help="The local path where the model will be downloaded (e.g., 'output/key_sota_20250618')",
     )
 
     args = parser.parse_args()
@@ -27,6 +29,7 @@ def main():
     repo = Repository(local_dir=args.output_dir, clone_from=args.repo_id)
 
     print(f"Model repo cloned to {args.output_dir}")
+
 
 if __name__ == "__main__":
     main()

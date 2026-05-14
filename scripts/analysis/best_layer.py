@@ -33,25 +33,25 @@ import statistics
 import sys
 from collections import defaultdict
 
-
 # Headline metric priority — first match wins per task.
 METRIC_PRIORITY: list[str] = [
-    "test/weighted_score",   # GS, HookTheoryKey
-    "test/MAP",              # Covers80, SHS100K, VGMIDITVar
-    "test/map",              # alias (lower-case map shown in some runs)
-    "test/MRR",              # retrieval fallback
-    "test/beat_f1",          # GTZANBeatTracking
-    "test/acc_rpa",          # HookTheoryMelody
-    "test/macro_f1",         # HookTheoryStructure
+    "test/weighted_score",  # GS, HookTheoryKey
+    "test/MAP",  # Covers80, SHS100K, VGMIDITVar
+    "test/map",  # alias (lower-case map shown in some runs)
+    "test/MRR",  # retrieval fallback
+    "test/beat_f1",  # GTZANBeatTracking
+    "test/acc_rpa",  # HookTheoryMelody
+    "test/macro_f1",  # HookTheoryStructure
     "test/f1",
     "test/auc",
-    "test/acc",              # NSynth, GTZANGenre
+    "test/acc",  # NSynth, GTZANGenre
 ]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Run-introspection helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def _layer_from_run(run) -> int | None:
     """Extract layer index from a run name (`layer-N-fit` / `layer-N-test`)."""
@@ -82,9 +82,7 @@ def _is_meanall(run) -> bool:
     tags = set(run.tags or [])
     if {"mean-all", "mean-agg", "layer-meanall"} & tags:
         return True
-    if run.name and "meanall" in run.name:
-        return True
-    return False
+    return bool(run.name and "meanall" in run.name)
 
 
 def _pick_metric(summary_keys: list[str], override: str | None) -> str | None:
@@ -126,8 +124,10 @@ def _encoder_family(enc: str) -> str:
 # Data collection
 # ──────────────────────────────────────────────────────────────────────────────
 
-def collect_runs(api, project_path: str, per_page: int, metric_override: str | None,
-                 filter_substr: str | None):
+
+def collect_runs(
+    api, project_path: str, per_page: int, metric_override: str | None, filter_substr: str | None
+):
     """Walk all runs and bucket them by (group, layer).
 
     Returns
@@ -192,6 +192,7 @@ def collect_runs(api, project_path: str, per_page: int, metric_override: str | N
 # Views
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def view_best(by_group, meanall_scores=None, csv_path=None):
     """Best layer per group, with the mean-of-all-layers baseline shown
     alongside (a `★` marks whether meanall beats the best single layer)."""
@@ -218,22 +219,30 @@ def view_best(by_group, meanall_scores=None, csv_path=None):
             winner = "meanall"
         else:
             winner = f"L{best_layer}"
-        rows.append({"group": group, "best_layer": best_layer,
-                     "metric": m.removeprefix("test/") if m else "",
-                     "best_value": None if v is None else round(v, 4),
-                     "meanall_value": None if ma_v is None else round(ma_v, 4),
-                     "winner": winner})
+        rows.append(
+            {
+                "group": group,
+                "best_layer": best_layer,
+                "metric": m.removeprefix("test/") if m else "",
+                "best_value": None if v is None else round(v, 4),
+                "meanall_value": None if ma_v is None else round(ma_v, 4),
+                "winner": winner,
+            }
+        )
 
-    print(f"\n{'Group':<48} {'Layer':>5}  {'best':>8}  {'meanall':>8}  "
-          f"{'winner':<9}  {'metric':<18}")
+    print(
+        f"\n{'Group':<48} {'Layer':>5}  {'best':>8}  {'meanall':>8}  {'winner':<9}  {'metric':<18}"
+    )
     print("-" * 110)
     for r in rows:
         bl = "—" if r["best_layer"] is None else str(r["best_layer"])
         bv = "—" if r["best_value"] is None else f"{r['best_value']:>8.4f}"
         mv = "—" if r["meanall_value"] is None else f"{r['meanall_value']:>8.4f}"
         marker = " ★" if r["winner"] == "meanall" else "  "
-        print(f"{r['group']:<48} {bl:>5}  {bv:>8}  {mv:>8} {marker}{r['winner']:<7}"
-              f"  {r['metric']:<18}")
+        print(
+            f"{r['group']:<48} {bl:>5}  {bv:>8}  {mv:>8} {marker}{r['winner']:<7}"
+            f"  {r['metric']:<18}"
+        )
     print(f"\n  {len(rows)} group(s).  ★ = meanall beats the best single layer.")
     if csv_path:
         _write_csv(csv_path, rows)
@@ -263,13 +272,15 @@ def view_cross_encoder(by_group, csv_path=None):
     # encoder set + task set
     enc_set: set[str] = set()
     task_set: set[str] = set()
-    cell: dict[tuple[str, str], tuple[int, float]] = {}   # (encoder, task) → (best_L, value)
+    cell: dict[tuple[str, str], tuple[int, float]] = {}  # (encoder, task) → (best_L, value)
 
     for group, layer_map in by_group.items():
         sp = _split_group(group)
-        if sp is None: continue
+        if sp is None:
+            continue
         enc, task = sp
-        enc_set.add(enc); task_set.add(task)
+        enc_set.add(enc)
+        task_set.add(task)
         best_layer = max(layer_map, key=lambda l: layer_map[l][1])
         v = layer_map[best_layer][1]
         cell[(enc, task)] = (best_layer, v)
@@ -279,7 +290,7 @@ def view_cross_encoder(by_group, csv_path=None):
 
     # Print table
     col_w = 14
-    header = "Task".ljust(22) + "".join(e[:col_w-1].ljust(col_w) for e in encs)
+    header = "Task".ljust(22) + "".join(e[: col_w - 1].ljust(col_w) for e in encs)
     print("\n" + header)
     print("-" * len(header))
     for task in tasks:
@@ -299,17 +310,27 @@ def view_cross_encoder(by_group, csv_path=None):
     print(f"\n  {len(tasks)} task(s) × {len(encs)} encoder(s).  * = best encoder for the task.")
 
     if csv_path:
-        rows = [{"task": task, **{enc: f"L{cell[(enc, task)][0]}={cell[(enc, task)][1]:.4f}"
-                                  if (enc, task) in cell else "" for enc in encs}}
-                for task in tasks]
+        rows = [
+            {
+                "task": task,
+                **{
+                    enc: f"L{cell[(enc, task)][0]}={cell[(enc, task)][1]:.4f}"
+                    if (enc, task) in cell
+                    else ""
+                    for enc in encs
+                },
+            }
+            for task in tasks
+        ]
         _write_csv(csv_path, rows)
 
 
 def view_summary(by_group, csv_path=None):
     """Per-group summary statistics — useful to see how flat or peaked
     each layer profile is."""
-    print(f"\n{'Group':<55} {'min':>7} {'med':>7} {'max':>7} {'std':>7} "
-          f"{'gain':>7} {'L*':>4} top-3")
+    print(
+        f"\n{'Group':<55} {'min':>7} {'med':>7} {'max':>7} {'std':>7} {'gain':>7} {'L*':>4} top-3"
+    )
     print("-" * 110)
     rows = []
     for group in sorted(by_group):
@@ -317,16 +338,29 @@ def view_summary(by_group, csv_path=None):
         if len(layer_map) < 2:
             continue
         values = [v for (_, v, _, _) in layer_map.values()]
-        vmin = min(values); vmax = max(values); vmed = statistics.median(values)
+        vmin = min(values)
+        vmax = max(values)
+        vmed = statistics.median(values)
         vstd = statistics.pstdev(values) if len(values) > 1 else 0.0
         gain = vmax - vmin
         best_layer = max(layer_map, key=lambda l: layer_map[l][1])
         top3 = sorted(layer_map, key=lambda l: -layer_map[l][1])[:3]
-        rows.append({"group": group, "min": vmin, "median": vmed, "max": vmax,
-                     "std": vstd, "gain": gain, "best_layer": best_layer,
-                     "top3_layers": top3})
-        print(f"{group:<55} {vmin:>7.4f} {vmed:>7.4f} {vmax:>7.4f} "
-              f"{vstd:>7.4f} {gain:>7.4f} {best_layer:>4} {top3}")
+        rows.append(
+            {
+                "group": group,
+                "min": vmin,
+                "median": vmed,
+                "max": vmax,
+                "std": vstd,
+                "gain": gain,
+                "best_layer": best_layer,
+                "top3_layers": top3,
+            }
+        )
+        print(
+            f"{group:<55} {vmin:>7.4f} {vmed:>7.4f} {vmax:>7.4f} "
+            f"{vstd:>7.4f} {gain:>7.4f} {best_layer:>4} {top3}"
+        )
     if csv_path:
         _write_csv(csv_path, rows)
 
@@ -336,31 +370,48 @@ def view_meanall_gap(by_group, meanall_scores, csv_path=None):
     meanall score. After the 2026-05-14 taxonomy refactor the meanall
     score is keyed by the SAME group as the per-layer sweep, so this is
     a direct lookup."""
-    print(f"\n{'Encoder':<42} {'Task':<22} {'L*':>4} {'sweep':>8} {'meanall':>9} {'gain':>7} verdict")
+    print(
+        f"\n{'Encoder':<42} {'Task':<22} {'L*':>4} {'sweep':>8} {'meanall':>9} {'gain':>7} verdict"
+    )
     print("-" * 110)
     rows = []
     for group, layer_map in sorted(by_group.items()):
         sp = _split_group(group)
-        if sp is None: continue
+        if sp is None:
+            continue
         enc, task = sp
         best_layer = max(layer_map, key=lambda l: layer_map[l][1])
         _, sweep_v, _, _ = layer_map[best_layer]
         ma = meanall_scores.get(group)
         if ma is None:
-            mv = None; rel = None; verdict = "no meanall run"
+            mv = None
+            rel = None
+            verdict = "no meanall run"
         else:
             mv = ma[1]
             rel = (sweep_v - mv) / max(mv, 1e-12)
-            if abs(rel) < 0.02:    verdict = "meanall ≈ best"
-            elif rel < 0.10:        verdict = "modest sweep gain"
-            else:                   verdict = "sweep matters"
-        rows.append({"encoder": enc, "task": task, "best_layer": best_layer,
-                     "sweep": sweep_v, "meanall": mv,
-                     "gain_relative": rel, "verdict": verdict})
+            if abs(rel) < 0.02:
+                verdict = "meanall ≈ best"
+            elif rel < 0.10:
+                verdict = "modest sweep gain"
+            else:
+                verdict = "sweep matters"
+        rows.append(
+            {
+                "encoder": enc,
+                "task": task,
+                "best_layer": best_layer,
+                "sweep": sweep_v,
+                "meanall": mv,
+                "gain_relative": rel,
+                "verdict": verdict,
+            }
+        )
         ma_str = f"{mv:>9.4f}" if mv is not None else f"{'—':>9}"
         rel_str = f"{rel:+.1%}" if rel is not None else "—"
-        print(f"{enc:<42} {task:<22} {best_layer:>4} "
-              f"{sweep_v:>8.4f} {ma_str} {rel_str:>7} {verdict}")
+        print(
+            f"{enc:<42} {task:<22} {best_layer:>4} {sweep_v:>8.4f} {ma_str} {rel_str:>7} {verdict}"
+        )
     if csv_path:
         _write_csv(csv_path, rows)
 
@@ -371,7 +422,8 @@ def view_consistency(by_group, encoder_filter: str | None, csv_path=None):
     by_enc: dict[str, list[tuple[str, int, list[int]]]] = defaultdict(list)
     for group, layer_map in by_group.items():
         sp = _split_group(group)
-        if sp is None: continue
+        if sp is None:
+            continue
         enc, task = sp
         if encoder_filter and encoder_filter not in enc:
             continue
@@ -386,13 +438,14 @@ def view_consistency(by_group, encoder_filter: str | None, csv_path=None):
         print(f"  {'Task':<25} {'best_L':>6}   top-3 layers")
         for task, best_L, top3 in sorted(records):
             print(f"  {task:<25} {best_L:>6}   {top3}")
-            rows.append({"encoder": enc, "task": task,
-                         "best_layer": best_L, "top3": top3})
+            rows.append({"encoder": enc, "task": task, "best_layer": best_L, "top3": top3})
         # Quick summary: median + spread of best layers
         bests = [bl for _, bl, _ in records]
         if len(bests) > 1:
-            print(f"  → best-layer median: {statistics.median(bests):.0f}  "
-                  f"spread {min(bests)}..{max(bests)}")
+            print(
+                f"  → best-layer median: {statistics.median(bests):.0f}  "
+                f"spread {min(bests)}..{max(bests)}"
+            )
     if csv_path:
         _write_csv(csv_path, rows)
 
@@ -414,6 +467,7 @@ def _write_csv(path: str, rows: list[dict]):
 # CLI
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -421,20 +475,28 @@ def main():
     )
     ap.add_argument("--project", default="marble")
     ap.add_argument("--entity", default=None)
-    ap.add_argument("--view", choices=[
-        "best", "cross-encoder", "summary", "meanall-gap", "consistency",
-    ], default="best", help="Analysis view (default: best)")
-    ap.add_argument("--group", default=None,
-                    help="(view=best) Drill into a single sweep group.")
-    ap.add_argument("--filter", default=None,
-                    help="Substring filter on group names (case-insensitive).")
-    ap.add_argument("--encoder", default=None,
-                    help="(view=consistency) Filter to a specific encoder.")
-    ap.add_argument("--metric", default=None,
-                    help="Override the headline metric (e.g. test/MAP).")
+    ap.add_argument(
+        "--view",
+        choices=[
+            "best",
+            "cross-encoder",
+            "summary",
+            "meanall-gap",
+            "consistency",
+        ],
+        default="best",
+        help="Analysis view (default: best)",
+    )
+    ap.add_argument("--group", default=None, help="(view=best) Drill into a single sweep group.")
+    ap.add_argument(
+        "--filter", default=None, help="Substring filter on group names (case-insensitive)."
+    )
+    ap.add_argument(
+        "--encoder", default=None, help="(view=consistency) Filter to a specific encoder."
+    )
+    ap.add_argument("--metric", default=None, help="Override the headline metric (e.g. test/MAP).")
     ap.add_argument("--per-page", type=int, default=500)
-    ap.add_argument("--csv", default=None,
-                    help="Also write the view as CSV to this path.")
+    ap.add_argument("--csv", default=None, help="Also write the view as CSV to this path.")
     args = ap.parse_args()
 
     try:
@@ -447,7 +509,11 @@ def main():
     project_path = f"{args.entity}/{args.project}" if args.entity else args.project
 
     by_group, meanall_scores = collect_runs(
-        api, project_path, args.per_page, args.metric, args.filter,
+        api,
+        project_path,
+        args.per_page,
+        args.metric,
+        args.filter,
     )
 
     if not by_group and not meanall_scores:

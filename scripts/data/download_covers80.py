@@ -46,55 +46,53 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-
-COVERS80_URL = (
-    "http://labrosa.ee.columbia.edu/projects/coversongs/covers80/covers80.tgz"
-)
+COVERS80_URL = "http://labrosa.ee.columbia.edu/projects/coversongs/covers80/covers80.tgz"
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
+
 
 def _progress_hook(block_num, block_size, total_size):
     downloaded = block_num * block_size
     if total_size > 0:
         pct = min(100, downloaded * 100 // total_size)
-        sys.stdout.write(f"\r  {pct:3d}%  ({downloaded/1e6:.0f} / {total_size/1e6:.0f} MB)")
+        sys.stdout.write(f"\r  {pct:3d}%  ({downloaded / 1e6:.0f} / {total_size / 1e6:.0f} MB)")
     else:
-        sys.stdout.write(f"\r  {downloaded/1e6:.0f} MB downloaded …")
+        sys.stdout.write(f"\r  {downloaded / 1e6:.0f} MB downloaded …")
     sys.stdout.flush()
 
 
 def _audio_files(d: Path) -> list[Path]:
-    return sorted(
-        list(d.rglob("*.mp3")) +
-        list(d.rglob("*.wav")) +
-        list(d.rglob("*.flac"))
-    )
+    return sorted(list(d.rglob("*.mp3")) + list(d.rglob("*.wav")) + list(d.rglob("*.flac")))
 
 
 def _audio_info(path: Path) -> tuple[int, int, int]:
     """Return (sample_rate, num_samples, channels) via torchaudio."""
     try:
         import torchaudio
+
         info = torchaudio.info(str(path))
         return info.sample_rate, info.num_frames, info.num_channels
     except Exception as e:
         print(f"\n    ⚠ torchaudio.info failed for {path.name}: {e}")
-        return 0, 0, 1   # safe fallback; duration = 0 flags broken files
+        return 0, 0, 1  # safe fallback; duration = 0 flags broken files
 
 
 # ─── main ────────────────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="Download Covers80 and generate MARBLE JSONL.",
     )
     parser.add_argument(
-        "--data-dir", default="data/Covers80",
+        "--data-dir",
+        default="data/Covers80",
         help="Root directory for Covers80 data (default: data/Covers80).",
     )
     parser.add_argument(
-        "--no-download", action="store_true",
+        "--no-download",
+        action="store_true",
         help="Skip downloading — regenerate JSONL from already-extracted data.",
     )
     args = parser.parse_args()
@@ -108,7 +106,7 @@ def main():
         if archive.exists():
             print(f"Archive already present: {archive}")
         else:
-            print(f"Downloading Covers80 (~60 MB) …")
+            print("Downloading Covers80 (~60 MB) …")
             print(f"  URL: {COVERS80_URL}")
             try:
                 urllib.request.urlretrieve(COVERS80_URL, archive, reporthook=_progress_hook)
@@ -132,7 +130,7 @@ def main():
         print("Extraction complete.")
         covers_root = next(dest.rglob("covers32k"), None)
         if not covers_root:
-            print(f"ERROR: could not find covers32k directory after extraction")
+            print("ERROR: could not find covers32k directory after extraction")
             sys.exit(1)
 
     # ── 3. Locate works ──────────────────────────────────────────────────────
@@ -141,15 +139,16 @@ def main():
     n_works = len(works)
     print(f"Found {n_works} works under {covers_root}")
 
-
     # ── 4. Build JSONL ────────────────────────────────────────────────────────
     records: list[dict] = []
-    skipped: list[str]  = []
+    skipped: list[str] = []
 
     for work_id, work_dir in enumerate(works):
         files = sorted(_audio_files(work_dir))
         if len(files) < 2:
-            skipped.append(f"work {work_id}: expected at least 2 audio files, found {len(files)} in {work_dir}")
+            skipped.append(
+                f"work {work_id}: expected at least 2 audio files, found {len(files)} in {work_dir}"
+            )
             continue
 
         # Take the first 2 files (sorted alphabetically)
@@ -160,16 +159,18 @@ def main():
             sr, n_samples, channels = _audio_info(audio_path)
             duration = n_samples / sr if sr > 0 else 0.0
 
-            records.append({
-                "audio_path":  str(audio_path),
-                "work_id":     work_id,
-                "version":     version,
-                "work_name":   work_dir.name,          # human-readable label
-                "sample_rate": sr,
-                "num_samples": n_samples,
-                "channels":    channels,
-                "duration":    round(duration, 3),
-            })
+            records.append(
+                {
+                    "audio_path": str(audio_path),
+                    "work_id": work_id,
+                    "version": version,
+                    "work_name": work_dir.name,  # human-readable label
+                    "sample_rate": sr,
+                    "num_samples": n_samples,
+                    "channels": channels,
+                    "duration": round(duration, 3),
+                }
+            )
 
     if skipped:
         print(f"\nSkipped {len(skipped)} entries:")
@@ -187,18 +188,22 @@ def main():
     unique_works = sorted({r["work_name"] for r in records})
     labels_path.write_text(json.dumps(unique_works, indent=2))
 
-    print(f"\n✓ {len(records)} tracks ({len(set(r['work_id'] for r in records))} works × 2 versions)")
+    print(
+        f"\n✓ {len(records)} tracks ({len(set(r['work_id'] for r in records))} works × 2 versions)"
+    )
     print(f"  → {out_path}")
     print(f"  → {labels_path}")
 
     work_ids_seen = {r["work_id"] for r in records}
-    print(f"\nWork IDs in JSONL: {min(work_ids_seen)}–{max(work_ids_seen)} "
-          f"({len(work_ids_seen)} unique)")
+    print(
+        f"\nWork IDs in JSONL: {min(work_ids_seen)}–{max(work_ids_seen)} "
+        f"({len(work_ids_seen)} unique)"
+    )
 
-    print(f"\nNext steps — run the Covers80 layer sweep:")
-    print(f"  python scripts/sweeps/run_sweep_local.py \\")
-    print(f"      --base-config configs/probe.OMARRQ-multifeature25hz.Covers80.yaml \\")
-    print(f"      --num-layers 24 --model-tag OMARRQ-multifeature25hz --task-tag Covers80")
+    print("\nNext steps — run the Covers80 layer sweep:")
+    print("  python scripts/sweeps/run_sweep_local.py \\")
+    print("      --base-config configs/probe.OMARRQ-multifeature25hz.Covers80.yaml \\")
+    print("      --num-layers 24 --model-tag OMARRQ-multifeature25hz --task-tag Covers80")
 
 
 if __name__ == "__main__":

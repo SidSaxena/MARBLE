@@ -1,6 +1,7 @@
+import inspect
+
 import pytest
 import torch
-import inspect
 
 from marble.encoders.MERT.model import MERT_v1_95M_FeatureExtractor
 from marble.modules.transforms import LayerSelector, TimeAvgPool
@@ -15,8 +16,10 @@ def test_mert_feature_extractor_init():
     # Check constructor signature for required args
     sig = inspect.signature(MERT_v1_95M_FeatureExtractor.__init__)
     params = sig.parameters
-    assert 'pre_trained_folder' in params, "Expected __init__ to have 'pre_trained_folder' parameter"
-    assert 'squeeze' in params, "Expected __init__ to have 'squeeze' parameter"
+    assert "pre_trained_folder" in params, (
+        "Expected __init__ to have 'pre_trained_folder' parameter"
+    )
+    assert "squeeze" in params, "Expected __init__ to have 'squeeze' parameter"
 
 
 def test_mert_feature_extractor_forward_smoke():
@@ -26,10 +29,7 @@ def test_mert_feature_extractor_forward_smoke():
     dummy_waveform = torch.randn(24000)
     dummy_sr = 24000
     extractor = MERT_v1_95M_FeatureExtractor(pre_trained_folder=None, squeeze=True)
-    sample = {
-        'waveform': dummy_waveform,
-        'sampling_rate': dummy_sr
-    }
+    sample = {"waveform": dummy_waveform, "sampling_rate": dummy_sr}
     output = extractor(sample)
     # Should return a dict
     assert isinstance(output, dict)
@@ -44,20 +44,20 @@ def test_layer_selector_parse_layers():
     assert sel1.layers == [1, 3, 5]
 
     # String integers
-    sel2 = LayerSelector(layers=['2', '4'])
+    sel2 = LayerSelector(layers=["2", "4"])
     assert sel2.layers == [2, 4]
 
     # Range string
-    sel3 = LayerSelector(layers=['0..2'])
+    sel3 = LayerSelector(layers=["0..2"])
     assert sel3.layers == [0, 1, 2]
 
     # Mixed types and ranges
-    sel4 = LayerSelector(layers=[2, '3..4', '6'])
+    sel4 = LayerSelector(layers=[2, "3..4", "6"])
     assert sel4.layers == [2, 3, 4, 6]
 
     # Invalid range should raise
     with pytest.raises(ValueError):
-        LayerSelector(layers=['5..3'])
+        LayerSelector(layers=["5..3"])
 
 
 def test_layer_selector_forward():

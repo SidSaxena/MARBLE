@@ -1,16 +1,16 @@
 # tests/test_hmm.py
 
-import pytest
 import numpy as np
+import pytest
 
 # 导入 Cython 版和 Numba 版的 HMM 模块
 from marble.tasks.GTZANBeatTracking.madmom import hmm as cy_hmm_mod
 from marble.tasks.GTZANBeatTracking.madmom import hmm_numba as nb_hmm_mod
 
-
 # --------------------------------------------------------------------------------
 # 1. TransitionModel.make_sparse / make_dense (Numba) / from_dense
 # --------------------------------------------------------------------------------
+
 
 def test_transition_model_make_sparse_and_make_dense_roundtrip_numba():
     """
@@ -30,21 +30,30 @@ def test_transition_model_make_sparse_and_make_dense_roundtrip_numba():
     # pointers 长度应等于 num_states+1，其中 num_states = max(prev_states)+1 = 2
     assert len(p_nb) == (int(prev_states.max()) + 1) + 1  # 2 + 1 = 3
     # 类型检查
-    assert isinstance(s_nb, np.ndarray) and isinstance(p_nb, np.ndarray) and isinstance(d_nb, np.ndarray)
+    assert (
+        isinstance(s_nb, np.ndarray)
+        and isinstance(p_nb, np.ndarray)
+        and isinstance(d_nb, np.ndarray)
+    )
     assert s_nb.dtype == np.uint32
     assert p_nb.dtype == np.uint32
     assert d_nb.dtype == np.float64
 
     # Numba 版 make_dense：返回 (recovered_states_nb, recovered_prev_states_nb, recovered_probs_nb)
-    recovered_states_nb, recovered_prev_states_nb, recovered_probs_nb = \
+    recovered_states_nb, recovered_prev_states_nb, recovered_probs_nb = (
         nb_hmm_mod.TransitionModel.make_dense(s_nb, p_nb, d_nb)
+    )
 
     # 因为 Numba make_dense 返回值是 (orig prev_states, orig states, orig probs)
     # 所以用 (prev_states, states, probs) 与返回值对应
     orig_set_nb = set(zip(prev_states.tolist(), states.tolist(), probs.tolist()))
-    rec_set_nb = set(zip(recovered_states_nb.tolist(),
-                         recovered_prev_states_nb.tolist(),
-                         recovered_probs_nb.tolist()))
+    rec_set_nb = set(
+        zip(
+            recovered_states_nb.tolist(),
+            recovered_prev_states_nb.tolist(),
+            recovered_probs_nb.tolist(),
+        )
+    )
     assert orig_set_nb == rec_set_nb
 
     # Numba 版 from_dense
@@ -67,13 +76,14 @@ def test_transition_model_make_sparse_and_from_dense_cython():
     s_cy, p_cy, d_cy = cy_hmm_mod.TransitionModel.make_sparse(states, prev_states, probs)
 
     # 用 make_dense 恢复原始 (states, prev_states, probabilities)
-    rec_states_cy, rec_prev_states_cy, rec_probs_cy = \
-        cy_hmm_mod.TransitionModel.make_dense(s_cy, p_cy, d_cy)
+    rec_states_cy, rec_prev_states_cy, rec_probs_cy = cy_hmm_mod.TransitionModel.make_dense(
+        s_cy, p_cy, d_cy
+    )
 
     orig_set_cy = set(zip(states.tolist(), prev_states.tolist(), probs.tolist()))
-    rec_set_cy = set(zip(rec_states_cy.tolist(),
-                         rec_prev_states_cy.tolist(),
-                         rec_probs_cy.tolist()))
+    rec_set_cy = set(
+        zip(rec_states_cy.tolist(), rec_prev_states_cy.tolist(), rec_probs_cy.tolist())
+    )
     assert orig_set_cy == rec_set_cy
 
     # Cython 版 from_dense
@@ -119,14 +129,18 @@ def test_transition_model_make_dense_empty_raises():
 # 2. DiscreteObservationModel.densities / log_densities
 # --------------------------------------------------------------------------------
 
+
 def test_discrete_observation_model_densities_and_logdensities():
     """
     测试：正确的 observation_probabilities 下，densities 和 log_densities 行为一致。
     """
-    obs_probs = np.array([
-        [0.1, 0.6, 0.3],  # state 0: P(obs=0,1,2)
-        [0.7, 0.2, 0.1],  # state 1: P(obs=0,1,2)
-    ], dtype=np.float64)
+    obs_probs = np.array(
+        [
+            [0.1, 0.6, 0.3],  # state 0: P(obs=0,1,2)
+            [0.7, 0.2, 0.1],  # state 1: P(obs=0,1,2)
+        ],
+        dtype=np.float64,
+    )
 
     om_c = cy_hmm_mod.DiscreteObservationModel(obs_probs)
     om_n = nb_hmm_mod.DiscreteObservationModel(obs_probs)
@@ -135,12 +149,14 @@ def test_discrete_observation_model_densities_and_logdensities():
 
     dens_c = om_c.densities(observations)
     dens_n = om_n.densities(observations)
-    expected = np.vstack([
-        [obs_probs[0, 0], obs_probs[1, 0]],
-        [obs_probs[0, 2], obs_probs[1, 2]],
-        [obs_probs[0, 1], obs_probs[1, 1]],
-        [obs_probs[0, 2], obs_probs[1, 2]],
-    ])
+    expected = np.vstack(
+        [
+            [obs_probs[0, 0], obs_probs[1, 0]],
+            [obs_probs[0, 2], obs_probs[1, 2]],
+            [obs_probs[0, 1], obs_probs[1, 1]],
+            [obs_probs[0, 2], obs_probs[1, 2]],
+        ]
+    )
     assert dens_c.shape == (4, 2)
     assert dens_n.shape == (4, 2)
     assert np.allclose(dens_c, expected)
@@ -156,10 +172,13 @@ def test_discrete_observation_model_invalid_probability():
     """
     测试：当传入的 observation_probabilities 每行加和不为 1，应抛 ValueError。
     """
-    bad_probs = np.array([
-        [0.2, 0.2, 0.2],  # 行和 0.6 != 1
-        [0.5, 0.5, 0.1],  # 行和 1.1 != 1
-    ], dtype=np.float64)
+    bad_probs = np.array(
+        [
+            [0.2, 0.2, 0.2],  # 行和 0.6 != 1
+            [0.5, 0.5, 0.1],  # 行和 1.1 != 1
+        ],
+        dtype=np.float64,
+    )
     with pytest.raises(ValueError):
         cy_hmm_mod.DiscreteObservationModel(bad_probs)
     with pytest.raises(ValueError):
@@ -169,6 +188,7 @@ def test_discrete_observation_model_invalid_probability():
 # --------------------------------------------------------------------------------
 # 3. HiddenMarkovModel: viterbi / forward / forward_generator / reset / initial_distribution
 # --------------------------------------------------------------------------------
+
 
 @pytest.fixture
 def simple_2state_hmm():
@@ -182,10 +202,13 @@ def simple_2state_hmm():
     prev_states = np.array([0, 0, 1, 1], dtype=np.uint32)
     probs = np.array([0.7, 0.3, 0.4, 0.6], dtype=np.float64)
 
-    obs_probs = np.array([
-        [0.2, 0.8],  # state 0: P(obs=0, obs=1)
-        [0.5, 0.5],  # state 1: P(obs=0, obs=1)
-    ], dtype=np.float64)
+    obs_probs = np.array(
+        [
+            [0.2, 0.8],  # state 0: P(obs=0, obs=1)
+            [0.5, 0.5],  # state 1: P(obs=0, obs=1)
+        ],
+        dtype=np.float64,
+    )
 
     tm_c = cy_hmm_mod.TransitionModel.from_dense(states, prev_states, probs)
     om_c = cy_hmm_mod.DiscreteObservationModel(obs_probs)

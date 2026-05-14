@@ -46,9 +46,9 @@ def main():
         description="Download HookTheory from HuggingFace (m-a-p/HookTheory).",
     )
     parser.add_argument(
-        "--data-dir", default="data",
-        help="Root data directory (default: data). "
-             "Dataset is placed in <data-dir>/HookTheory/.",
+        "--data-dir",
+        default="data",
+        help="Root data directory (default: data). Dataset is placed in <data-dir>/HookTheory/.",
     )
     args = parser.parse_args()
 
@@ -64,8 +64,9 @@ def main():
 
     print()
     print("All done. Start sweeps with:")
-    print("  uv run python scripts/sweeps/run_all_sweeps.py "
-          "--tasks HookTheoryKey HookTheoryStructure")
+    print(
+        "  uv run python scripts/sweeps/run_all_sweeps.py --tasks HookTheoryKey HookTheoryStructure"
+    )
 
 
 if __name__ == "__main__":

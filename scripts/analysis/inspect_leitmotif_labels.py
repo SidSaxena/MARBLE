@@ -27,7 +27,7 @@ def inspect(paths: list) -> None:
             print(f"ERROR: file not found: {path}", file=sys.stderr)
             sys.exit(1)
 
-        with open(path, "r") as fh:
+        with open(path) as fh:
             for lineno, line in enumerate(fh, start=1):
                 line = line.strip()
                 if not line:

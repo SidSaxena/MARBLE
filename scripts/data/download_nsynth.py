@@ -35,48 +35,47 @@ python scripts/data/download_nsynth.py --no-download  # generate JSONL only
 
 import argparse
 import json
-import os
 import sys
 import tarfile
 import urllib.request
 from pathlib import Path
 
-
 # ─── URLs (from Google's NSynth page) ────────────────────────────────────────
 SPLIT_URLS = {
     "train": "http://download.magenta.tensorflow.org/datasets/nsynth/nsynth-train.jsonwav.tar.gz",
     "valid": "http://download.magenta.tensorflow.org/datasets/nsynth/nsynth-valid.jsonwav.tar.gz",
-    "test":  "http://download.magenta.tensorflow.org/datasets/nsynth/nsynth-test.jsonwav.tar.gz",
+    "test": "http://download.magenta.tensorflow.org/datasets/nsynth/nsynth-test.jsonwav.tar.gz",
 }
 
 # Approximate uncompressed sizes (for user info only)
 SPLIT_SIZES = {
     "train": "~19 GB",
     "valid": "~800 MB",
-    "test":  "~400 MB",
+    "test": "~400 MB",
 }
 
-NSYNTH_SR      = 16_000
-NSYNTH_SAMPLES = 64_000   # 4 s × 16 kHz
-NSYNTH_DUR     = 4.0
+NSYNTH_SR = 16_000
+NSYNTH_SAMPLES = 64_000  # 4 s × 16 kHz
+NSYNTH_DUR = 4.0
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
+
 
 def _progress_hook(block_num, block_size, total_size):
     downloaded = block_num * block_size
     if total_size > 0:
         pct = min(100, downloaded * 100 // total_size)
-        sys.stdout.write(f"\r  {pct:3d}%  ({downloaded/1e9:.2f} / {total_size/1e9:.2f} GB)")
+        sys.stdout.write(f"\r  {pct:3d}%  ({downloaded / 1e9:.2f} / {total_size / 1e9:.2f} GB)")
         sys.stdout.flush()
     else:
-        sys.stdout.write(f"\r  {downloaded/1e9:.2f} GB downloaded …")
+        sys.stdout.write(f"\r  {downloaded / 1e9:.2f} GB downloaded …")
         sys.stdout.flush()
 
 
 def download_split(split: str, dest_dir: Path) -> Path:
     """Download and extract one NSynth split. Returns the extracted directory."""
-    url     = SPLIT_URLS[split]
+    url = SPLIT_URLS[split]
     archive = dest_dir / f"nsynth-{split}.jsonwav.tar.gz"
     split_d = dest_dir / f"nsynth-{split}"
 
@@ -92,7 +91,7 @@ def download_split(split: str, dest_dir: Path) -> Path:
     else:
         print(f"  Archive already present: {archive}")
 
-    print(f"  Extracting …")
+    print("  Extracting …")
     with tarfile.open(archive, "r:gz") as tf:
         tf.extractall(dest_dir)
     print(f"  Extracted → {split_d}")
@@ -116,7 +115,7 @@ def generate_jsonl(split_dir: Path, out_jsonl: Path) -> int:
       }
     """
     examples_json = split_dir / "examples.json"
-    audio_dir     = split_dir / "audio"
+    audio_dir = split_dir / "audio"
 
     if not examples_json.exists():
         raise FileNotFoundError(f"examples.json not found in {split_dir}")
@@ -142,15 +141,15 @@ def generate_jsonl(split_dir: Path, out_jsonl: Path) -> int:
                 continue
 
             record = {
-                "audio_path":         str(wav_path),
-                "note":               note,
-                "velocity":           int(meta.get("velocity", 0)),
-                "instrument_family":  meta.get("instrument_family_str", ""),
-                "instrument_source":  meta.get("instrument_source_str", ""),
-                "sample_rate":        NSYNTH_SR,
-                "num_samples":        NSYNTH_SAMPLES,
-                "channels":           1,
-                "duration":           NSYNTH_DUR,
+                "audio_path": str(wav_path),
+                "note": note,
+                "velocity": int(meta.get("velocity", 0)),
+                "instrument_family": meta.get("instrument_family_str", ""),
+                "instrument_source": meta.get("instrument_source_str", ""),
+                "sample_rate": NSYNTH_SR,
+                "num_samples": NSYNTH_SAMPLES,
+                "channels": 1,
+                "duration": NSYNTH_DUR,
             }
             out.write(json.dumps(record) + "\n")
             written += 1
@@ -162,21 +161,24 @@ def generate_jsonl(split_dir: Path, out_jsonl: Path) -> int:
 
 # ─── main ────────────────────────────────────────────────────────────────────
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Download NSynth and generate MARBLE JSONL files."
-    )
+    parser = argparse.ArgumentParser(description="Download NSynth and generate MARBLE JSONL files.")
     parser.add_argument(
-        "--splits", nargs="+", default=["train", "valid", "test"],
+        "--splits",
+        nargs="+",
+        default=["train", "valid", "test"],
         choices=["train", "valid", "test"],
         help="Which splits to download (default: all three).",
     )
     parser.add_argument(
-        "--data-dir", default="data/NSynth",
+        "--data-dir",
+        default="data/NSynth",
         help="Root directory for NSynth data (default: data/NSynth).",
     )
     parser.add_argument(
-        "--no-download", action="store_true",
+        "--no-download",
+        action="store_true",
         help="Skip downloading — regenerate JSONL from already-extracted data.",
     )
     args = parser.parse_args()
@@ -209,12 +211,12 @@ def main():
         print(f"  ✓  {n} records  →  {out_path}\n")
 
     print(f"Done.  Total records written: {total_records}")
-    print(f"\nNext steps:")
-    print(f"  python scripts/sweeps/run_all_sweeps.py --tasks NSynth")
-    print(f"  # or run a single sweep:")
-    print(f"  python scripts/sweeps/run_sweep_local.py \\")
-    print(f"      --base-config configs/probe.OMARRQ-multifeature25hz.NSynth.yaml \\")
-    print(f"      --num-layers 24 --model-tag OMARRQ-multifeature25hz --task-tag NSynth")
+    print("\nNext steps:")
+    print("  python scripts/sweeps/run_all_sweeps.py --tasks NSynth")
+    print("  # or run a single sweep:")
+    print("  python scripts/sweeps/run_sweep_local.py \\")
+    print("      --base-config configs/probe.OMARRQ-multifeature25hz.NSynth.yaml \\")
+    print("      --num-layers 24 --model-tag OMARRQ-multifeature25hz --task-tag NSynth")
 
 
 if __name__ == "__main__":

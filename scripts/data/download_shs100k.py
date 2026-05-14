@@ -94,14 +94,13 @@ import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
 _CSV_BASE = "https://raw.githubusercontent.com/second-hand-songs/shs-100k/2025"
 _CSV_URLS = {
-    "test":  f"{_CSV_BASE}/test.csv",
-    "val":   f"{_CSV_BASE}/validate.csv",
+    "test": f"{_CSV_BASE}/test.csv",
+    "val": f"{_CSV_BASE}/validate.csv",
     "train": f"{_CSV_BASE}/train.csv",
 }
 _AUDIO_EXTS = {".m4a", ".webm", ".mp3", ".ogg", ".opus", ".flac", ".wav"}
@@ -111,12 +110,13 @@ _AUDIO_EXTS = {".m4a", ".webm", ".mp3", ".ogg", ".opus", ".flac", ".wav"}
 # immediately rather than waiting up to 180 s for each to time out.
 
 _active_procs: list[subprocess.Popen] = []
-_proc_lock    = threading.Lock()
-_shutdown     = threading.Event()
+_proc_lock = threading.Lock()
+_shutdown = threading.Event()
 
 
 def _install_sigint_handler() -> None:
     """Replace the default SIGINT handler with one that kills child processes."""
+
     def _handler(sig, frame):
         _shutdown.set()
         log.warning("\nInterrupted — killing active yt-dlp processes ...")
@@ -136,6 +136,7 @@ def _install_sigint_handler() -> None:
 
 # ── CSV ───────────────────────────────────────────────────────────────────────
 
+
 def _fetch_csv(split: str) -> list[dict]:
     """Download and parse one SHS-100K CSV split from GitHub."""
     url = _CSV_URLS[split]
@@ -148,13 +149,15 @@ def _fetch_csv(split: str) -> list[dict]:
         if len(row) < 5:
             continue
         try:
-            rows.append({
-                "perf_id":    int(row[0]),
-                "work_id":    int(row[1]),
-                "title":      row[2].strip(),
-                "artist":     row[3].strip(),
-                "youtube_id": row[4].strip(),
-            })
+            rows.append(
+                {
+                    "perf_id": int(row[0]),
+                    "work_id": int(row[1]),
+                    "title": row[2].strip(),
+                    "artist": row[3].strip(),
+                    "youtube_id": row[4].strip(),
+                }
+            )
         except (ValueError, IndexError) as e:
             log.debug(f"Skipping malformed CSV row {i}: {row!r} ({e})")
     log.info(f"  {len(rows):,} entries loaded from {split}")
@@ -163,7 +166,8 @@ def _fetch_csv(split: str) -> list[dict]:
 
 # ── Audio helpers ─────────────────────────────────────────────────────────────
 
-def _find_audio(ytid: str, audio_dir: Path) -> Optional[Path]:
+
+def _find_audio(ytid: str, audio_dir: Path) -> Path | None:
     """Return an existing audio file for this YouTube ID, or None."""
     for path in audio_dir.glob(f"{ytid}.*"):
         if path.suffix.lower() in _AUDIO_EXTS and path.stat().st_size > 10_000:
@@ -180,13 +184,18 @@ def _ffprobe_info(path: Path) -> tuple[int, int, int]:
     try:
         r = subprocess.run(
             [
-                "ffprobe", "-v", "quiet",
-                "-print_format", "json",
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
                 "-show_streams",
                 "-show_format",
                 str(path),
             ],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
     except FileNotFoundError:
         log.error("ffprobe not found. Install ffmpeg and restart your terminal.")
@@ -207,7 +216,7 @@ def _ffprobe_info(path: Path) -> tuple[int, int, int]:
 
     sr = 0
     channels = 1
-    stream_dur: Optional[str] = None
+    stream_dur: str | None = None
     for stream in data.get("streams", []):
         if stream.get("codec_type") != "audio":
             continue
@@ -215,7 +224,7 @@ def _ffprobe_info(path: Path) -> tuple[int, int, int]:
             sr = int(stream["sample_rate"])
         except (KeyError, ValueError, TypeError):
             continue
-        channels   = int(stream.get("channels") or 1)
+        channels = int(stream.get("channels") or 1)
         stream_dur = stream.get("duration")
         break
 
@@ -247,7 +256,7 @@ def _download(
     cookie_args: list[str],
     verbose_errors: bool,
     sleep_args: list[str] = (),
-) -> Optional[Path]:
+) -> Path | None:
     """
     Download audio for one YouTube video via yt-dlp.
 
@@ -263,33 +272,43 @@ def _download(
     if existing:
         return existing
 
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        "--quiet", "--no-warnings",
-        "--no-playlist",
-        # Multi-tier format selector: prefer m4a audio-only, fall back to any
-        # audio-only stream (webm/opus also works), finally any merged format
-        # such as 18 (mp4 360p with mpeg audio).  More permissive than the
-        # previous "bestaudio[ext=m4a]/bestaudio" which errored "Requested
-        # format is not available" whenever a specific client variant did not
-        # surface an audio-only stream.
-        "-f", "bestaudio[ext=m4a]/bestaudio/best",
-        # Multi-client fallback chain.  yt-dlp queries each client and
-        # *unions* the resulting format lists, so a video failing one client
-        # (e.g. YouTube enforcing PO Token for android_vr in some regions)
-        # is still recoverable via another.  Order matters — earlier clients
-        # are preferred for selection ties.
-        #
-        #   android_vr   — no PO Token, no JS runtime required (primary)
-        #   tv           — no PO Token, no JS; cookies remove DRM gating
-        #   web_safari   — alternative web variant, sometimes less restricted
-        #   web_embedded — works for embeddable videos; needs deno/node, but
-        #                  if missing it just fails silently and the others
-        #                  in the chain still provide formats
-        "--extractor-args",
-        "youtube:player_client=android_vr,tv,web_safari,web_embedded",
-        "-o", str(audio_dir / f"{ytid}.%(ext)s"),
-    ] + list(sleep_args) + cookie_args + [f"https://www.youtube.com/watch?v={ytid}"]
+    cmd = (
+        [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "--quiet",
+            "--no-warnings",
+            "--no-playlist",
+            # Multi-tier format selector: prefer m4a audio-only, fall back to any
+            # audio-only stream (webm/opus also works), finally any merged format
+            # such as 18 (mp4 360p with mpeg audio).  More permissive than the
+            # previous "bestaudio[ext=m4a]/bestaudio" which errored "Requested
+            # format is not available" whenever a specific client variant did not
+            # surface an audio-only stream.
+            "-f",
+            "bestaudio[ext=m4a]/bestaudio/best",
+            # Multi-client fallback chain.  yt-dlp queries each client and
+            # *unions* the resulting format lists, so a video failing one client
+            # (e.g. YouTube enforcing PO Token for android_vr in some regions)
+            # is still recoverable via another.  Order matters — earlier clients
+            # are preferred for selection ties.
+            #
+            #   android_vr   — no PO Token, no JS runtime required (primary)
+            #   tv           — no PO Token, no JS; cookies remove DRM gating
+            #   web_safari   — alternative web variant, sometimes less restricted
+            #   web_embedded — works for embeddable videos; needs deno/node, but
+            #                  if missing it just fails silently and the others
+            #                  in the chain still provide formats
+            "--extractor-args",
+            "youtube:player_client=android_vr,tv,web_safari,web_embedded",
+            "-o",
+            str(audio_dir / f"{ytid}.%(ext)s"),
+        ]
+        + list(sleep_args)
+        + cookie_args
+        + [f"https://www.youtube.com/watch?v={ytid}"]
+    )
 
     try:
         proc = subprocess.Popen(
@@ -326,7 +345,7 @@ def _download(
                 "  Fix: export cookies once, then use --cookies-file:\n"
                 "    python -m yt_dlp --cookies-from-browser firefox "
                 "--cookies cookies.txt --skip-download "
-                "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
+                '"https://youtube.com/watch?v=rblt2EtFfC4"\n'
                 "    python scripts/data/download_shs100k.py --cookies-file cookies.txt"
             )
         elif "No video formats found" in err or "Signature solving failed" in err:
@@ -343,14 +362,23 @@ def _download(
             # Same root cause as above: the format selector did not match any
             # of the formats returned by the active player clients.
             if verbose_errors:
-                log.info(f"[format-gated] {ytid}: client returned no audio stream matching the format selector")
+                log.info(
+                    f"[format-gated] {ytid}: client returned no audio stream matching the format selector"
+                )
             else:
                 log.debug(f"[format-gated] {ytid}")
-        elif any(p in err for p in [
-            "unavailable", "private", "removed",
-            "does not exist", "account associated",
-            "members-only", "age-restricted",
-        ]):
+        elif any(
+            p in err
+            for p in [
+                "unavailable",
+                "private",
+                "removed",
+                "does not exist",
+                "account associated",
+                "members-only",
+                "age-restricted",
+            ]
+        ):
             if verbose_errors:
                 log.info(f"[skip] {ytid}: {err[:120]}")
             else:
@@ -375,7 +403,7 @@ def _process(
     cookie_args: list[str],
     verbose_errors: bool,
     sleep_args: list[str] = (),
-) -> Optional[dict]:
+) -> dict | None:
     """Download (or locate) one track and return its JSONL record, or None."""
     if _shutdown.is_set():
         return None
@@ -387,8 +415,7 @@ def _process(
         if path is None:
             return None
     else:
-        path = _download(ytid, audio_dir, cookie_args, verbose_errors,
-                         sleep_args=sleep_args)
+        path = _download(ytid, audio_dir, cookie_args, verbose_errors, sleep_args=sleep_args)
         if path is None:
             return None
 
@@ -398,27 +425,30 @@ def _process(
         return None
 
     return {
-        "audio_path":     str(path),
-        "work_id":        row["work_id"],
+        "audio_path": str(path),
+        "work_id": row["work_id"],
         "performance_id": row["perf_id"],
-        "title":          row["title"],
-        "artist":         row["artist"],
-        "youtube_id":     ytid,
-        "sample_rate":    sr,
-        "num_samples":    n_frames,
-        "channels":       channels,
-        "duration":       round(n_frames / sr, 3),
+        "title": row["title"],
+        "artist": row["artist"],
+        "youtube_id": ytid,
+        "sample_rate": sr,
+        "num_samples": n_frames,
+        "channels": channels,
+        "duration": round(n_frames / sr, 3),
     }
 
 
 # ── Startup checks ────────────────────────────────────────────────────────────
+
 
 def _check_ytdlp() -> None:
     """Verify yt-dlp is installed and print its version."""
     try:
         r = subprocess.run(
             [sys.executable, "-m", "yt_dlp", "--version"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if r.returncode == 0:
             log.info(f"yt-dlp  : {r.stdout.strip()}")
@@ -436,6 +466,7 @@ def _check_ytdlp() -> None:
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -448,50 +479,91 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    ap.add_argument("--data-dir", default="data/SHS100K",
-                    help="Where JSONL split files are written "
-                         "(default: data/SHS100K).")
-    ap.add_argument("--audio-dir", default=None, metavar="DIR",
-                    help="Where audio files are stored (default: "
-                         "<data-dir>/audio).  Use this to put audio on an "
-                         "external drive while keeping the JSONL inside the "
-                         "project, e.g. --audio-dir /Volumes/MyDrive/SHS100K. "
-                         "Audio paths inside the JSONL will point here.")
-    ap.add_argument("--splits", nargs="+", default=["test"],
-                    choices=["train", "val", "test"],
-                    help="Which splits to download (default: test).")
-    ap.add_argument("--workers", type=int, default=4,
-                    help="Parallel yt-dlp workers (default: 4).")
-    ap.add_argument("--skip-audio", action="store_true",
-                    help="Rebuild JSONL only; do not download anything.")
-    ap.add_argument("--browser", default=None, metavar="BROWSER",
-                    help="Browser to read cookies from (firefox/chrome/edge/safari).")
-    ap.add_argument("--cookies-file", default=None, metavar="FILE",
-                    help="Path to a Netscape-format cookie file.")
-    ap.add_argument("--max-entries", type=int, default=None,
-                    help="Process at most N entries per split (smoke-test).")
-    ap.add_argument("--verbose-errors", action="store_true",
-                    help="Show all yt-dlp error messages (helps diagnose ok=0 failures).")
-    ap.add_argument("--sleep-requests", type=float, default=0.0, metavar="SEC",
-                    help="Pass --sleep-requests SEC to yt-dlp: pause this many "
-                         "seconds between metadata requests.  Use 1-3 to avoid "
-                         "YouTube rate-limiting on long runs (default: 0).")
-    ap.add_argument("--sleep-interval", type=float, default=0.0, metavar="SEC",
-                    help="Pass --sleep-interval SEC to yt-dlp: minimum delay "
-                         "before each actual audio download (default: 0).")
-    ap.add_argument("--reverse", action="store_true",
-                    help="Process CSV entries in reverse order.  On a resume run "
-                         "this hits the tail of the dataset first — the part "
-                         "most likely to contain rate-limit-victim entries — "
-                         "while the IP is fresh, then breezes through the early "
-                         "cached entries.")
-    ap.add_argument("--missing-only", action="store_true",
-                    help="Skip CSV entries that already have a downloaded audio "
-                         "file.  Useful to retry just the 'failed' tail without "
-                         "iterating over thousands of cache hits.  NB: the JSONL "
-                         "output will only contain the newly-processed entries; "
-                         "re-run with --skip-audio afterwards to rebuild the "
-                         "full JSONL from disk.")
+    ap.add_argument(
+        "--data-dir",
+        default="data/SHS100K",
+        help="Where JSONL split files are written (default: data/SHS100K).",
+    )
+    ap.add_argument(
+        "--audio-dir",
+        default=None,
+        metavar="DIR",
+        help="Where audio files are stored (default: "
+        "<data-dir>/audio).  Use this to put audio on an "
+        "external drive while keeping the JSONL inside the "
+        "project, e.g. --audio-dir /Volumes/MyDrive/SHS100K. "
+        "Audio paths inside the JSONL will point here.",
+    )
+    ap.add_argument(
+        "--splits",
+        nargs="+",
+        default=["test"],
+        choices=["train", "val", "test"],
+        help="Which splits to download (default: test).",
+    )
+    ap.add_argument("--workers", type=int, default=4, help="Parallel yt-dlp workers (default: 4).")
+    ap.add_argument(
+        "--skip-audio", action="store_true", help="Rebuild JSONL only; do not download anything."
+    )
+    ap.add_argument(
+        "--browser",
+        default=None,
+        metavar="BROWSER",
+        help="Browser to read cookies from (firefox/chrome/edge/safari).",
+    )
+    ap.add_argument(
+        "--cookies-file",
+        default=None,
+        metavar="FILE",
+        help="Path to a Netscape-format cookie file.",
+    )
+    ap.add_argument(
+        "--max-entries",
+        type=int,
+        default=None,
+        help="Process at most N entries per split (smoke-test).",
+    )
+    ap.add_argument(
+        "--verbose-errors",
+        action="store_true",
+        help="Show all yt-dlp error messages (helps diagnose ok=0 failures).",
+    )
+    ap.add_argument(
+        "--sleep-requests",
+        type=float,
+        default=0.0,
+        metavar="SEC",
+        help="Pass --sleep-requests SEC to yt-dlp: pause this many "
+        "seconds between metadata requests.  Use 1-3 to avoid "
+        "YouTube rate-limiting on long runs (default: 0).",
+    )
+    ap.add_argument(
+        "--sleep-interval",
+        type=float,
+        default=0.0,
+        metavar="SEC",
+        help="Pass --sleep-interval SEC to yt-dlp: minimum delay "
+        "before each actual audio download (default: 0).",
+    )
+    ap.add_argument(
+        "--reverse",
+        action="store_true",
+        help="Process CSV entries in reverse order.  On a resume run "
+        "this hits the tail of the dataset first — the part "
+        "most likely to contain rate-limit-victim entries — "
+        "while the IP is fresh, then breezes through the early "
+        "cached entries.",
+    )
+    ap.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="Skip CSV entries that already have a downloaded audio "
+        "file.  Useful to retry just the 'failed' tail without "
+        "iterating over thousands of cache hits.  NB: the JSONL "
+        "output will only contain the newly-processed entries; "
+        "re-run with --skip-audio afterwards to rebuild the "
+        "full JSONL from disk.",
+    )
     args = ap.parse_args()
 
     _install_sigint_handler()
@@ -530,7 +602,7 @@ def main():
                 "cookie DB locking.  If you see cookie errors, export once:\n"
                 "  python -m yt_dlp --cookies-from-browser firefox "
                 "--cookies cookies.txt --skip-download "
-                "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
+                '"https://youtube.com/watch?v=rblt2EtFfC4"\n'
                 "  python scripts/data/download_shs100k.py --cookies-file cookies.txt "
                 f"--workers {args.workers}"
             )
@@ -547,7 +619,7 @@ def main():
         log.info(f"Throttle : {' '.join(sleep_args)} (per yt-dlp call)")
 
     # ── Per-split work ────────────────────────────────────────────────────────
-    data_dir  = Path(args.data_dir)
+    data_dir = Path(args.data_dir)
     audio_dir = Path(args.audio_dir) if args.audio_dir else data_dir / "audio"
     data_dir.mkdir(parents=True, exist_ok=True)
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -555,7 +627,7 @@ def main():
     log.info(f"Audio output : {audio_dir}")
 
     for split in args.splits:
-        log.info(f"\n{'='*60}\nSplit : {split}\n{'='*60}")
+        log.info(f"\n{'=' * 60}\nSplit : {split}\n{'=' * 60}")
 
         rows = _fetch_csv(split)
 
@@ -568,27 +640,32 @@ def main():
         # 2. Skip entries that already have a downloaded audio file.
         if args.missing_only and not args.skip_audio:
             before = len(rows)
-            rows   = [r for r in rows
-                      if _find_audio(r["youtube_id"], audio_dir) is None]
-            log.info(f"  --missing-only: {before} → {len(rows)} entries "
-                     f"({before - len(rows)} already on disk)")
+            rows = [r for r in rows if _find_audio(r["youtube_id"], audio_dir) is None]
+            log.info(
+                f"  --missing-only: {before} → {len(rows)} entries "
+                f"({before - len(rows)} already on disk)"
+            )
 
         # 3. Finally, cap to --max-entries (applied AFTER reverse/missing-only
         #    so "--reverse --max-entries 100" yields the last 100 of the CSV).
         if args.max_entries:
             rows = rows[: args.max_entries]
 
-        records:  list[dict] = []
-        n_failed  = 0
-        n_done    = 0
-        total     = len(rows)
+        records: list[dict] = []
+        n_failed = 0
+        n_done = 0
+        total = len(rows)
         _warned_systematic = False
 
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futs = {
                 pool.submit(
-                    _process, row, audio_dir,
-                    args.skip_audio, cookie_args, args.verbose_errors,
+                    _process,
+                    row,
+                    audio_dir,
+                    args.skip_audio,
+                    cookie_args,
+                    args.verbose_errors,
                     sleep_args,
                 ): row
                 for row in rows
@@ -604,10 +681,12 @@ def main():
                 # ── Early systematic-failure warning ─────────────────────────
                 # If nothing has downloaded after 20 attempts something is
                 # systemically wrong (auth, outdated yt-dlp, network).
-                if (not _warned_systematic
-                        and not args.skip_audio
-                        and n_done >= 20
-                        and len(records) == 0):
+                if (
+                    not _warned_systematic
+                    and not args.skip_audio
+                    and n_done >= 20
+                    and len(records) == 0
+                ):
                     _warned_systematic = True
                     log.warning(
                         "\n*** 0 successful downloads in the first %d attempts. ***\n"
@@ -616,7 +695,7 @@ def main():
                         "  2. Missing / expired auth  →  export fresh cookies:\n"
                         "       python -m yt_dlp --cookies-from-browser firefox "
                         "--cookies cookies.txt --skip-download "
-                        "\"https://youtube.com/watch?v=rblt2EtFfC4\"\n"
+                        '"https://youtube.com/watch?v=rblt2EtFfC4"\n'
                         "       python scripts/data/download_shs100k.py "
                         "--cookies-file cookies.txt\n"
                         "  3. Add --verbose-errors to see the actual yt-dlp output.\n",

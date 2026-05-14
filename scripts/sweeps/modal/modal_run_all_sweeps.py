@@ -23,7 +23,6 @@ Usage
 
 from modal_marble import app, run_parallel_sweep
 
-
 # Tier 1 — MERT (~$160 total at L4 spot, all 13-layer)
 TIER1_MERT: list[dict] = [
     {
@@ -188,15 +187,13 @@ def main(only: str = "", skip: str = "", tier: int = 0):
             continue
         selected.append(s)
 
-    print(f"Running {len(selected)} sweep(s) sequentially "
-          f"(layers parallelize within each sweep):")
+    print(f"Running {len(selected)} sweep(s) sequentially (layers parallelize within each sweep):")
     for s in selected:
         note = f"  ({s['note']})" if s.get("note") else ""
-        print(f"  - tier {s['tier']}  {s['tag']:<32}  "
-              f"{s['num_layers']} layers{note}")
+        print(f"  - tier {s['tier']}  {s['tag']:<32}  {s['num_layers']} layers{note}")
 
     for s in selected:
-        print(f"\n{'='*64}\n  {s['tag']}  ({s['num_layers']} layers)\n{'='*64}")
+        print(f"\n{'=' * 64}\n  {s['tag']}  ({s['num_layers']} layers)\n{'=' * 64}")
         results = run_parallel_sweep.remote(
             base_config=s["base_config"],
             num_layers=s["num_layers"],

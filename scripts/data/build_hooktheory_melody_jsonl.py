@@ -53,7 +53,6 @@ import json
 import sys
 from pathlib import Path
 
-
 SOURCE_REPO = "m-a-p/HookTheory"
 SOURCE_FILE = "Hooktheory.json.gz"
 
@@ -61,8 +60,8 @@ SOURCE_FILE = "Hooktheory.json.gz"
 def _fetch_source(cache_dir: Path | None = None) -> Path:
     """Download `Hooktheory.json.gz` from HF (or return cached path)."""
     from huggingface_hub import hf_hub_download
-    kwargs = {"repo_id": SOURCE_REPO, "filename": SOURCE_FILE,
-              "repo_type": "dataset"}
+
+    kwargs = {"repo_id": SOURCE_REPO, "filename": SOURCE_FILE, "repo_type": "dataset"}
     if cache_dir is not None:
         kwargs["cache_dir"] = str(cache_dir)
     return Path(hf_hub_download(**kwargs))
@@ -78,23 +77,39 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--source-json", type=Path, default=None,
-                    help="Path to Hooktheory.json.gz. If omitted, fetched "
-                         "from HF (m-a-p/HookTheory).")
-    ap.add_argument("--out-dir", type=Path, default=Path("data/HookTheory"),
-                    help="Where to write HookTheory.{train,val,test}.jsonl "
-                         "(default: %(default)s)")
-    ap.add_argument("--audio-dir", type=Path, default=None,
-                    help="Directory containing full-song audio "
-                         "(<ytid>.mp3). Required if --filter-by-audio.")
-    ap.add_argument("--filter-by-audio", action="store_true",
-                    help="Drop songs whose <audio-dir>/<ytid>.mp3 is "
-                         "missing. Otherwise keep all songs with non-empty "
-                         "melody.")
-    ap.add_argument("--hf-cache-dir", type=Path, default=None,
-                    help="Override HuggingFace cache dir for the auto-"
-                         "download. Useful when running inside Modal to "
-                         "land the cache on a persistent volume.")
+    ap.add_argument(
+        "--source-json",
+        type=Path,
+        default=None,
+        help="Path to Hooktheory.json.gz. If omitted, fetched from HF (m-a-p/HookTheory).",
+    )
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("data/HookTheory"),
+        help="Where to write HookTheory.{train,val,test}.jsonl (default: %(default)s)",
+    )
+    ap.add_argument(
+        "--audio-dir",
+        type=Path,
+        default=None,
+        help="Directory containing full-song audio (<ytid>.mp3). Required if --filter-by-audio.",
+    )
+    ap.add_argument(
+        "--filter-by-audio",
+        action="store_true",
+        help="Drop songs whose <audio-dir>/<ytid>.mp3 is "
+        "missing. Otherwise keep all songs with non-empty "
+        "melody.",
+    )
+    ap.add_argument(
+        "--hf-cache-dir",
+        type=Path,
+        default=None,
+        help="Override HuggingFace cache dir for the auto-"
+        "download. Useful when running inside Modal to "
+        "land the cache on a persistent volume.",
+    )
     args = ap.parse_args()
 
     # ── Load source ──────────────────────────────────────────────────────────
@@ -150,7 +165,7 @@ def main():
     if args.filter_by_audio:
         print(f"  Skipped (no audio):    {skipped_no_audio:>6,}", file=sys.stderr)
     print(file=sys.stderr)
-    print(f"  Output records:", file=sys.stderr)
+    print("  Output records:", file=sys.stderr)
     for split, recs in by_split.items():
         print(f"    {split:5s}  {len(recs):>6,}", file=sys.stderr)
     print("=" * 64, file=sys.stderr)
