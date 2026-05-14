@@ -1,0 +1,168 @@
+seed_everything: 1234
+ckpt_path: null
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  accumulate_grad_batches: 8
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 40
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 10
+  log_every_n_steps: 5
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "./output/probe.EMO.OMARRQ-multifeature-25hz-meanall/checkpoints/"
+        filename: "best"
+        save_top_k: 1
+    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
+      init_args:
+        monitor: "val/r2"
+        patience: 8
+        mode: "max"
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "OMARRQ-multifeature-25hz-meanall / EMO"
+      tags: ["OMARRQ-multifeature-25hz-meanall", "EMO", "probe", "mean-all"]
+      job_type: "probe"
+      name: "meanall-fit"
+      save_dir: "./output/probe.EMO.OMARRQ-multifeature-25hz-meanall/"
+
+
+model:
+  class_path: marble.tasks.EMO.probe.ProbeAudioTask
+  init_args:
+    sample_rate: 24000
+    use_ema: false
+
+    encoder:
+      class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: ["0..23"]
+          mode: mean
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+    decoders:
+      - class_path: marble.modules.decoders.MLPDecoder
+        init_args:
+          in_dim: 1024   # OMAR-RQ embed_dim=1024
+          out_dim: 2     # arousal + valence
+          hidden_layers: [256]
+          activation_fn:
+            class_path: torch.nn.ReLU
+          dropout: 0.2
+
+    losses:
+      - class_path: torch.nn.MSELoss
+        init_args:
+          reduction: mean
+
+    metrics:
+      train:
+        r2:
+          class_path: torchmetrics.R2Score
+          init_args:
+            multioutput: uniform_average
+        arousal_r2:
+          class_path: marble.tasks.EMO.probe.SliceR2
+          init_args:
+            dim: 0
+        valence_r2:
+          class_path: marble.tasks.EMO.probe.SliceR2
+          init_args:
+            dim: 1
+      val:
+        r2:
+          class_path: torchmetrics.R2Score
+          init_args:
+            multioutput: uniform_average
+        arousal_r2:
+          class_path: marble.tasks.EMO.probe.SliceR2
+          init_args:
+            dim: 0
+        valence_r2:
+          class_path: marble.tasks.EMO.probe.SliceR2
+          init_args:
+            dim: 1
+      test:
+        r2:
+          class_path: torchmetrics.R2Score
+          init_args:
+            multioutput: uniform_average
+        arousal_r2:
+          class_path: marble.tasks.EMO.probe.SliceR2
+          init_args:
+            dim: 0
+        valence_r2:
+          class_path: marble.tasks.EMO.probe.SliceR2
+          init_args:
+            dim: 1
+
+data:
+  class_path: marble.tasks.EMO.datamodule.EMODataModule
+  init_args:
+    batch_size: 8
+    num_workers: 8
+
+    audio_transforms:
+      train:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      val:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      test:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+
+    train:
+      class_path: marble.tasks.EMO.datamodule.EMOAudioTrain
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15
+        min_clip_ratio: 0.8
+        channel_mode: first
+        jsonl: data/EMO/EMO.train.jsonl
+    val:
+      class_path: marble.tasks.EMO.datamodule.EMOAudioVal
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15
+        min_clip_ratio: 0.8
+        channel_mode: first
+        jsonl: data/EMO/EMO.val.jsonl
+    test:
+      class_path: marble.tasks.EMO.datamodule.EMOAudioTest
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15
+        min_clip_ratio: 0.8
+        channel_mode: first
+        jsonl: data/EMO/EMO.test.jsonl
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
+
+lr_scheduler:
+  class_path: lightning.pytorch.cli.ReduceLROnPlateau
+  init_args:
+    mode: "max"
+    factor: 0.5
+    patience: 3
+    monitor: "val/r2"
