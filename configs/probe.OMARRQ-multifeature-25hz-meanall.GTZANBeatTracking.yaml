@@ -40,10 +40,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "OMARRQ-multifeature-25hz-meanall / GTZANBeatTracking"
-      tags: ["OMARRQ-multifeature-25hz", "GTZANBeatTracking", "mean-agg", "probe"]
+      group: "OMARRQ-multifeature-25hz / GTZANBeatTracking"
+      tags: ["OMARRQ-multifeature-25hz", "GTZANBeatTracking", "probe", "mean-all", "layer-meanall", "layer-sweep"]
       job_type: "probe"
-      name: "meanall-fit"
+      name: "layer-meanall-fit"
       save_dir: "./output/probe.GTZANBeatTracking.OMARRQ-multifeature-25hz-meanall/"
 
 

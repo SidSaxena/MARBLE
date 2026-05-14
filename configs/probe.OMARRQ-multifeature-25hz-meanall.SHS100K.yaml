@@ -19,10 +19,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "OMARRQ-multifeature-25hz-meanall / SHS100K"
-      tags: ["OMARRQ-multifeature-25hz-meanall", "SHS100K", "probe", "mean-all"]
+      group: "OMARRQ-multifeature-25hz / SHS100K"
+      tags: ["SHS100K", "probe", "mean-all", "OMARRQ-multifeature-25hz", "layer-meanall", "layer-sweep"]
       job_type: "probe"
-      name: "meanall-fit"
+      name: "layer-meanall-fit"
       save_dir: "./output/probe.SHS100K.OMARRQ-multifeature-25hz-meanall/"
 
 

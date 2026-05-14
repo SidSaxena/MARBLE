@@ -72,9 +72,15 @@ def _layer_from_run(run) -> int | None:
 
 
 def _is_meanall(run) -> bool:
-    """Tag-driven meanall detection (Fix-#5 conventions)."""
+    """Tag-driven meanall detection (Fix-#5 conventions).
+
+    Meanall runs now live in the same group as the per-layer sweep,
+    distinguished only by tags / run name. Detection signals:
+      - tag `mean-all` / `mean-agg` (legacy) / `layer-meanall`
+      - run name contains `meanall` (e.g. `layer-meanall-test`)
+    """
     tags = set(run.tags or [])
-    if "mean-all" in tags or "mean-agg" in tags:
+    if {"mean-all", "mean-agg", "layer-meanall"} & tags:
         return True
     if run.name and "meanall" in run.name:
         return True
@@ -102,7 +108,13 @@ def _split_group(group: str) -> tuple[str, str] | None:
 
 
 def _encoder_family(enc: str) -> str:
-    """Strip variant + aggregation suffixes for cross-encoder grouping."""
+    """Strip variant + aggregation suffixes for cross-encoder grouping.
+
+    After the 2026-05-14 taxonomy refactor meanall runs live in the
+    per-layer group, so there's no `-meanall` encoder suffix to strip in
+    fresh data. Kept as a safety net for any historical group that
+    slipped past `fix_wandb_runs.py`.
+    """
     base = enc
     for suffix in ("-meanall",):
         if base.endswith(suffix):
@@ -116,9 +128,20 @@ def _encoder_family(enc: str) -> str:
 
 def collect_runs(api, project_path: str, per_page: int, metric_override: str | None,
                  filter_substr: str | None):
-    """Walk all runs and bucket them by (group, layer). Also returns
-    meanall_scores: {group: (metric, value)} for groups whose runs are
-    detected as mean-all (single-row per group)."""
+    """Walk all runs and bucket them by (group, layer).
+
+    Returns
+    -------
+    by_group : {group: {layer_int: (metric, value, name, run_id)}}
+        Per-layer best score for each sweep group.
+    meanall_scores : {group: (metric, value, name)}
+        Mean-of-all-layers score per group (now keyed by the SAME group
+        as the per-layer entries, since meanall lives in the parent
+        sweep group as of the 2026-05-14 taxonomy refactor). Legacy
+        `<encoder>-meanall / <task>` groups are mapped back to their
+        canonical parent here so downstream views see one consistent
+        key per (encoder, task).
+    """
     runs = list(api.runs(project_path, per_page=per_page))
 
     by_group: dict[str, dict[int, tuple[str, float, str, str]]] = defaultdict(dict)
@@ -141,10 +164,19 @@ def collect_runs(api, project_path: str, per_page: int, metric_override: str | N
             continue
 
         if _is_meanall(r):
-            # For meanall: keep the best (max) value for that group.
-            prev = meanall_scores.get(group)
+            # Canonicalize: if any historical run still sits in a legacy
+            # `<encoder>-meanall / <task>` group, fold it back into the
+            # parent `<encoder> / <task>` key so downstream views show
+            # the meanall alongside the per-layer sweep entries.
+            sp = _split_group(group)
+            if sp is not None:
+                enc, task = sp
+                canonical_group = f"{enc.removesuffix('-meanall')} / {task}"
+            else:
+                canonical_group = group
+            prev = meanall_scores.get(canonical_group)
             if prev is None or value > prev[1]:
-                meanall_scores[group] = (metric, value, r.name)
+                meanall_scores[canonical_group] = (metric, value, r.name)
         else:
             layer = _layer_from_run(r)
             if layer is None:
@@ -160,23 +192,49 @@ def collect_runs(api, project_path: str, per_page: int, metric_override: str | N
 # Views
 # ──────────────────────────────────────────────────────────────────────────────
 
-def view_best(by_group, csv_path=None):
+def view_best(by_group, meanall_scores=None, csv_path=None):
+    """Best layer per group, with the mean-of-all-layers baseline shown
+    alongside (a `★` marks whether meanall beats the best single layer)."""
+    meanall_scores = meanall_scores or {}
     rows = []
-    for group in sorted(by_group):
-        layer_map = by_group[group]
-        if not layer_map:
-            continue
-        best_layer = max(layer_map, key=lambda l: layer_map[l][1])
-        m, v, _, _ = layer_map[best_layer]
-        rows.append({"group": group, "best_layer": best_layer,
-                     "metric": m.removeprefix("test/"), "value": round(v, 4)})
 
-    print(f"\n{'Group':<48} {'Layer':>5}  {'Metric':<22} {'Value':>9}")
-    print("-" * 96)
+    # Union of groups that have either per-layer or meanall data
+    all_groups = sorted(set(by_group) | set(meanall_scores))
+    for group in all_groups:
+        layer_map = by_group.get(group, {})
+        ma = meanall_scores.get(group)
+        if not layer_map and ma is None:
+            continue
+        if layer_map:
+            best_layer = max(layer_map, key=lambda l: layer_map[l][1])
+            m, v, _, _ = layer_map[best_layer]
+        else:
+            best_layer, m, v = None, (ma[0] if ma else "?"), None
+        ma_v = ma[1] if ma else None
+        # Mark which choice is best end-to-end
+        if ma_v is not None and v is not None:
+            winner = "meanall" if ma_v > v else f"L{best_layer}"
+        elif ma_v is not None:
+            winner = "meanall"
+        else:
+            winner = f"L{best_layer}"
+        rows.append({"group": group, "best_layer": best_layer,
+                     "metric": m.removeprefix("test/") if m else "",
+                     "best_value": None if v is None else round(v, 4),
+                     "meanall_value": None if ma_v is None else round(ma_v, 4),
+                     "winner": winner})
+
+    print(f"\n{'Group':<48} {'Layer':>5}  {'best':>8}  {'meanall':>8}  "
+          f"{'winner':<9}  {'metric':<18}")
+    print("-" * 110)
     for r in rows:
-        print(f"{r['group']:<48} {r['best_layer']:>5}  "
-              f"{r['metric']:<22} {r['value']:>9.4f}")
-    print(f"\n  {len(rows)} sweep group(s) found.")
+        bl = "—" if r["best_layer"] is None else str(r["best_layer"])
+        bv = "—" if r["best_value"] is None else f"{r['best_value']:>8.4f}"
+        mv = "—" if r["meanall_value"] is None else f"{r['meanall_value']:>8.4f}"
+        marker = " ★" if r["winner"] == "meanall" else "  "
+        print(f"{r['group']:<48} {bl:>5}  {bv:>8}  {mv:>8} {marker}{r['winner']:<7}"
+              f"  {r['metric']:<18}")
+    print(f"\n  {len(rows)} group(s).  ★ = meanall beats the best single layer.")
     if csv_path:
         _write_csv(csv_path, rows)
 
@@ -275,19 +333,9 @@ def view_summary(by_group, csv_path=None):
 
 def view_meanall_gap(by_group, meanall_scores, csv_path=None):
     """For each (encoder, task), compare best-layer-sweep score vs the
-    meanall single-run score. Encoder is sourced from the group name."""
-    # Build lookup: (encoder, task) → meanall value
-    # Meanall groups are named `<encoder>-meanall / <task>`; map back to
-    # `<encoder> / <task>` for comparison.
-    meanall_by_pair: dict[tuple[str, str], tuple[str, float]] = {}
-    for group, (m, v, _) in meanall_scores.items():
-        sp = _split_group(group)
-        if sp is None: continue
-        enc, task = sp
-        # Strip "-meanall" suffix to align with sweep group's encoder
-        enc_canonical = enc.removesuffix("-meanall")
-        meanall_by_pair[(enc_canonical, task)] = (m, v)
-
+    meanall score. After the 2026-05-14 taxonomy refactor the meanall
+    score is keyed by the SAME group as the per-layer sweep, so this is
+    a direct lookup."""
     print(f"\n{'Encoder':<42} {'Task':<22} {'L*':>4} {'sweep':>8} {'meanall':>9} {'gain':>7} verdict")
     print("-" * 110)
     rows = []
@@ -295,12 +343,9 @@ def view_meanall_gap(by_group, meanall_scores, csv_path=None):
         sp = _split_group(group)
         if sp is None: continue
         enc, task = sp
-        # only show sweep groups (NOT meanall-suffixed; those are already in meanall_by_pair)
-        if enc.endswith("-meanall"):
-            continue
         best_layer = max(layer_map, key=lambda l: layer_map[l][1])
         _, sweep_v, _, _ = layer_map[best_layer]
-        ma = meanall_by_pair.get((enc, task))
+        ma = meanall_scores.get(group)
         if ma is None:
             mv = None; rel = None; verdict = "no meanall run"
         else:
@@ -328,8 +373,6 @@ def view_consistency(by_group, encoder_filter: str | None, csv_path=None):
         sp = _split_group(group)
         if sp is None: continue
         enc, task = sp
-        if enc.endswith("-meanall"):
-            continue
         if encoder_filter and encoder_filter not in enc:
             continue
         best_layer = max(layer_map, key=lambda l: layer_map[l][1])
@@ -416,7 +459,7 @@ def main():
         return
 
     if args.view == "best":
-        view_best(by_group, csv_path=args.csv)
+        view_best(by_group, meanall_scores, csv_path=args.csv)
     elif args.view == "cross-encoder":
         view_cross_encoder(by_group, csv_path=args.csv)
     elif args.view == "summary":

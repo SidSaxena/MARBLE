@@ -33,10 +33,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "MuQ-meanall / EMO"
-      tags: ["MuQ-meanall", "EMO", "probe", "mean-all"]
+      group: "MuQ / EMO"
+      tags: ["EMO", "probe", "mean-all", "MuQ", "layer-meanall", "layer-sweep"]
       job_type: "probe"
-      name: "meanall-fit"
+      name: "layer-meanall-fit"
       save_dir: "./output/probe.EMO.MuQ-meanall/"
 
 

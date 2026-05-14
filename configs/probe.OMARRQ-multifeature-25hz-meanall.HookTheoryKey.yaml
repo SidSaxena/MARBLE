@@ -34,10 +34,10 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "OMARRQ-multifeature-25hz-meanall / HookTheoryKey"
-      tags: ["OMARRQ-multifeature-25hz-meanall", "HookTheoryKey", "probe", "mean-all"]
+      group: "OMARRQ-multifeature-25hz / HookTheoryKey"
+      tags: ["HookTheoryKey", "probe", "mean-all", "OMARRQ-multifeature-25hz", "layer-meanall", "layer-sweep"]
       job_type: "probe"
-      name: "meanall-fit"
+      name: "layer-meanall-fit"
       save_dir: "./output/probe.HookTheoryKey.OMARRQ-multifeature-25hz-meanall/"
 
 
