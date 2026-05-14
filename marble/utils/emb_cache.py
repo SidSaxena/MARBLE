@@ -238,10 +238,16 @@ class EmbeddingCache:
                 return
             self._log_used += 1
         msg_kind = "HIT " if hit else "MISS"
-        print(
-            f"[emb_cache] {msg_kind} on first lookup "
-            f"({n_clips} clips, dir={self.dir.relative_to(Path('output'))})"
-        )
+        # Display the cache dir relative to the default `output/` root
+        # when we can; otherwise fall back to the absolute path. The
+        # smoke test (and `extract.py --root=...`) can set a custom
+        # root that isn't under `output/`, so we can't assume that
+        # relative path exists.
+        try:
+            dir_display = str(self.dir.relative_to(Path("output")))
+        except ValueError:
+            dir_display = str(self.dir)
+        print(f"[emb_cache] {msg_kind} on first lookup ({n_clips} clips, dir={dir_display})")
 
     # ── internals ────────────────────────────────────────────────────────
 
