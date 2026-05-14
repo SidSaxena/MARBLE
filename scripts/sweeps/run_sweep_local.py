@@ -141,6 +141,82 @@ def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
     return False
 
 
+def _meanall_config_for(base_config: str) -> Path | None:
+    """Find the meanall sibling config for a per-layer base config.
+
+    Pattern: ``probe.<encoder>(-layers)?.<task>.yaml`` →
+             ``probe.<encoder>-meanall.<task>.yaml``
+    Returns the path if it exists on disk, else None.
+    """
+    p = Path(base_config)
+    parts = p.name.split(".")
+    # Expected shape: ['probe', '<encoder>(-layers)?', '<task>', 'yaml']
+    if len(parts) != 4 or parts[0] != "probe" or parts[-1] != "yaml":
+        return None
+    encoder = parts[1].removesuffix("-layers")
+    task = parts[2]
+    candidate = p.with_name(f"probe.{encoder}-meanall.{task}.yaml")
+    return candidate if candidate.exists() else None
+
+
+def _meanall_done(task_tag: str, model_tag: str) -> bool:
+    """Mirror of _layer_done for the meanall run. The meanall config writes
+    its output under a path containing ``-meanall``; match that."""
+    patterns = [
+        f"*{model_tag}-meanall*{task_tag}*",
+        f"*{task_tag}*{model_tag}-meanall*",
+        f"*{model_tag}*{task_tag}*-meanall*",
+        f"*{task_tag}*{model_tag}*-meanall*",
+    ]
+    for pat in patterns:
+        for d in Path("output").glob(pat):
+            if not d.is_dir():
+                continue
+            for summary in d.glob("wandb/run-*/files/wandb-summary.json"):
+                if _has_test_metrics(summary):
+                    return True
+    return False
+
+
+def _run_meanall_first(args, common_overrides: list[str]) -> None:
+    """Run the mean-of-all-layers baseline before the per-layer sweep.
+
+    Why first: early signal — a one-job baseline that calibrates the
+    per-layer expectation. If meanall is already near peak, a flat
+    layer profile is the prior; if not, the per-layer sweep is doing
+    useful work.
+
+    Cost: identical to one per-layer cycle (zero-shot tasks: one quick
+    test pass; supervised: one full train+test). No compute savings,
+    just ordering for human readability of intermediate logs.
+    """
+    cfg = _meanall_config_for(args.base_config)
+    if cfg is None:
+        print(f"  ! No meanall sibling found for {args.base_config} "
+              f"(expected probe.<encoder>-meanall.<task>.yaml). Skipping.")
+        return
+    if (not args.no_skip) and _meanall_done(args.task_tag, args.model_tag):
+        print(f"  ✓ meanall already complete — skipping (–no-skip to redo).")
+        return
+
+    print(f"\n{'='*60}\n meanall (mean-of-all-layers baseline)  "
+          f"[{args.model_tag} | {args.task_tag}]\n{'='*60}", flush=True)
+
+    # Supervised tasks: fit then test.  Zero-shot (max_epochs=0): test only.
+    for stage, kind in (("fit", "fit"), ("test", "test")):
+        cmd = [
+            PYTHON, "cli.py", stage, "-c", str(cfg),
+            f"--trainer.logger.init_args.name=layer-meanall-{kind}",
+            f"--trainer.logger.init_args.job_type={kind}",
+        ] + common_overrides
+        print(f"$ {' '.join(cmd)}", flush=True)
+        rc = subprocess.run(cmd).returncode
+        if rc != 0:
+            print(f"  ⚠ meanall {stage} failed (exit {rc}); continuing to per-layer sweep.",
+                  file=sys.stderr)
+            return
+
+
 # ──────────────────────────────────────────────
 # Live-streaming subprocess helper
 # ──────────────────────────────────────────────
@@ -347,6 +423,11 @@ def main():
                         help="Per-subprocess dataloader workers (--data.init_args.num_workers). "
                              "Only injected when --concurrency > 1. Defaults to max(2, 8 // concurrency) "
                              "so the total worker count stays bounded.")
+    parser.add_argument("--skip-meanall", action="store_true",
+                        help="Don't run the meanall (mean-of-all-layers) baseline before the "
+                             "per-layer sweep. By default, if a sibling config "
+                             "`probe.<encoder>-meanall.<task>.yaml` exists, it is run first so "
+                             "you have an early baseline before launching N per-layer jobs.")
     args = parser.parse_args()
 
     if args.concurrency < 1:
@@ -383,6 +464,19 @@ def main():
         # with `bf16-mixed`, so without this override every MPS run would die
         # at trainer construction.
         precision_override = "16-mixed"
+
+    # CLI overrides shared by every cli.py invocation (meanall + per-layer).
+    common_overrides: list[str] = []
+    if args.accelerator:
+        common_overrides.append(f"--trainer.accelerator={args.accelerator}")
+    if precision_override is not None:
+        common_overrides.append(f"--trainer.precision={precision_override}")
+    if num_workers_override is not None:
+        common_overrides.append(f"--data.init_args.num_workers={num_workers_override}")
+
+    # ── 2b. Meanall baseline (runs FIRST so you get an early reference) ─────
+    if not args.skip_meanall:
+        _run_meanall_first(args, common_overrides)
 
     # ── 3. Run each layer ────────────────────────────────────────────────────
     if args.concurrency == 1:

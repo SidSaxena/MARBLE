@@ -68,6 +68,13 @@ Notes
 • NSynth train is capped at 50K samples (~289K total) to keep sweep tractable.
 • HookTheory data: run `uv run python scripts/data/download_hooktheory.py` first.
 • SHS100K data: run `uv run python scripts/data/download_shs100k.py` first.
+• Meanall baseline: each sweep automatically runs its
+  `configs/probe.<encoder>-meanall.<task>.yaml` sibling FIRST (mean-of-all-
+  layers aggregation), so you get an early reference number before launching
+  the 13–25 per-layer jobs. The meanall and per-layer runs share the same
+  WandB group `<encoder> / <task>`, with `layer-meanall-{fit,test}` named
+  alongside `layer-N-{fit,test}` for direct comparison. Disable with
+  `--skip-meanall` (forwarded to run_sweep_local.py).
 """
 
 import argparse
@@ -548,6 +555,9 @@ def main():
                         help="Dataloader workers per subprocess when --concurrency>1.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print planned sweeps without running anything")
+    parser.add_argument("--skip-meanall", action="store_true",
+                        help="Don't run the meanall (mean-of-all-layers) baseline first. "
+                             "Forwarded to run_sweep_local.py.")
     args = parser.parse_args()
 
     # Filter sweep list
@@ -621,6 +631,8 @@ def main():
             cmd += ["--concurrency", str(args.concurrency)]
         if args.num_workers_per_proc is not None:
             cmd += ["--num-workers-per-proc", str(args.num_workers_per_proc)]
+        if args.skip_meanall:
+            cmd.append("--skip-meanall")
 
         print(f"$ {' '.join(cmd)}\n", flush=True)
 
