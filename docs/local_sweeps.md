@@ -29,6 +29,44 @@ config.
 
 ---
 
+## Console output on Windows (`WANDB_CONSOLE`)
+
+The sweep runner sets `WANDB_CONSOLE=wrap` in every subprocess by
+default. This makes the WandB SDK **tee** stdout/stderr to BOTH the
+terminal AND its own log file — so tqdm progress bars, `[emb_cache]
+HIT/MISS` lines, etc. all show up live as the run progresses.
+
+Without this, on Windows the WandB SDK defaults to `redirect` (a
+legacy safe-default for pre-Python-3.7 console quirks), which hijacks
+`sys.stdout` inside the subprocess and shows nothing in the terminal
+until the run exits — the WandB Logs panel ends up being the only
+place to watch progress in real time. On Linux/macOS the SDK already
+defaults to `wrap`, so this just makes Windows match.
+
+User override is honored via `setdefault`. Two useful values:
+
+```bash
+# Pure terminal output, no WandB stdout capture (slightly less
+# overhead; WandB Logs panel will be empty but metrics still log).
+WANDB_CONSOLE=off uv run python scripts/sweeps/run_sweep_local.py ...
+
+# Force WandB to capture and NOT mirror to terminal (the old
+# Windows default behavior).
+WANDB_CONSOLE=redirect uv run python scripts/sweeps/run_sweep_local.py ...
+```
+
+**Cosmetic note**: with `wrap` on Windows, each tqdm progress update
+may render on its own line (instead of overwriting via `\r` like on a
+real Linux TTY). Slightly verbose but readable, and a strict
+improvement over silence.
+
+Per-layer log files are written at
+`output/logs/{model}.{task}/layer-{N}.log` regardless of console
+mode — `tail -f` works on either platform. In sequential mode the log
+holds the test phase only; in parallel mode it holds fit + test.
+
+---
+
 ## --concurrency: parallel layers on one GPU
 
 Each layer probe needs ~5–6 GB VRAM. On a 16 GB GPU two can run
