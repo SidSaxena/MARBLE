@@ -47,6 +47,7 @@ python scripts/sweeps/run_sweep_local.py \\
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -63,6 +64,25 @@ _CONSOLE_LOCK = threading.Lock()
 # correct venv is used on all platforms (important on Windows where "python"
 # may not resolve to the venv's interpreter).
 PYTHON = sys.executable
+
+
+def _subprocess_env() -> dict:
+    """Environment dict for every cli.py subprocess launched by the sweep
+    runner.
+
+    Forces ``WANDB_CONSOLE=wrap`` so the WandB SDK tees stdout to BOTH the
+    terminal AND its own log file. Without this, WandB defaults to
+    ``redirect`` on Windows (the safe legacy default), which hijacks
+    ``sys.stdout`` inside the subprocess and the terminal sees nothing
+    until the run exits — the WandB Logs panel ends up being the only
+    place you can watch tqdm progress.
+
+    Honors any user-set ``WANDB_CONSOLE`` (e.g. ``=off`` for pure terminal
+    output with no WandB capture) via ``setdefault``.
+    """
+    env = dict(os.environ)
+    env.setdefault("WANDB_CONSOLE", "wrap")
+    return env
 
 
 # ──────────────────────────────────────────────
@@ -234,7 +254,7 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
             f"--trainer.logger.init_args.job_type={kind}",
         ] + common_overrides
         print(f"$ {' '.join(cmd)}", flush=True)
-        rc = subprocess.run(cmd).returncode
+        rc = subprocess.run(cmd, env=_subprocess_env()).returncode
         if rc != 0:
             if args.continue_on_meanall_failure:
                 print(
@@ -268,15 +288,23 @@ def _stream_subprocess(
     log_file,
     *,
     quiet: bool = False,
+    prefix: str | None = None,
 ) -> tuple[int, str]:
-    """Run cmd, tee stdout/stderr to `log_file` and (unless quiet) prefix
-    each line with `[L{N}]` and write to the global console under a lock.
+    """Run cmd, tee stdout/stderr to `log_file` and (unless quiet) write
+    each line to the global console under a lock.
 
-    Returns (returncode, full_captured_text). The caller usually only
+    ``prefix`` controls the per-line console prefix:
+      * ``None`` (default for parallel mode) → ``"[L{layer_idx}] "`` —
+        disambiguates interleaved output from concurrent layers.
+      * ``""`` → no prefix; output looks like a plain ``cli.py`` run.
+        Used by sequential mode where only one layer runs at a time.
+
+    Returns ``(returncode, full_captured_text)``. The caller usually only
     needs the captured text for metric extraction (test phase).
     """
     captured: list[str] = []
-    prefix = f"[L{layer_idx}] "
+    if prefix is None:
+        prefix = f"[L{layer_idx}] "
     log_file.write(f"$ {' '.join(cmd)}\n")
     log_file.flush()
 
@@ -286,6 +314,7 @@ def _stream_subprocess(
         stderr=subprocess.STDOUT,  # merge into one stream
         text=True,
         bufsize=1,  # line-buffered
+        env=_subprocess_env(),
     )
     try:
         for line in proc.stdout:
@@ -323,14 +352,27 @@ def _run_one_layer(
 ) -> dict:
     """Run fit + test for a single layer. Returns a result dict.
 
-    stream_fit=True  → fit output streams to console as it runs (sequential
-                       mode preserves the original behavior bit-for-bit).
-                       Test is captured-then-printed by the caller.
-    stream_fit=False → both fit and test stream LIVE to the console with
-                       a `[L{N}]` prefix (under a global lock) AND are
-                       tee'd to a per-layer log file at
-                       `output/logs/{model}.{task}/layer-{N}.log`. The
-                       caller doesn't reprint on completion.
+    stream_fit=True  → sequential mode. The fit phase uses a bare
+                       ``subprocess.run`` that inherits the parent's
+                       stdout — preserves the original "fit prints
+                       to the terminal exactly like ``cli.py fit``"
+                       behavior (in particular tqdm's in-place
+                       progress rendering when the parent is a TTY).
+                       The test phase streams through
+                       ``_stream_subprocess`` with no per-line prefix
+                       so terminal output looks like a plain
+                       ``cli.py test`` invocation but no longer
+                       buffers (the previous ``capture_output=True``
+                       hid all progress until the test exited).
+    stream_fit=False → parallel / concurrent mode. Both fit and test
+                       stream through ``_stream_subprocess`` with a
+                       ``[L{N}]`` prefix so multiple concurrent
+                       layers' output can be disambiguated.
+
+    Both modes now write a per-layer log file at
+    ``output/logs/{model}.{task}/layer-{N}.log`` — for sequential mode
+    the file contains the test phase only (fit goes to terminal); for
+    parallel mode it contains both. Useful for ``tail -f``.
     """
     cfg = f"{sweep_dir}/sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
     t0 = time.time()
@@ -357,17 +399,19 @@ def _run_one_layer(
         common_overrides.append(f"--data.init_args.num_workers={num_workers_override}")
 
     log_parts: list[str] = []
-    log_file = None
-    if not stream_fit:
-        # NOTE: log_file is intentionally NOT a context manager — its
-        # lifetime spans the whole try/finally block below, which closes
-        # it explicitly. Wrapping in `with` would close it before the
-        # subprocesses finish writing. (ruff SIM115)
-        log_file = open(  # noqa: SIM115
-            _layer_log_path(args.model_tag, args.task_tag, layer),
-            "w",
-            encoding="utf-8",
-        )
+    # Always open the per-layer log file. In sequential mode it ends up
+    # holding the test phase output (fit inherits the parent's terminal
+    # stdout directly); in parallel mode it holds both fit and test.
+    # Available for `tail -f output/logs/{model}.{task}/layer-{N}.log`.
+    # NOTE: log_file is intentionally NOT a context manager — its
+    # lifetime spans the whole try/finally block below, which closes
+    # it explicitly. Wrapping in `with` would close it before the
+    # subprocesses finish writing. (ruff SIM115)
+    log_file = open(  # noqa: SIM115
+        _layer_log_path(args.model_tag, args.task_tag, layer),
+        "w",
+        encoding="utf-8",
+    )
 
     try:
         # ── Fit ──────────────────────────────────────────────────────────────
@@ -375,6 +419,8 @@ def _run_one_layer(
             msg = "  ✓ Already complete — skipping fit, re-running test (--retest)."
             if stream_fit:
                 print(msg)
+                log_file.write(msg + "\n")
+                log_file.flush()
             else:
                 log_file.write(msg + "\n")
                 log_file.flush()
@@ -393,7 +439,7 @@ def _run_one_layer(
             ] + common_overrides
             if stream_fit:
                 print(f"$ {' '.join(fit_cmd)}", flush=True)
-                subprocess.run(fit_cmd, check=True)
+                subprocess.run(fit_cmd, check=True, env=_subprocess_env())
             else:
                 rc, _ = _stream_subprocess(fit_cmd, layer, log_file)
                 if rc != 0:
@@ -411,16 +457,19 @@ def _run_one_layer(
         ] + common_overrides
 
         if stream_fit:
-            # Sequential mode — original behavior: capture, print, parse.
-            r = subprocess.run(test_cmd, capture_output=True, text=True)
-            log_parts.append(r.stdout)
-            if r.returncode != 0:
-                log_parts.append(f"STDERR:\n{r.stderr}")
-            test_stdout = r.stdout
-            test_returncode = r.returncode
-            test_stderr = r.stderr if r.returncode != 0 else ""
+            # Sequential mode — stream live to terminal + per-layer log
+            # file via _stream_subprocess (no prefix; one layer at a
+            # time so disambiguation isn't needed). Replaces a previous
+            # `capture_output=True` that buffered the entire test stdout
+            # until exit — meaning the user saw nothing in the terminal
+            # during a long test run (tqdm progress, [emb_cache] log
+            # lines, etc. all hidden until the subprocess completed).
+            # Output already reached the terminal via _stream_subprocess,
+            # so result["log"] stays empty (no reprint by the caller).
+            test_returncode, test_stdout = _stream_subprocess(test_cmd, layer, log_file, prefix="")
+            test_stderr = ""  # merged into stdout via stderr=STDOUT
         else:
-            # Parallel mode — live stream, tee to log file.
+            # Parallel mode — live stream with [L{N}] prefix, tee to log file.
             test_returncode, test_stdout = _stream_subprocess(test_cmd, layer, log_file)
             test_stderr = ""  # merged into stdout via stderr=STDOUT
 
@@ -651,7 +700,12 @@ def main():
                     "  (--retest to re-run test, --no-skip to redo everything)"
                 )
             else:
-                print(result.get("log", ""))
+                # In streaming mode `result["log"]` is empty — output
+                # already reached the terminal in real time. Only print
+                # when something needs reprinting (older callers, errors).
+                pending_log = result.get("log", "")
+                if pending_log:
+                    print(pending_log)
                 if result.get("test_returncode", 0) != 0:
                     print(f"STDERR: {result.get('test_stderr', '')}", file=sys.stderr)
             results[layer] = result
