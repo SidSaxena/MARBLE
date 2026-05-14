@@ -37,6 +37,19 @@ What it fixes
    The earlier convention put meanall in its own group; this fix
    migrates those runs back to live alongside layer-0..N-1.
 
+6. The non-FSQ variant became the default for every OMARRQ family
+   (FSQ keeps its explicit `-fsq` suffix), so any `-nonfsq` in the
+   group/tag is redundant:
+     - `OMARRQ-multifeature-25hz-nonfsq` → `OMARRQ-multifeature-25hz`
+     - `OMARRQ-multifeature-nonfsq`      → `OMARRQ-multifeature`
+
+7. Tag cleanup:
+     - Drop legacy un-hyphenated `OMARRQ-multifeature25hz` slug from
+       runs that already have the new hyphenated tag — having both is
+       just sidebar noise.
+     - Drop `single-layer` everywhere — the `layer-N` tag plus the
+       absence of `mean-all` already conveys "single-layer".
+
 Skips runs that already follow the convention — idempotent re-run
 prints "no change".
 
@@ -249,18 +262,79 @@ def main():
         legacy_rename = _is_legacy_omarrq_group(group)
         if legacy_rename is not None:
             intent["new_group"] = legacy_rename
-            # Tag both the new variant slug AND fsq for filterability
+            # Tag both the new variant slug AND fsq for filterability.
+            # Drop the legacy un-hyphenated slug `OMARRQ-multifeature25hz`
+            # since the new hyphenated slug supersedes it (otherwise the
+            # filter sidebar shows two entries for the same encoder).
             intent.setdefault("tag_add", []).extend(
                 [
                     "OMARRQ-multifeature-25hz-fsq",
                     "fsq",
                 ]
             )
+            intent.setdefault("tag_remove", set())
+            if not isinstance(intent["tag_remove"], set):
+                intent["tag_remove"] = set(intent["tag_remove"])
+            intent["tag_remove"].add("OMARRQ-multifeature25hz")
             # If the new group has -meanall, also tag the aggregation
             if "meanall" in legacy_rename:
                 intent["tag_add"].append("mean-all")
-            else:
-                intent["tag_add"].append("single-layer")
+            # Note: we no longer add `single-layer` to per-layer runs —
+            # the `layer-N` tag + absence of `mean-all` already conveys
+            # that this is a single-layer run.
+
+        # ── Fix #6: drop redundant `-nonfsq` suffix from OMARRQ slugs ───────
+        # The non-FSQ variant became the default for every OMARRQ family
+        # (the FSQ variant retains its explicit `-fsq` suffix), so any
+        # `-nonfsq` in the group name or encoder tag is redundant.
+        NONFSQ_RENAMES = {
+            "OMARRQ-multifeature-25hz-nonfsq": "OMARRQ-multifeature-25hz",
+            "OMARRQ-multifeature-nonfsq": "OMARRQ-multifeature",
+        }
+        effective_group = intent.get("new_group", group)
+        if " / " in effective_group:
+            enc, task = effective_group.split(" / ", 1)
+            if enc in NONFSQ_RENAMES:
+                new_enc = NONFSQ_RENAMES[enc]
+                intent["new_group"] = f"{new_enc} / {task}"
+                # Replace the encoder tag if the old slug is on the run.
+                cur_tags_set = set(r.tags or [])
+                if enc in cur_tags_set:
+                    intent.setdefault("tag_remove", set())
+                    if not isinstance(intent["tag_remove"], set):
+                        intent["tag_remove"] = set(intent["tag_remove"])
+                    intent["tag_remove"].add(enc)
+                if new_enc not in cur_tags_set:
+                    intent.setdefault("tag_add", []).append(new_enc)
+
+        # ── Fix #7: drop redundant / superseded tags everywhere ────────────
+        # - `single-layer`: originally added as a complement to `mean-all`
+        #   but the `layer-N` tag + absence of `mean-all` already conveys
+        #   it. Pure noise.
+        # - `OMARRQ-multifeature25hz` (un-hyphenated): legacy slug from
+        #   before the variant audit. Runs that ALSO have the new
+        #   hyphenated slug (`OMARRQ-multifeature-25hz` or
+        #   `OMARRQ-multifeature-25hz-fsq`) shouldn't keep both — having
+        #   two encoder tags pointing at the same run pollutes the
+        #   sidebar filter list. Only drop the legacy tag if the new one
+        #   is present, so we never strip without an unambiguous
+        #   replacement.
+        cur_tags_set = set(r.tags or [])
+        new_hyphenated_present = (
+            "OMARRQ-multifeature-25hz" in cur_tags_set
+            or "OMARRQ-multifeature-25hz-fsq" in cur_tags_set
+        )
+        for stale in ("single-layer",):
+            if stale in cur_tags_set:
+                intent.setdefault("tag_remove", set())
+                if not isinstance(intent["tag_remove"], set):
+                    intent["tag_remove"] = set(intent["tag_remove"])
+                intent["tag_remove"].add(stale)
+        if "OMARRQ-multifeature25hz" in cur_tags_set and new_hyphenated_present:
+            intent.setdefault("tag_remove", set())
+            if not isinstance(intent["tag_remove"], set):
+                intent["tag_remove"] = set(intent["tag_remove"])
+            intent["tag_remove"].add("OMARRQ-multifeature25hz")
 
         # ── Fix #5: meanall runs live in the per-layer sweep group ──────────
         # New convention (2026-05-14): mean-of-all-layers is just another
