@@ -49,15 +49,43 @@ MODAL_SHS100K_GROUPS = {
     "MERT-v1-95M / SHS100K",
 }
 
+# Per the 2026-05-14 variant audit, all historical OMARRQ-multifeature25hz
+# runs used the -fsq variant (the original default). Rename retroactively
+# so the variant is explicit in the group name; new runs going forward use
+# OMARRQ-multifeature-25hz (hyphen, non-fsq is the new default).
+LEGACY_OMARRQ_GROUP_RENAMES: dict[str, str] = {
+    # Original sweep groups → explicit -fsq label
+    # Group rewrites: replace OMARRQ-multifeature25hz (no hyphen) →
+    # OMARRQ-multifeature-25hz-fsq (hyphenated + fsq-explicit).
+    # Plus the meanall variants.
+}
+# Built programmatically below — covers all tasks dynamically.
+
 # Known model tag values (used to pick the right one out of a run's tags).
 KNOWN_MODEL_TAGS = {
     "MERT-v1-95M",
     "CLaMP3",
-    "OMARRQ-multifeature25hz",
+    "OMARRQ-multifeature25hz",       # legacy spelling (no hyphen)
+    "OMARRQ-multifeature-25hz",      # new convention
+    "OMARRQ-multifeature-25hz-fsq",  # explicit-fsq retro label
     "MuQ",
     "MusicFM",
     "DaSheng",
 }
+
+
+def _is_legacy_omarrq_group(group: str) -> str | None:
+    """Detect legacy OMARRQ groups (un-hyphenated 25hz). Returns the new
+    group name with hyphens AND -fsq variant suffix, or None if no rewrite."""
+    # OMARRQ-multifeature25hz-meanall / X → OMARRQ-multifeature-25hz-fsq-meanall / X
+    m = re.match(r"^OMARRQ-multifeature25hz-meanall / (.+)$", group)
+    if m:
+        return f"OMARRQ-multifeature-25hz-fsq-meanall / {m.group(1)}"
+    # OMARRQ-multifeature25hz / X → OMARRQ-multifeature-25hz-fsq / X
+    m = re.match(r"^OMARRQ-multifeature25hz / (.+)$", group)
+    if m:
+        return f"OMARRQ-multifeature-25hz-fsq / {m.group(1)}"
+    return None
 
 
 def _infer_model(run) -> str | None:
@@ -169,6 +197,35 @@ def main():
                 intent["tag_add"].append("modal")
                 # Drop the conflicting opposite if present (defensive)
                 intent["tag_remove"] = {"fit", "test"} - {kind}
+
+        # ── Fix #3: legacy OMARRQ-multifeature25hz → variant-explicit name ──
+        legacy_rename = _is_legacy_omarrq_group(group)
+        if legacy_rename is not None:
+            intent["new_group"] = legacy_rename
+            # Tag both the new variant slug AND fsq for filterability
+            intent.setdefault("tag_add", []).extend([
+                "OMARRQ-multifeature-25hz-fsq",
+                "fsq",
+            ])
+            # If the new group has -meanall, also tag the aggregation
+            if "meanall" in legacy_rename:
+                intent["tag_add"].append("mean-all")
+            else:
+                intent["tag_add"].append("single-layer")
+
+        # ── Fix #4: ensure encoder-family tag is present on every run ───────
+        # (cross-cutting filter for "show me all OMARRQ runs" etc.)
+        family = None
+        if "OMARRQ" in group:
+            family = "OMARRQ"
+        elif group.startswith("MERT"):
+            family = "MERT"
+        elif group.startswith("CLaMP3-symbolic"):
+            family = "CLaMP3-symbolic"
+        elif group.startswith("CLaMP3"):
+            family = "CLaMP3"
+        if family is not None and family not in (r.tags or []):
+            intent.setdefault("tag_add", []).append(family)
 
         if not intent:
             n_skipped += 1

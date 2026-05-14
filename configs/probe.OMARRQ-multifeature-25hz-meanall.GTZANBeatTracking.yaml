@@ -24,7 +24,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.GTZANBeatTracking.OMARRQ-multifeature25hz-meanall/checkpoints/"
+        dirpath: "./output/probe.GTZANBeatTracking.OMARRQ-multifeature-25hz-meanall/checkpoints/"
         filename: "best"
         save_top_k: 1
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
@@ -40,11 +40,11 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "OMARRQ-multifeature25hz-meanall / GTZANBeatTracking"
-      tags: ["OMARRQ-multifeature25hz", "GTZANBeatTracking", "mean-agg", "probe"]
+      group: "OMARRQ-multifeature-25hz-meanall / GTZANBeatTracking"
+      tags: ["OMARRQ-multifeature-25hz", "GTZANBeatTracking", "mean-agg", "probe"]
       job_type: "probe"
       name: "meanall-fit"
-      save_dir: "./output/probe.GTZANBeatTracking.OMARRQ-multifeature25hz-meanall/"
+      save_dir: "./output/probe.GTZANBeatTracking.OMARRQ-multifeature-25hz-meanall/"
 
 
 model:
@@ -57,7 +57,8 @@ model:
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
-
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
     emb_transforms:
       # Mean-aggregate ALL 24 Conformer layers. Output: (B, 1, T, 1024)
       - class_path: marble.modules.transforms.LayerSelector

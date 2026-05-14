@@ -20,11 +20,11 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "OMARRQ-multifeature25hz-meanall / Covers80"
-      tags: ["OMARRQ-multifeature25hz", "Covers80", "mean-agg", "probe"]
+      group: "OMARRQ-multifeature-25hz / Covers80"
+      tags: ["OMARRQ-multifeature-25hz", "Covers80", "probe"]
       job_type: "probe"
-      name: "meanall-fit"
-      save_dir: "./output/probe.Covers80.OMARRQ-multifeature25hz-meanall/"
+      name: "OMARRQ-multifeature-25hz"
+      save_dir: "./output/probe.Covers80.OMARRQ-multifeature-25hz/"
 
 
 model:
@@ -34,12 +34,12 @@ model:
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
-
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          layers: ["0..23"]
-          mode: mean
+          layers: [6]   # sweep replaces this
       - class_path: marble.modules.transforms.TimeAvgPool
 
 data:

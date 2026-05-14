@@ -16,7 +16,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.GS.OMARRQ-multifeature25hz/checkpoints/"
+        dirpath: "./output/probe.GS.OMARRQ-multifeature-25hz/checkpoints/"
         filename: "best"
         save_top_k: 1
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
@@ -32,11 +32,11 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "GS"
-      tags: ["OMARRQ-multifeature25hz", "GS", "probe"]
+      group: "OMARRQ-multifeature-25hz / GS"
+      tags: ["OMARRQ-multifeature-25hz", "GS", "probe"]
       job_type: "probe"
-      name: "OMARRQ-multifeature25hz"
-      save_dir: "./output/probe.GS.OMARRQ-multifeature25hz/"
+      name: "OMARRQ-multifeature-25hz"
+      save_dir: "./output/probe.GS.OMARRQ-multifeature-25hz/"
 
 
 model:
@@ -47,7 +47,8 @@ model:
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
-
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:

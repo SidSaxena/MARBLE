@@ -1,9 +1,8 @@
 seed_everything: 1234
 ckpt_path: null
 
-# SHS-100K zero-shot cover-song retrieval.
-# max_epochs=0 — no probe training; the test stage embeds all tracks,
-# computes a cosine-similarity matrix, and reports MAP.
+# VGMIDI-TVar zero-shot theme/variation retrieval — OMARRQ-multifeature-25hz per-layer sweep.
+# max_epochs=0: no training. test stage embeds all renders and computes MAP.
 
 trainer:
   fast_dev_run: false
@@ -14,26 +13,27 @@ trainer:
   max_epochs: 0
   num_sanity_val_steps: 0
 
-  callbacks: []  # no training → no checkpoint / early-stop / lr-monitor
+  callbacks: []
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "SHS100K"
-      tags: ["OMARRQ-multifeature25hz", "SHS100K", "probe"]
+      group: "OMARRQ-multifeature-25hz / VGMIDITVar"
+      tags: ["OMARRQ-multifeature-25hz", "VGMIDITVar", "layer-sweep", "probe"]
       job_type: "probe"
-      name: "OMARRQ-multifeature25hz"
-      save_dir: "./output/probe.SHS100K.OMARRQ-multifeature25hz/"
+      name: "OMARRQ-multifeature-25hz"
+      save_dir: "./output/probe.VGMIDITVar.OMARRQ-multifeature-25hz/"
 
 
 model:
-  class_path: marble.tasks.SHS100K.probe.CoverRetrievalTask
+  class_path: marble.tasks.VGMIDITVar.probe.CoverRetrievalTask
   init_args:
     sample_rate: 24000
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
-
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
@@ -42,7 +42,7 @@ model:
 
 
 data:
-  class_path: marble.tasks.SHS100K.datamodule.SHS100KDataModule
+  class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarDataModule
   init_args:
     batch_size: 8
     num_workers: 4
@@ -56,34 +56,34 @@ data:
         - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
 
     train:
-      class_path: marble.tasks.SHS100K.datamodule.SHS100KAudioDummy
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioDummy
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 30.0
+        clip_seconds: 15.0
         min_clip_ratio: 0.5
         channel_mode: mix
-        jsonl: data/SHS100K/SHS100K.test.jsonl
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
         backend: null
     val:
-      class_path: marble.tasks.SHS100K.datamodule.SHS100KAudioDummy
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioDummy
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 30.0
+        clip_seconds: 15.0
         min_clip_ratio: 0.5
         channel_mode: mix
-        jsonl: data/SHS100K/SHS100K.test.jsonl
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
         backend: null
     test:
-      class_path: marble.tasks.SHS100K.datamodule.SHS100KAudioAll
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarAudioAll
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 30.0
+        clip_seconds: 15.0
         min_clip_ratio: 0.5
         channel_mode: mix
-        jsonl: data/SHS100K/SHS100K.test.jsonl
+        jsonl: data/VGMIDITVar/VGMIDITVar.jsonl
         backend: null
 
 optimizer:

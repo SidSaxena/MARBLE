@@ -9,15 +9,15 @@ trainer:
   accumulate_grad_batches: 8
   num_nodes: 1
   precision: bf16-mixed
-  max_epochs: 100
+  max_epochs: 40
   check_val_every_n_epoch: 1
   num_sanity_val_steps: 10
-  log_every_n_steps: 5
+  log_every_n_steps: 50
 
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.GTZANGenre.OMARRQ-multifeature25hz/checkpoints/"
+        dirpath: "./output/probe.Chords1217.OMARRQ-multifeature-25hz/checkpoints/"
         filename: "best"
         save_top_k: 1
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
@@ -27,74 +27,74 @@ trainer:
     - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
       init_args:
         monitor: "val/acc"
-        patience: 20
+        patience: 7
         mode: "max"
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "GTZANGenre"
-      tags: ["OMARRQ-multifeature25hz", "GTZANGenre", "probe"]
+      group: "OMARRQ-multifeature-25hz / Chords1217"
+      tags: ["OMARRQ-multifeature-25hz", "Chords1217", "probe"]
       job_type: "probe"
-      name: "OMARRQ-multifeature25hz"
-      save_dir: "./output/probe.GTZANGenre.OMARRQ-multifeature25hz/"
+      name: "OMARRQ-multifeature-25hz"
+      save_dir: "./output/probe.Chords1217.OMARRQ-multifeature-25hz/"
 
 
 model:
-  class_path: marble.tasks.GTZANGenre.probe.ProbeAudioTask
+  class_path: marble.tasks.Chords1217.probe.ProbeAudioTask
   init_args:
     sample_rate: 24000
     use_ema: false
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
-
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: [6]
-      - class_path: marble.modules.transforms.TimeAvgPool
 
     decoders:
-      - class_path: marble.modules.decoders.MLPDecoder
+      - class_path: marble.modules.decoders.MLPDecoderKeepTime
         init_args:
           in_dim: 1024
-          out_dim: 10
+          out_dim: 25
           hidden_layers: [256]
           activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
     losses:
-      - class_path: torch.nn.CrossEntropyLoss
+      - class_path: marble.tasks.Chords1217.probe.ChordCrossEntropyLoss
         init_args:
-          reduction: mean
+          time_dim_mismatch_tol: 5
 
     metrics:
       train:
         acc:
-          class_path: torchmetrics.Accuracy
+          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
           init_args:
-            num_classes: 10
-            task: multiclass
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
       val:
         acc:
-          class_path: torchmetrics.Accuracy
+          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
           init_args:
-            num_classes: 10
-            task: multiclass
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
       test:
         acc:
-          class_path: torchmetrics.Accuracy
+          class_path: marble.tasks.Chords1217.probe.ChordAccuracy
           init_args:
-            num_classes: 10
-            task: multiclass
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
 
 data:
-  class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreDataModule
+  class_path: marble.tasks.Chords1217.datamodule.Chords1217DataModule
   init_args:
     batch_size: 8
-    num_workers: 8
+    num_workers: 16
 
     audio_transforms:
       train:
@@ -105,42 +105,48 @@ data:
         - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
 
     train:
-      class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreAudioTrain
+      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioTrain
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 30
-        min_clip_ratio: 0.8
-        channel_mode: first
-        jsonl: data/GTZAN/GTZANGenre.train.jsonl
+        clip_seconds: 15
+        min_clip_ratio: 0.1
+        channel_mode: random
+        jsonl: data/Chords1217/Chords1217.train.jsonl
+        label_freq: 25
+        backend: "soundfile"
     val:
-      class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreAudioVal
+      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioVal
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 30
-        min_clip_ratio: 0.8
-        channel_mode: first
-        jsonl: data/GTZAN/GTZANGenre.val.jsonl
+        clip_seconds: 15
+        min_clip_ratio: 0.1
+        channel_mode: mix
+        jsonl: data/Chords1217/Chords1217.val.jsonl
+        label_freq: 25
+        backend: "soundfile"
     test:
-      class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreAudioTest
+      class_path: marble.tasks.Chords1217.datamodule.Chords1217AudioTest
       init_args:
         sample_rate: 24000
         channels: 1
-        clip_seconds: 30
-        min_clip_ratio: 0.8
-        channel_mode: first
-        jsonl: data/GTZAN/GTZANGenre.test.jsonl
+        clip_seconds: 15
+        min_clip_ratio: 0.1
+        channel_mode: mix
+        jsonl: data/Chords1217/Chords1217.test.jsonl
+        label_freq: 25
+        backend: "soundfile"
 
 optimizer:
   class_path: torch.optim.Adam
   init_args:
-    lr: 5e-3
+    lr: 1e-3
 
 lr_scheduler:
   class_path: lightning.pytorch.cli.ReduceLROnPlateau
   init_args:
     mode: "max"
     factor: 0.5
-    patience: 6
+    patience: 5
     monitor: "val/acc"

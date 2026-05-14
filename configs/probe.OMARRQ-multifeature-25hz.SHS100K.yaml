@@ -1,10 +1,9 @@
 seed_everything: 1234
 ckpt_path: null
 
-# ── Covers80 is a RETRIEVAL task — no probe training ─────────────────────────
-# fit:  max_epochs=0 → instant no-op.
-# test: embed all 160 tracks, compute cosine-similarity MAP.
-# No ModelCheckpoint / EarlyStopping / LoadLatestCheckpointCallback needed.
+# SHS-100K zero-shot cover-song retrieval.
+# max_epochs=0 — no probe training; the test stage embeds all tracks,
+# computes a cosine-similarity matrix, and reports MAP.
 
 trainer:
   fast_dev_run: false
@@ -12,37 +11,39 @@ trainer:
   devices: [0]
   num_nodes: 1
   precision: bf16-mixed
-  max_epochs: 0    # zero-shot retrieval — skip training entirely
+  max_epochs: 0
   num_sanity_val_steps: 0
 
-  callbacks: []  # no training → no checkpoint / early-stop / lr-monitor needed
+  callbacks: []  # no training → no checkpoint / early-stop / lr-monitor
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "Covers80"
-      tags: ["OMARRQ-multifeature25hz", "Covers80", "probe"]
+      group: "OMARRQ-multifeature-25hz / SHS100K"
+      tags: ["OMARRQ-multifeature-25hz", "SHS100K", "probe"]
       job_type: "probe"
-      name: "OMARRQ-multifeature25hz"
-      save_dir: "./output/probe.Covers80.OMARRQ-multifeature25hz/"
+      name: "OMARRQ-multifeature-25hz"
+      save_dir: "./output/probe.SHS100K.OMARRQ-multifeature-25hz/"
 
 
 model:
-  class_path: marble.tasks.Covers80.probe.CoverRetrievalTask
+  class_path: marble.tasks.SHS100K.probe.CoverRetrievalTask
   init_args:
     sample_rate: 24000
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
-
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: [6]   # sweep replaces this
       - class_path: marble.modules.transforms.TimeAvgPool
 
+
 data:
-  class_path: marble.tasks.Covers80.datamodule.Covers80DataModule
+  class_path: marble.tasks.SHS100K.datamodule.SHS100KDataModule
   init_args:
     batch_size: 8
     num_workers: 4
@@ -55,39 +56,37 @@ data:
       test:
         - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
 
-    # train / val point to the same full-dataset JSONL (max_epochs=0, never loaded)
     train:
-      class_path: marble.tasks.Covers80.datamodule.Covers80AudioDummy
+      class_path: marble.tasks.SHS100K.datamodule.SHS100KAudioDummy
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 30.0
         min_clip_ratio: 0.5
         channel_mode: mix
-        jsonl: data/Covers80/Covers80.test.jsonl
+        jsonl: data/SHS100K/SHS100K.test.jsonl
         backend: null
     val:
-      class_path: marble.tasks.Covers80.datamodule.Covers80AudioDummy
+      class_path: marble.tasks.SHS100K.datamodule.SHS100KAudioDummy
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 30.0
         min_clip_ratio: 0.5
         channel_mode: mix
-        jsonl: data/Covers80/Covers80.test.jsonl
+        jsonl: data/SHS100K/SHS100K.test.jsonl
         backend: null
     test:
-      class_path: marble.tasks.Covers80.datamodule.Covers80AudioAll
+      class_path: marble.tasks.SHS100K.datamodule.SHS100KAudioAll
       init_args:
         sample_rate: 24000
         channels: 1
         clip_seconds: 30.0
         min_clip_ratio: 0.5
         channel_mode: mix
-        jsonl: data/Covers80/Covers80.test.jsonl
+        jsonl: data/SHS100K/SHS100K.test.jsonl
         backend: null
 
-# Optimizer is configured but never used (max_epochs=0).
 optimizer:
   class_path: torch.optim.Adam
   init_args:
