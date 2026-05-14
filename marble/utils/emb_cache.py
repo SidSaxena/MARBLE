@@ -462,6 +462,14 @@ class EmbeddingCacheMixin:
 
         # Miss path — run encoder, optionally persist.
         layer_outputs = self.encoder(x)
+        # Normalize HuggingFace BaseModelOutput → its `.hidden_states`
+        # tuple. The standard non-cache flow (BaseEmbTransform.__call__)
+        # does this transparently before LayerSelector; the cache miss
+        # path bypasses that wrapper, so we replicate it here.
+        # OMAR-RQ / MuQ encoders already return a plain tuple (no
+        # `.hidden_states` attribute) → no-op for them.
+        if hasattr(layer_outputs, "hidden_states"):
+            layer_outputs = layer_outputs.hidden_states
         if use_cache:
             pooled = encoder_tuple_to_pooled(layer_outputs)  # (B, L, H)
             self._cache.put_batch(clip_ids, pooled)
