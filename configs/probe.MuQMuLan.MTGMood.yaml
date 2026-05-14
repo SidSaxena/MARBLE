@@ -4,7 +4,7 @@ ckpt_path: null # to resume
 trainer:
   fast_dev_run: false
   accelerator: gpu
-  strategy: ddp # or ddp_find_unused_parameters 
+  strategy: ddp # or ddp_find_unused_parameters
   devices: [0,1,2,3] # torchrun --nproc_per_node=4 cli.py fit -c xxx
   # devices: [0,]
   accumulate_grad_batches: 1
@@ -36,7 +36,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MTGMood"
-      tags: ["MuQMuLan", "MTGMood", "probe"]
+      tags: ["MuQMuLan", "MTGMood", "probe", "MuQ", "layer-sweep"]
       job_type: "probe"
       name: "MuQMuLan"
       save_dir: "./output/probe.MTGMood.MuQMuLan/"
@@ -53,20 +53,20 @@ model:
       init_args:
         pre_trained_folder: null
         train_mode: freeze  # also supports lora, or full
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: [0]  # something like [1, 3, "10..72"]
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 512
           out_dim: 56 # 10 genres
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -137,7 +137,7 @@ model:
             task: multilabel
             num_labels: 56
             average: macro
-    
+
 data:
   class_path: marble.tasks.MTGMood.datamodule.MTGMoodDataModule
   init_args:

@@ -21,7 +21,7 @@ trainer:
     init_args:
       project: "marble"
       group: "OMARRQ-multifeature-25hz / Covers80"
-      tags: ["OMARRQ-multifeature-25hz", "Covers80", "probe", "mean-all", "layer-meanall", "layer-sweep"]
+      tags: ["OMARRQ-multifeature-25hz", "Covers80", "probe", "mean-all", "layer-sweep", "OMARRQ"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.Covers80.OMARRQ-multifeature-25hz-meanall/"

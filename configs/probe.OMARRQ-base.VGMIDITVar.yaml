@@ -27,7 +27,7 @@ trainer:
     init_args:
       project: "marble"
       group: "OMARRQ-base / VGMIDITVar"
-      tags: ["OMARRQ-base", "VGMIDITVar", "variant-swap", "mel", "probe"]
+      tags: ["OMARRQ-base", "VGMIDITVar", "variant-swap", "mel", "probe", "OMARRQ", "layer-sweep"]
       job_type: "probe"
       name: "base-test"
       save_dir: "./output/probe.VGMIDITVar.OMARRQ-base/"

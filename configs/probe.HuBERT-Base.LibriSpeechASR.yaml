@@ -40,7 +40,7 @@ trainer:
     init_args:
       project: "marble"
       group: "LibriSpeechASR"
-      tags: ["HuBERT-Base", "LibriSpeechASR", "probe"]
+      tags: ["HuBERT-Base", "LibriSpeechASR", "probe", "layer-sweep"]
       job_type: "probe"
       name: "HuBERT-Base"
       save_dir: "./output/asr.hubert_ctc/"

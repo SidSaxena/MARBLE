@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MERT-v1-95M / GTZANGenre"
-      tags: ["GTZANGenre", "probe", "mean-all", "MERT-v1-95M", "layer-meanall", "layer-sweep"]
+      tags: ["GTZANGenre", "probe", "mean-all", "MERT-v1-95M", "layer-sweep", "MERT"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.GTZANGenre.MERT-v1-95M-meanall/"
@@ -53,21 +53,21 @@ model:
         train_mode: freeze  # also supports lora, or full
         force_half: false
         preprocess_in_forward: false
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: ["0..12"]
           mode: mean
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 768
           out_dim: 10 # 10 genres
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -95,7 +95,7 @@ model:
           init_args:
             num_classes: 10
             task: multiclass
-    
+
 data:
   class_path: marble.tasks.GTZANGenre.datamodule.GTZANGenreDataModule
   init_args:

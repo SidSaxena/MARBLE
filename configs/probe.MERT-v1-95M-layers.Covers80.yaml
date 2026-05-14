@@ -19,7 +19,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MERT-v1-95M / Covers80"
-      tags: ["MERT-v1-95M", "Covers80", "layer-sweep", "probe"]
+      tags: ["MERT-v1-95M", "Covers80", "layer-sweep", "probe", "MERT"]
       job_type: "probe"
       name: "MERT-v1-95M-layers"
       save_dir: "./output/probe.Covers80.MERT-v1-95M-layers/"

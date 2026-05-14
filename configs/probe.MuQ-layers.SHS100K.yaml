@@ -26,7 +26,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MuQ / SHS100K"
-      tags: ["MuQ", "SHS100K", "probe"]
+      tags: ["MuQ", "SHS100K", "probe", "layer-sweep"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.SHS100K.MuQ/"

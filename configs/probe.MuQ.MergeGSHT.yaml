@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MergeGSHT"
-      tags: ["MuQ", "MergeGSHT", "probe"]
+      tags: ["MuQ", "MergeGSHT", "probe", "layer-sweep"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.MergeGSHT.MuQ/"
@@ -51,20 +51,20 @@ model:
       init_args:
         pre_trained_folder: null
         train_mode: freeze  # also supports lora, or full
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.MLPReduce
         init_args:
           num_layers: 13
           hidden_size: 1024
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 1024
           out_dim: 24 # 24 KEYS
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -98,7 +98,7 @@ model:
             task: multiclass
         weighted_score:
           class_path: marble.tasks.HookTheoryKey.probe.KeyWeightedScore
-    
+
 data:
   class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyDataModule
   init_args:

@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "Chords1217"
-      tags: ["Xcodec", "Chords1217", "probe"]
+      tags: ["Xcodec", "Chords1217", "probe", "layer-sweep"]
       job_type: "probe"
       name: "Xcodec"
       save_dir: "./output/probe.Chords1217.Xcodec/"
@@ -50,27 +50,27 @@ model:
       class_path: marble.encoders.Xcodec.model.Xcodec_Encoder
       init_args:
         pre_trained_folder: null
-        mode: vq_emb  # vq_emb / pre_vq_emb  
+        mode: vq_emb  # vq_emb / pre_vq_emb
         target_bw: 6.0  # one of [0.5, 1.0, ..., 6.0] kbps
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.MLPReduce
         init_args:
           num_layers: 1
           hidden_size: 1024
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoderKeepTime
         init_args:
           in_dim: 1024
           out_dim: 25 # 10 genres
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
     losses:
-      - class_path: marble.tasks.Chords1217.probe.ChordCrossEntropyLoss 
+      - class_path: marble.tasks.Chords1217.probe.ChordCrossEntropyLoss
         init_args:
           time_dim_mismatch_tol: 5
 
@@ -95,7 +95,7 @@ model:
           init_args:
             time_dim_mismatch_tol: 5
             ignore_index: -1 # ignore the non maj min chords
-    
+
 data:
   class_path: marble.tasks.Chords1217.datamodule.Chords1217DataModule
   init_args:

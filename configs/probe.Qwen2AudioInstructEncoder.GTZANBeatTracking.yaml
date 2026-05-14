@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GTZANBeatTracking"
-      tags: ["Qwen2AudioInstructEncoder", "GTZANBeatTracking", "probe"]
+      tags: ["Qwen2AudioInstructEncoder", "GTZANBeatTracking", "probe", "layer-sweep"]
       job_type: "probe"
       name: "Qwen2AudioInstructEncoder"
       save_dir: "./output/probe.GTZANBeatTracking.Qwen2AudioInstructEncoder/"
@@ -54,25 +54,25 @@ model:
         pre_trained_folder: null
         train_mode: freeze  # also supports lora, or full
         attn_implementation: sdpa  # or sdpa, or flash_attention_2
-      
+
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: [32]  # something like [1, 3, "10..72"]
-    
+
     decoders:
       - class_path: marble.tasks.GTZANBeatTracking.probe.BeatDownbeatTempoMultitaskDecoder
         init_args:
           fps: 25
           use_ssl_for_tempo: false
-          
+
           joint_decoder:
             class_path: marble.modules.decoders.MLPDecoderKeepTime
             init_args:
               in_dim: 1280
               out_dim: 3 # beat, downbeat, tempo
               hidden_layers: [512]
-              activation_fn: 
+              activation_fn:
                 class_path: torch.nn.ReLU
               dropout: 0.2
 
@@ -83,13 +83,13 @@ model:
               freq_resolution: 4
 
     losses:
-      - class_path: marble.tasks.GTZANBeatTracking.probe.CustomBCEWithLogitsLoss # beat 
+      - class_path: marble.tasks.GTZANBeatTracking.probe.CustomBCEWithLogitsLoss # beat
         init_args:
-          pos_weight: null 
+          pos_weight: null
           time_dim_mismatch_tol: 5
       - class_path: marble.tasks.GTZANBeatTracking.probe.CustomBCEWithLogitsLoss # downbeat
         init_args:
-          pos_weight: null 
+          pos_weight: null
           time_dim_mismatch_tol: 5
       - class_path: torch.nn.MSELoss # tempo
         init_args:
@@ -134,7 +134,7 @@ model:
           class_path: marble.tasks.GTZANBeatTracking.metrics.TempoAccuracy
           init_args:
             tol: 0.04
-    
+
 data:
   class_path: marble.tasks.GTZANBeatTracking.datamodule.GTZANBeatTrackingDataModule
   init_args:

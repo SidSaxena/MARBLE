@@ -26,7 +26,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MuQ / SHS100K"
-      tags: ["MuQ", "SHS100K", "probe", "mean-all", "layer-meanall", "layer-sweep"]
+      tags: ["MuQ", "SHS100K", "probe", "mean-all", "layer-sweep"]
       job_type: "probe"
       name: "layer-meanall-fit"
       save_dir: "./output/probe.SHS100K.MuQ-meanall/"

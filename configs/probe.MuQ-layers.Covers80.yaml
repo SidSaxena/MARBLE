@@ -27,7 +27,7 @@ trainer:
     init_args:
       project: "marble"
       group: "MuQ / Covers80"
-      tags: ["MuQ", "Covers80", "probe"]
+      tags: ["MuQ", "Covers80", "probe", "layer-sweep"]
       job_type: "probe"
       name: "MuQ"
       save_dir: "./output/probe.Covers80.MuQ/"

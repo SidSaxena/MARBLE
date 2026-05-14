@@ -34,7 +34,7 @@ trainer:
     init_args:
       project: "marble"
       group: "GS"
-      tags: ["ChromaTA", "GS", "probe"]
+      tags: ["ChromaTA", "GS", "probe", "layer-sweep"]
       job_type: "probe"
       name: "ChromaTA"
       save_dir: "./output/probe.GS.ChromaTA/"
@@ -50,20 +50,20 @@ model:
       class_path: marble.encoders.Handcrafted.model.ChromaTA_Encoder
       init_args:
         keep_time_dim: False
-    
+
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
           layers: [0]  # something like [1, 3, "10..72"]
       - class_path: marble.modules.transforms.TimeAvgPool # (batch_size, num_layers, 1, hidden_size)
-    
+
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 72
           out_dim: 24 # 24 KEYS
           hidden_layers: [512]
-          activation_fn: 
+          activation_fn:
             class_path: torch.nn.ReLU
           dropout: 0.2
 
@@ -97,7 +97,7 @@ model:
             task: multiclass
         weighted_score:
           class_path: marble.tasks.GS.probe.KeyWeightedScore
-    
+
 data:
   class_path: marble.tasks.GS.datamodule.GSDataModule
   init_args:
