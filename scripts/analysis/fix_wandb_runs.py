@@ -213,6 +213,41 @@ def main():
             else:
                 intent["tag_add"].append("single-layer")
 
+        # ── Fix #5: detect meanall runs and tag/rename them ─────────────────
+        # Lightning's WandbLogger doesn't expose the nested emb_transforms
+        # config, so we detect "meanall" runs by several signals:
+        #   1. tag "mean-agg" or "mean-all"  (config-driven new convention)
+        #   2. name contains "meanall"        (e.g. "meanall-fit", "meanall-test")
+        #   3. tag "variant-swap"             (early single-shot meanall tests
+        #      we ran during the OMAR-RQ variant audit — these were all
+        #      mean-of-all-layers per their YAML)
+        #   4. name in known legacy patterns: nonfsq-test, base-test,
+        #      25hz-nonfsq-test (same OMAR-RQ variant audit)
+        # For matches, ensure the group ends in "-meanall" to disambiguate
+        # from the per-layer sweep group with the same encoder.
+        cur_tags = set(r.tags or [])
+        legacy_meanall_names = {
+            "nonfsq-test", "base-test", "25hz-nonfsq-test", "variant-swap",
+        }
+        is_meanall = (
+            ("mean-agg" in cur_tags) or ("mean-all" in cur_tags)
+            or "meanall" in (name or "")
+            or ("variant-swap" in cur_tags)
+            or (name in legacy_meanall_names)
+        )
+
+        effective_group = intent.get("new_group", group)
+        if is_meanall and " / " in effective_group:
+            enc_part, task_part = effective_group.split(" / ", 1)
+            if not enc_part.endswith("-meanall"):
+                intent["new_group"] = f"{enc_part}-meanall / {task_part}"
+            intent.setdefault("tag_add", []).append("mean-all")
+            existing_remove = intent.get("tag_remove", set())
+            if not isinstance(existing_remove, set):
+                existing_remove = set(existing_remove)
+            # Drop a stale "single-layer" tag if present (it'd contradict)
+            intent["tag_remove"] = existing_remove | {"single-layer"}
+
         # ── Fix #4: ensure encoder-family tag is present on every run ───────
         # (cross-cutting filter for "show me all OMARRQ runs" etc.)
         family = None
