@@ -1,12 +1,21 @@
 seed_everything: 1234
 ckpt_path: null
 
-# ── OMAR-RQ-multifeature × VGMIDITVar — 24-layer sweep ─────────────────────
-# Companion to probe.OMARRQ-multifeature-nonfsq.VGMIDITVar.yaml (which
-# mean-aggregates all 24 layers). This config is for the per-layer sweep
-# (gen_sweep_configs.py mutates `layers: [N]` per layer). We expect REAL
-# layer specialization here (unlike the FSQ variant which was flat),
-# since the non-FSQ training preserves layer-wise variance.
+# ── OMAR-RQ-multifeature-25hz × VGMIDITVar — 24-layer sweep ────────────────
+# Uses the WINNING variant from the variant sweep:
+#   -25hz-fsq      : 0.0737 MAP (FSQ kills retrieval geometry)
+#   -multifeature  : 0.1708 MAP (non-fsq, 18.75 Hz)
+#   -multifeature-25hz : 0.1728 MAP (non-fsq, 25 Hz) — picked for layer sweep
+#   -base          : 0.1649 MAP (mel input, 16 kHz)
+#
+# The two non-fsq variants are within noise of each other; -25hz wins by
+# 1.2%. Companion to probe.OMARRQ-multifeature-nonfsq.VGMIDITVar.yaml
+# (mean-of-all-24). This config is for the per-layer sweep via
+# gen_sweep_configs.py which mutates `layers: [N]` per layer.
+#
+# We expect REAL layer specialization (unlike the FSQ variant which was
+# completely flat across all 24 layers) — non-FSQ training preserves
+# layer-wise variance. Predicted: a mid-layer peak in the 0.18–0.22 range.
 
 trainer:
   fast_dev_run: false
@@ -22,11 +31,11 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "OMARRQ-multifeature-nonfsq / VGMIDITVar"
-      tags: ["OMARRQ-multifeature", "VGMIDITVar", "layer-sweep", "probe"]
+      group: "OMARRQ-multifeature-25hz-nonfsq / VGMIDITVar"
+      tags: ["OMARRQ-multifeature-25hz", "VGMIDITVar", "layer-sweep", "probe"]
       job_type: "probe"
-      name: "OMARRQ-multifeature-layers"
-      save_dir: "./output/probe.VGMIDITVar.OMARRQ-multifeature-nonfsq-layers/"
+      name: "OMARRQ-multifeature-25hz-layers"
+      save_dir: "./output/probe.VGMIDITVar.OMARRQ-multifeature-25hz-nonfsq-layers/"
 
 
 model:
@@ -37,7 +46,7 @@ model:
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
       init_args:
-        model_id: "mtg-upf/omar-rq-multifeature"
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
 
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector

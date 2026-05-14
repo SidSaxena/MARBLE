@@ -175,24 +175,58 @@ robust; hurts with small ones where it removes signal along with the
 cone. Keep `test/map_centered` as a logged side-by-side, don't make it
 default.
 
-### Experiment 3: variant swap (-fsq → -multifeature) — **MASSIVE WIN FOR RETRIEVAL**
+### Experiment 3: variant sweep — **FSQ is the entire retrieval problem**
 
-| Task | -25hz-fsq raw | **-multifeature raw** | Ratio |
+Final scoreboard on VGMIDITVar (12,870 tracks, mean-of-24-layers):
+
+| Variant | Token rate | Input | MAP (raw) | MAP@1 | MRR |
+|---|---:|---|---:|---:|---:|
+| -25hz-**fsq** (original) | 25 Hz | audio | 0.0737 | 0.059 | 0.165 |
+| **-multifeature** | 18.75 Hz | audio | 0.1708 | 0.116 | 0.328 |
+| **-multifeature-25hz** | 25 Hz | audio | **0.1728** | **0.119** | **0.332** |
+| -base | 15.63 Hz | mel | 0.1649 | 0.112 | 0.320 |
+| MERT (best layer 3) | — | — | 0.170 | — | — |
+| CLaMP3 (best layer 5) | — | — | 0.182 | — | — |
+
+Same comparison on Covers80 (160 tracks):
+
+| Variant | MAP (raw) | MAP@1 | MRR |
 |---|---:|---:|---:|
-| Covers80 MAP | 0.0246 | **0.0775** | **3.1×** |
-| Covers80 MAP@1 | 0.000 | **0.100** | **∞** |
-| Covers80 MRR | 0.0367 | **0.1424** | **3.9×** |
+| -25hz-fsq | 0.0246 | 0.000 | 0.037 |
+| -multifeature | **0.0775** | **0.100** | **0.142** |
 
-This is the real finding. The **FSQ quantization step in the SSL training
-objective degrades retrieval embeddings substantially**, even though
-supervised-task numbers in the paper are similar (Beat F1 0.833 vs
-0.855, Pitch 0.938 vs 0.940). Cosine retrieval is much more sensitive
-to embedding geometry than MLP-probe classification.
+**Clean inferences:**
 
-**Action:** switch retrieval-task configs to default to
-`mtg-upf/omar-rq-multifeature`. The `-25hz-fsq` variant should be
-reserved for frame-rate-sensitive frame-level tasks where 25 Hz vs
-18.75 Hz matters.
+1. **FSQ is the entire retrieval problem.** -25hz-fsq vs -25hz (same
+   token rate, same input, ONLY difference is FSQ) → MAP doubles
+   (0.0737 → 0.1728). The FSQ training shapes Conformer outputs to
+   land near codebook centroids, which destroys cosine-similarity
+   geometry without hurting supervised-task accuracy (paper Beat F1
+   for fsq is 0.855 vs 0.833 for non-fsq — a 3% supervised gap, a
+   2.3× retrieval gap).
+2. **Token rate doesn't meaningfully affect retrieval** — 18.75 Hz
+   vs 25 Hz differ by 1.2% (within noise). `TimeAvgPool` collapses
+   time anyway.
+3. **Non-fsq OMAR-RQ now matches MERT** (~0.17) on VGMIDITVar and
+   is within 5% of CLaMP3 (0.182).
+4. **`multifeature-25hz` is the marginal winner** — picked for the
+   layer sweep going forward.
+
+**Action:** retrieval configs (Covers80, SHS100K, VGMIDITVar) should
+use `mtg-upf/omar-rq-multifeature-25hz` (non-fsq, 25 Hz, audio
+input). The `-25hz-fsq` variant is reserved for FRAME-LEVEL tasks
+(GTZAN-BT, Chords1217, HookTheoryMelody) where the FSQ degradation
+matters less (MLP probe with bias terms is mean-shift-invariant) AND
+where 25 Hz token rate matches existing fps/label_freq configs.
+
+**Implications for the user's leitmotif project:**
+
+The -fsq embeddings the user extracted for their leitmotif soundtrack
+were ~2.3× weaker than they should have been. Recommend deleting and
+re-extracting with `mtg-upf/omar-rq-multifeature-25hz` (same sample
+rate as -fsq — 24 kHz — so audio loading code doesn't need to
+change). After the switch, OMAR-RQ should be competitive with MERT/MuQ
+on retrieval-style tasks, no longer the outlier.
 
 ### Remaining open questions
 
