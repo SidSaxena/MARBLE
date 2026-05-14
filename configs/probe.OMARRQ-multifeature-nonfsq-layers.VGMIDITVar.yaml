@@ -42,6 +42,7 @@ model:
   class_path: marble.tasks.VGMIDITVar.probe.CoverRetrievalTask
   init_args:
     sample_rate: 24000
+    cache_embeddings: true
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder

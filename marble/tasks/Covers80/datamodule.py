@@ -22,16 +22,14 @@ Download:  python scripts/data/download_covers80.py
 """
 
 import json
-import random
-from typing import List, Optional, Tuple
 
 import torch
-import torchaudio
 import torch.nn.functional as F
+import torchaudio
 from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
-
+from marble.utils.emb_cache import make_clip_id
 
 # Maximum clip length in seconds when splitting long songs into chunks.
 # 30 s gives a good balance between context and batch efficiency.
@@ -59,12 +57,12 @@ class _Covers80AudioBase(Dataset):
 
     EXAMPLE_JSONL = {
         "audio_path": "data/Covers80/covers32k/list1/billie_jean/original.mp3",
-        "work_id":    0,
-        "version":    0,
+        "work_id": 0,
+        "version": 0,
         "sample_rate": 32000,
         "num_samples": 9600000,
-        "channels":   1,
-        "duration":   300.0,
+        "channels": 1,
+        "duration": 300.0,
     }
 
     def __init__(
@@ -75,39 +73,37 @@ class _Covers80AudioBase(Dataset):
         clip_seconds: float = DEFAULT_CLIP_SECONDS,
         min_clip_ratio: float = DEFAULT_MIN_CLIP_RATIO,
         channel_mode: str = "mix",
-        backend: Optional[str] = None,
+        backend: str | None = None,
     ):
-        self.sample_rate     = int(sample_rate)
-        self.channels        = channels
-        self.clip_seconds    = clip_seconds
+        self.sample_rate = int(sample_rate)
+        self.channels = channels
+        self.clip_seconds = clip_seconds
         self.clip_len_target = int(clip_seconds * self.sample_rate)
-        self.min_clip_ratio  = min_clip_ratio
-        self.channel_mode    = channel_mode
-        self.backend         = backend
+        self.min_clip_ratio = min_clip_ratio
+        self.channel_mode = channel_mode
+        self.backend = backend
 
         with open(jsonl) as f:
-            self.meta: List[dict] = [json.loads(line) for line in f]
+            self.meta: list[dict] = [json.loads(line) for line in f]
 
         # Build resamplers
         self.resamplers: dict[int, torchaudio.transforms.Resample] = {}
         for info in self.meta:
             orig_sr = int(info["sample_rate"])
             if orig_sr != self.sample_rate and orig_sr not in self.resamplers:
-                self.resamplers[orig_sr] = torchaudio.transforms.Resample(
-                    orig_sr, self.sample_rate
-                )
+                self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
         # Build index map: (file_idx, slice_idx, orig_sr, orig_clip_frames)
-        self.index_map: List[Tuple[int, int, int, int]] = []
+        self.index_map: list[tuple[int, int, int, int]] = []
         for file_idx, info in enumerate(self.meta):
-            orig_sr          = int(info["sample_rate"])
-            total_samples    = int(info["num_samples"])
+            orig_sr = int(info["sample_rate"])
+            total_samples = int(info["num_samples"])
             orig_clip_frames = int(clip_seconds * orig_sr)
             if orig_clip_frames <= 0:
                 continue
 
             n_full = total_samples // orig_clip_frames
-            rem    = total_samples - n_full * orig_clip_frames
+            rem = total_samples - n_full * orig_clip_frames
             n_slices = n_full + (1 if rem / orig_clip_frames >= min_clip_ratio else 0)
 
             for s in range(n_slices):
@@ -123,13 +119,16 @@ class _Covers80AudioBase(Dataset):
         waveform : Tensor  (channels, clip_len_target)
         work_id  : int
         path     : str   audio_path (used as uid during retrieval aggregation)
+        clip_id  : str   stable identifier for the embedding cache
+                         (``<stem>__<hash>__c<slice_idx>``)
         """
         file_idx, slice_idx, orig_sr, orig_clip_frames = self.index_map[idx]
-        info    = self.meta[file_idx]
-        path    = info["audio_path"]
+        info = self.meta[file_idx]
+        path = info["audio_path"]
         work_id = int(info["work_id"])
+        clip_id = make_clip_id(path, slice_idx)
 
-        offset   = slice_idx * orig_clip_frames
+        offset = slice_idx * orig_clip_frames
         waveform, _ = torchaudio.load(
             path,
             frame_offset=offset,
@@ -139,7 +138,7 @@ class _Covers80AudioBase(Dataset):
 
         # ── channel handling ──────────────────────────────────────────────────
         C = waveform.size(0)
-        if C >= self.channels:
+        if self.channels <= C:
             if self.channels == 1:
                 if self.channel_mode == "first":
                     waveform = waveform[0:1]
@@ -156,7 +155,7 @@ class _Covers80AudioBase(Dataset):
             else:
                 waveform = waveform[: self.channels]
         else:
-            deficit  = self.channels - C
+            deficit = self.channels - C
             waveform = torch.cat([waveform, waveform[-1:].repeat(deficit, 1)], 0)
 
         # ── resample ──────────────────────────────────────────────────────────
@@ -165,16 +164,17 @@ class _Covers80AudioBase(Dataset):
 
         # ── pad / truncate ────────────────────────────────────────────────────
         T = waveform.size(1)
-        if T < self.clip_len_target:
+        if self.clip_len_target > T:
             waveform = F.pad(waveform, (0, self.clip_len_target - T))
-        elif T > self.clip_len_target:
+        elif self.clip_len_target < T:
             waveform = waveform[:, : self.clip_len_target]
 
-        return waveform, work_id, path
+        return waveform, work_id, path, clip_id
 
 
 class Covers80AudioAll(_Covers80AudioBase):
     """Full dataset (all 160 tracks) — used for test/retrieval evaluation."""
+
     pass
 
 
@@ -184,9 +184,11 @@ class Covers80AudioDummy(_Covers80AudioBase):
     Used as the 'train' and 'val' dataloaders when max_epochs=0 so that
     LightningCLI / DataModule setup doesn't need special-casing.
     """
+
     pass
 
 
 class Covers80DataModule(BaseDataModule):
     """Thin wrapper — all logic in BaseDataModule."""
+
     pass

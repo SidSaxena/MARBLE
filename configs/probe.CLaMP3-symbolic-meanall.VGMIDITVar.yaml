@@ -35,6 +35,7 @@ model:
   class_path: marble.tasks.VGMIDITVar.probe.CoverRetrievalTask
   init_args:
     sample_rate: 24000      # documentation only; symbolic path doesn't use it
+    cache_embeddings: true
 
     encoder:
       class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder

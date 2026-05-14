@@ -29,6 +29,7 @@ model:
   class_path: marble.tasks.Covers80.probe.CoverRetrievalTask
   init_args:
     sample_rate: 24000
+    cache_embeddings: true
 
     encoder:
       class_path: marble.encoders.MERT.model.MERT_v1_95M_Encoder

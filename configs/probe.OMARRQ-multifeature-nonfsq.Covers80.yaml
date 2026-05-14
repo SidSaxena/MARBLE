@@ -34,6 +34,7 @@ model:
   class_path: marble.tasks.Covers80.probe.CoverRetrievalTask
   init_args:
     sample_rate: 24000
+    cache_embeddings: true
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
