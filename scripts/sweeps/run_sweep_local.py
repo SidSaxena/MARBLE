@@ -190,6 +190,20 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
     Cost: identical to one per-layer cycle (zero-shot tasks: one quick
     test pass; supervised: one full train+test). No compute savings,
     just ordering for human readability of intermediate logs.
+
+    Failure handling
+    ----------------
+    Meanall shares the encoder, dataloader, audio-decode pipeline, and
+    GPU initialization with every per-layer job. If meanall fails on any
+    of those, every per-layer job will hit the same error. By default we
+    therefore abort the whole sweep on meanall failure — saves dozens of
+    hours of doomed compute on issues like a missing audio codec or a
+    bad checkpoint.
+
+    Pass --continue-on-meanall-failure when you have a legitimate reason
+    to believe the failure is meanall-specific (e.g. you're iterating on
+    just the aggregation logic and known-bad meanall shouldn't block
+    progress on per-layer).
     """
     cfg = _meanall_config_for(args.base_config)
     if cfg is None:
@@ -222,11 +236,25 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
         print(f"$ {' '.join(cmd)}", flush=True)
         rc = subprocess.run(cmd).returncode
         if rc != 0:
+            if args.continue_on_meanall_failure:
+                print(
+                    f"  ⚠ meanall {stage} failed (exit {rc}); "
+                    f"--continue-on-meanall-failure set → proceeding with "
+                    f"per-layer sweep anyway.",
+                    file=sys.stderr,
+                )
+                return
             print(
-                f"  ⚠ meanall {stage} failed (exit {rc}); continuing to per-layer sweep.",
+                f"\n  ✗ meanall {stage} failed (exit {rc}). Aborting the "
+                f"{args.model_tag} × {args.task_tag} sweep — the per-layer "
+                f"jobs share this run's encoder, dataloader, audio decode, "
+                f"and GPU init, so they would all hit the same error.\n"
+                f"  Fix the root cause (look at the WandB run + stack trace "
+                f"above), then re-launch. If you genuinely want to push past "
+                f"a meanall failure, pass --continue-on-meanall-failure.",
                 file=sys.stderr,
             )
-            return
+            sys.exit(rc)
 
 
 # ──────────────────────────────────────────────
@@ -504,6 +532,16 @@ def main():
         help="Run ONLY the meanall baseline (skip the per-layer sweep). Useful "
         "for getting a baseline matrix of (encoder × task) without paying "
         "for the full N-layer sweep — one fit+test per pair instead of N.",
+    )
+    parser.add_argument(
+        "--continue-on-meanall-failure",
+        action="store_true",
+        help="Don't abort the sweep when the meanall baseline fails. Default "
+        "is to bail — meanall shares the encoder + dataloader + audio decode "
+        "pipeline with every per-layer job, so a meanall failure almost "
+        "always means the per-layer jobs will fail identically. Use this "
+        "flag only when you have a specific reason to believe the failure is "
+        "meanall-specific.",
     )
     args = parser.parse_args()
 

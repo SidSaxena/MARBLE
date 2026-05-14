@@ -571,6 +571,14 @@ def main():
         "matrix cheaply across all encoders×tasks. Forwarded to "
         "run_sweep_local.py.",
     )
+    parser.add_argument(
+        "--continue-on-meanall-failure",
+        action="store_true",
+        help="Don't abort an individual sweep when its meanall baseline "
+        "fails. By default a meanall failure aborts that sweep (per-layer "
+        "would hit the same error), and the orchestrator moves on to the "
+        "next sweep in the queue.",
+    )
     args = parser.parse_args()
 
     # Filter sweep list
@@ -653,6 +661,8 @@ def main():
             cmd.append("--skip-meanall")
         if args.only_meanall:
             cmd.append("--only-meanall")
+        if args.continue_on_meanall_failure:
+            cmd.append("--continue-on-meanall-failure")
 
         print(f"$ {' '.join(cmd)}\n", flush=True)
 
