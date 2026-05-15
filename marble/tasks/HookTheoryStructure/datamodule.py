@@ -1,17 +1,14 @@
 # marble/tasks/HookTheoryStructure/datamodule.py
 
 import json
-import random
-from typing import List, Tuple
 
-import numpy as np
 import torch
-import torchaudio
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-import lightning.pytorch as pl
+import torchaudio
+from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
+from marble.utils.emb_cache import make_clip_id
 
 
 class _HookTheoryStructureAudioBase(Dataset):
@@ -20,19 +17,20 @@ class _HookTheoryStructureAudioBase(Dataset):
     - Splits each audio file into non-overlapping clips of length `clip_seconds` (last clip zero-padded).
     - This is a regression task with two labels: arousal and valence.
     """
-    LABEL2IDX = {     # mir_eval format structure label annotation
+
+    LABEL2IDX = {  # mir_eval format structure label annotation
         "intro": 0,
         "verse": 1,
         "pre-chorus": 2,
         "chorus": 3,
         "bridge": 4,
         "outro": 5,
-        "instrumental": 6, # inst
-        "solo": 6, # inst
-        "pre-chorus_chorus": 3, # chorus
-        "verse_pre-chorus": 1, # verse
-        "intro_verse": 1, # verse
-        "intro_chorus": 3, # chorus
+        "instrumental": 6,  # inst
+        "solo": 6,  # inst
+        "pre-chorus_chorus": 3,  # chorus
+        "verse_pre-chorus": 1,  # verse
+        "intro_verse": 1,  # verse
+        "intro_chorus": 3,  # chorus
     }
 
     IDX2LABEL = {
@@ -42,23 +40,23 @@ class _HookTheoryStructureAudioBase(Dataset):
         3: "chorus",
         4: "bridge",
         5: "outro",
-        6: "inst", # inst
+        6: "inst",  # inst
     }
 
     EXAMPLE_JSONL = {
-        "audio_path": "data/HookTheory/hooktheory_clips/dZbgOApQonY.mp3", # hooktheory id
-        "ori_audio_path": "data/HookTheory/audio/cyvyHcLHSfY.mp3", 
-        "ori_uid": "cyvyHcLHSfY", # ytbid
-        "label": ["chorus"], 
-        "duration": 9.38, 
-        "segment_start": 40.18994140625, 
-        "segment_end": 49.570068359375, 
-        "sample_rate": 44100, 
-        "num_samples": 413658, 
-        "bit_depth": 16, 
-        "channels": 2
+        "audio_path": "data/HookTheory/hooktheory_clips/dZbgOApQonY.mp3",  # hooktheory id
+        "ori_audio_path": "data/HookTheory/audio/cyvyHcLHSfY.mp3",
+        "ori_uid": "cyvyHcLHSfY",  # ytbid
+        "label": ["chorus"],
+        "duration": 9.38,
+        "segment_start": 40.18994140625,
+        "segment_end": 49.570068359375,
+        "sample_rate": 44100,
+        "num_samples": 413658,
+        "bit_depth": 16,
+        "channels": 2,
     }
-    
+
     def __init__(
         self,
         sample_rate: int,
@@ -78,30 +76,32 @@ class _HookTheoryStructureAudioBase(Dataset):
         self.min_clip_ratio = min_clip_ratio
 
         # 读取元数据
-        with open(jsonl, 'r') as f:
+        with open(jsonl) as f:
             self.meta = [json.loads(line) for line in f]
-        
+
         # 映射label
         for info in self.meta:
-            if isinstance(info['label'], list):
+            if isinstance(info["label"], list):
                 # 处理多标签情况，取第一个标签
-                info['label'] = '_'.join(info['label'])
-            if info['label'] not in self.LABEL2IDX:
+                info["label"] = "_".join(info["label"])
+            if info["label"] not in self.LABEL2IDX:
                 raise ValueError(f"Unknown label: {info['label']}")
 
-
         # Build index map: (file_idx, slice_idx, orig_sr, orig_clip_frames, orig_channels)
-        self.index_map: List[Tuple[int, int, int, int, int]] = []
+        self.index_map: list[tuple[int, int, int, int, int]] = []
         self.resamplers = {}
+        # Set by the task at setup() time when the per-clip embedding cache
+        # is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
+        self.cache_check_fn = None
         for file_idx, info in enumerate(self.meta):
-            orig_sr = info['sample_rate']
+            orig_sr = info["sample_rate"]
             # Prepare resampler if needed
             if orig_sr != self.sample_rate and orig_sr not in self.resamplers:
                 self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
             orig_clip_frames = int(self.clip_seconds * orig_sr)
-            orig_channels = info['channels']
-            total_samples = info['num_samples']
+            orig_channels = info["channels"]
+            total_samples = info["num_samples"]
 
             # Number of full clips and remainder
             n_full = total_samples // orig_clip_frames
@@ -116,7 +116,6 @@ class _HookTheoryStructureAudioBase(Dataset):
                 self.index_map.append(
                     (file_idx, slice_idx, orig_sr, orig_clip_frames, orig_channels)
                 )
-
 
     def __len__(self):
         return len(self.index_map)
@@ -136,16 +135,21 @@ class _HookTheoryStructureAudioBase(Dataset):
         # Unpack mapping info
         file_idx, slice_idx, orig_sr, orig_clip, orig_channels = self.index_map[idx]
         info = self.meta[file_idx]
-        path = info['audio_path']
-        ori_uid = info['ori_uid']
-        label = self.LABEL2IDX[info['label']]  # (1,)
+        path = info["audio_path"]
+        ori_uid = info["ori_uid"]
+        label = self.LABEL2IDX[info["label"]]  # (1,)
+        clip_id = make_clip_id(path, slice_idx)
+
+        # Cache hit — skip audio I/O entirely. The task's forward() ignores
+        # `x` on cache hits and uses the cached (L, H) tensor instead.
+        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+            waveform = torch.zeros(self.channels, self.clip_len_target)
+            return waveform, label, path, clip_id
 
         # Compute frame offset and load clip
         offset = slice_idx * orig_clip
         waveform, _ = torchaudio.load(
-            path,
-            frame_offset=offset,
-            num_frames=orig_clip
+            path, frame_offset=offset, num_frames=orig_clip
         )  # (orig_channels, orig_clip)
 
         # Defensive: if the JSONL's num_samples is stale (file got
@@ -170,11 +174,11 @@ class _HookTheoryStructureAudioBase(Dataset):
                     if choice == orig_channels:
                         waveform = waveform.mean(dim=0, keepdim=True)
                     else:
-                        waveform = waveform[choice:choice+1]
+                        waveform = waveform[choice : choice + 1]
                 else:
                     raise ValueError(f"Unknown channel_mode: {self.channel_mode}")
             else:
-                waveform = waveform[:self.channels]
+                waveform = waveform[: self.channels]
         else:
             # Repeat last channel to pad to desired channels
             last = waveform[-1:].repeat(self.channels - orig_channels, 1)
@@ -188,15 +192,16 @@ class _HookTheoryStructureAudioBase(Dataset):
         if waveform.size(1) < self.clip_len_target:
             pad = self.clip_len_target - waveform.size(1)
             waveform = F.pad(waveform, (0, pad))
-        
+
         # Final shape: (self.channels, self.clip_len_target)
-        return waveform, label, path
+        return waveform, label, path, clip_id
 
 
 class HookTheoryStructureAudioTrain(_HookTheoryStructureAudioBase):
     """
     训练集：DataModule 中设置 shuffle=True。
     """
+
     pass
 
 
@@ -204,6 +209,7 @@ class HookTheoryStructureAudioVal(_HookTheoryStructureAudioBase):
     """
     验证集：DataModule 中设置 shuffle=False。
     """
+
     pass
 
 
@@ -211,6 +217,7 @@ class HookTheoryStructureAudioTest(HookTheoryStructureAudioVal):
     """
     测试集：同验证集逻辑。
     """
+
     pass
 
 
