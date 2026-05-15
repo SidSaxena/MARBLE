@@ -296,6 +296,7 @@ def _process_one(
     audio_dir: Path,
     soundfonts: list[Path],
     skip_render: bool,
+    instrument_schedule: dict[int, int] | None = None,
 ) -> dict | None:
     parsed = _parse_filename(midi_path.stem)
     if parsed is None:
@@ -317,7 +318,7 @@ def _process_one(
         return None
     sr, n_samples, channels = info
 
-    return {
+    record = {
         "audio_path": str(audio_path),
         "work_id": _work_id_for(parsed["piece"], parsed["section"]),
         "variation": parsed["idx"],
@@ -329,6 +330,12 @@ def _process_one(
         "channels": channels,
         "duration": round(n_samples / sr, 3),
     }
+    if instrument_schedule:
+        idx = parsed["idx"]
+        # Mirror the rewriter's cycling behaviour: idx ≥ len(schedule) cycles
+        # modulo len(schedule).
+        record["gm_program"] = instrument_schedule[idx % len(instrument_schedule)]
+    return record
 
 
 def main():
@@ -374,6 +381,22 @@ def main():
         help="Don't render; rebuild JSONL from existing WAVs only.",
     )
     ap.add_argument(
+        "--skip-extract",
+        action="store_true",
+        help="Don't extract MIDIs from the zip; assume they already exist "
+        "under --midi-extract-dir/{train,test}/. Use this when feeding "
+        "pre-rewritten MIDIs (e.g. from rewrite_vgmidi_programs.py for "
+        "the leitmotif variant). Implied by --skip-render.",
+    )
+    ap.add_argument(
+        "--instrument-map",
+        default=None,
+        help="Optional path to an instrument_map.json (written by "
+        "rewrite_vgmidi_programs.py). When set, each JSONL record gets "
+        "a `gm_program` field derived from its variation index via the "
+        "map's schedule. Used by the VGMIDITVar-leitmotif analysis.",
+    )
+    ap.add_argument(
         "--allow-overwrite-default-dir",
         action="store_true",
         help="Override the multi-SoundFont safety guard. By default, "
@@ -417,17 +440,16 @@ def main():
     else:
         soundfonts = []
 
-    # ── Extract MIDI from zip ────────────────────────────────────────────────
+    # ── Extract MIDI from zip (or discover from pre-extracted dir) ───────────
     midi_extract_dir = Path(args.midi_extract_dir or Path(args.data_dir) / "midi")
     midi_zip = Path(args.midi_zip)
-    if not args.skip_render:
-        if not midi_zip.exists():
-            log.error(f"MIDI zip not found: {midi_zip}")
-            sys.exit(1)
-        log.info(f"Extracting {midi_zip} → {midi_extract_dir}")
-        splits = _extract_midi_zip(midi_zip, midi_extract_dir)
-    else:
-        # Discover by walking the extract dir
+    # Skip the zip-extract step when:
+    #   • --skip-extract was passed explicitly (e.g. feeding pre-rewritten
+    #     MIDIs from rewrite_vgmidi_programs.py for the leitmotif variant), OR
+    #   • --skip-render was passed (the existing legacy behaviour — no point
+    #     extracting if we're not rendering).
+    if args.skip_render or args.skip_extract:
+        # Discover by walking the extract dir.
         splits = {"train": [], "test": []}
         for split in splits:
             d = midi_extract_dir / split
@@ -436,6 +458,28 @@ def main():
         log.info(
             f"  found extracted MIDI: train={len(splits['train']):,}  test={len(splits['test']):,}"
         )
+    else:
+        if not midi_zip.exists():
+            log.error(f"MIDI zip not found: {midi_zip}")
+            sys.exit(1)
+        log.info(f"Extracting {midi_zip} → {midi_extract_dir}")
+        splits = _extract_midi_zip(midi_zip, midi_extract_dir)
+
+    # ── Optional instrument schedule (for the leitmotif variant) ─────────────
+    instrument_schedule: dict[int, int] | None = None
+    if args.instrument_map:
+        imap_path = Path(args.instrument_map)
+        if not imap_path.exists():
+            log.error(f"--instrument-map path does not exist: {imap_path}")
+            sys.exit(1)
+        try:
+            imap_data = json.loads(imap_path.read_text())
+            raw = imap_data.get("schedule", imap_data)
+            instrument_schedule = {int(k): int(v) for k, v in raw.items()}
+        except Exception as e:
+            log.error(f"Failed to parse instrument map {imap_path}: {e}")
+            sys.exit(1)
+        log.info(f"  instrument map    : {imap_path} → {instrument_schedule}")
 
     audio_dir = Path(args.audio_dir)
     data_dir = Path(args.data_dir)
@@ -503,7 +547,13 @@ def main():
             for midi_path in paths:
                 futs[
                     pool.submit(
-                        _process_one, midi_path, split, audio_dir, soundfonts, args.skip_render
+                        _process_one,
+                        midi_path,
+                        split,
+                        audio_dir,
+                        soundfonts,
+                        args.skip_render,
+                        instrument_schedule,
                     )
                 ] = (midi_path, split)
         for fut in as_completed(futs):
