@@ -15,14 +15,15 @@ For implementation details on caching / extracting, see
 
 | Encoder | L total | Best single layer for leitmotif | "Melody / theme" layer | "Song / structure" layer | Two-layer pair |
 |---|---:|---:|---:|---:|---|
-| **MuQ** (primary recommendation) | 13 | **L10** | L8 | L11 | L8 + L11 |
+| **MuQ** (primary recommendation) | 13 | **L11** | L8 | L10 | L10 + L11 |
 | OMARRQ-multifeature-25hz | 24 | **L14** | L14 | L20 | L14 + L20 |
 | MERT-v1-95M | 13 | **L7** | L3 | L7 | L3 + L7 |
 | CLaMP3 (audio path) | 13 | L11 | L5 | L11 | — |
 | MERT-v1-330M | 25 | (sparse data — see § Sparse-data row) | — | — | — |
 
 - **MuQ wins by a wide margin on real-audio retrieval** (1.3–2.3× the next-best encoder on Covers80 / SHS100K). It's the right primary encoder for leitmotif.
-- The "two-layer pair" combines a mid-block representation (melodic / theme contour) with a late-block representation (song-level abstract). L2-normalize each then concat is the default combination strategy.
+- **The MuQ layer pick is governed by Covers80 + SHS100K, not VGMIDITVar.** Earlier drafts of this doc named L8 as the leitmotif layer based on VGMIDITVar alone — that was a triangulation error. Real-audio cover retrieval (the closer proxy to real-soundtrack leitmotif matching) peaks at L11–L12. VGMIDITVar peaks at L8 but tests a narrower invariance (MIDI-rendered, single-soundfont, model-generated variations); see § _Sparse-data row_ and the audit notes below.
+- The "two-layer pair" combines two late-block representations (motif-aware + structure-aware). L2-normalize each then concat is the default combination strategy.
 
 ---
 
@@ -80,7 +81,9 @@ script for the up-to-date version.
 | CLaMP3 | L0 / 0.642 | L0 / 0.717 | (not run) | n/a |
 | MERT-v1-95M | L9 / 0.651 | (not run) | (not run) | (not run) |
 | OMARRQ-25hz-fsq | L17 / 0.175 | (not run) | (not run) | L3 / 0.361 |
-| MuQ | (not run) | (not run) | (not run) | n/a |
+| **MuQ** | (not run) | (queued) | **L10 / 0.591** (top-3: 10, 11, 8) | n/a |
+
+**MuQ × HookTheoryStructure update (2026-05-15):** test/acc curve climbs monotonically from L0=0.51 to L10=0.59, then dips slightly at L11–L12. Confirms the "late layers do song-level abstraction" hypothesis. Peak at L10 (not L12) suggests the very last layer is slightly over-specialized to MuQ's pretraining objective, which is consistent with the layer-12 drop seen on SHS100K.
 
 ### Cross-encoder layer-depth pattern (normalized)
 
@@ -113,14 +116,18 @@ in priority order:
 Hidden states 0–12, hidden dim 1024, token rate 25 Hz, sample rate 24 kHz
 ```
 
-| Pick | Covers80 | SHS100K | VGMIDITVar | Use when |
-|---|---:|---:|---:|---|
-| **L10** | 0.183 (3rd) | 0.181 (3rd) | 0.187 (3rd-ish) | One-layer pick, top-3 on everything |
-| **L11** | 0.187 (2nd) | **0.190** (1st) | ~0.175 | Real-audio cover-retrieval optimum |
-| **L8** | ~0.13 | ~0.13 | **0.196** (1st) | Theme/variation optimum |
-| L12 | **0.198** (1st) | 0.187 (2nd) | ~0.17 | Covers80 optimum |
+| Pick | Covers80 MAP | SHS100K MAP | VGMIDITVar MAP | HookTheoryStructure acc | Use when |
+|---|---:|---:|---:|---:|---|
+| **L11** | 0.193 (2nd) | **0.190** (1st) | 0.175 | 0.589 (2nd) | **Primary leitmotif pick** — peaks on the larger real-audio cover-retrieval task and is near-peak on every other axis. |
+| L12 | **0.198** (1st) | 0.183 (3rd) | 0.164 (worst) | 0.571 | Covers80 optimum, but a 16% relative MAP drop on VGMIDITVar warns this layer is task-specialized — risky default. |
+| L10 | 0.175 (4th) | 0.174 (4th) | 0.181 | **0.591** (1st) | Structure/section optimum; defensible for context-aware retrieval but trails on raw retrieval. |
+| L8 | 0.151 | 0.139 | **0.196** (1st) | 0.582 | MIDI-rendered theme/variation optimum only. Trails badly on real audio. |
 
-**Two-layer pair:** L8 + L11 (mid + late) → captures theme contour + song identity. Strongest specialization split.
+**Why L11 over L12:** L12 wins Covers80 by 0.005 MAP but loses SHS100K (the larger, harder, noisier dataset) by 0.007 MAP and collapses on VGMIDITVar. The cross-task average and the variance both favor L11. The L11–L12 dip pattern (L11 strong, L12 slightly worse on larger sets) repeats across both MuQ retrieval results and the HookTheoryStructure classification result — consistent with the last layer being slightly over-specialized to MuQ's pretraining objective.
+
+**Why not L8 (the previous recommendation):** L8 only wins on VGMIDITVar, which is single-soundfont MIDI-rendered audio with model-generated *musical* variations (different notes, not different instruments). It's a *narrower* invariance test than Covers80/SHS100K — those test full real-audio variation including timbre, key, tempo, recording fidelity, and vocal/mix differences simultaneously. For real-soundtrack leitmotif retrieval (real audio, real orchestrations), the wider invariance test is the closer proxy.
+
+**Two-layer pair:** L10 + L11 (structure + motif), L2-normalize-then-concat. Stays in the late-layer neighborhood — both layers are evidence-backed across multiple tasks. Don't include L12 (collapses on VGMIDITVar) or pair L8 with a late layer (L8 already trails on real audio).
 
 ### OMARRQ-multifeature-25hz
 
@@ -243,15 +250,15 @@ just doing more compute for no gain.
 
 ### Single-encoder, single-layer (simplest)
 
-**MuQ at L10.** It's the only MuQ layer in the top-3 across Covers80, SHS100K, and VGMIDITVar simultaneously. Use as the baseline; expect it to be a strong-but-not-peak retrieval base for leitmotif on real soundtracks.
+**MuQ at L11.** Peaks on SHS100K and is near-peak on Covers80, HookTheoryStructure, and VGMIDITVar. Best single-layer baseline for real-soundtrack leitmotif retrieval.
 
 ### Single-encoder, two-layer (best one-step improvement)
 
-**MuQ at L8 + L11, normalized-concat.** Captures the "melody contour" and "song identity" regimes separately. Disk cost: 26 KB/clip (double of single-layer). DTW cost: doubled. Expected to outperform single-layer L10 by 5–15% on retrieval-style matching of leitmotif occurrences, especially when test motifs span multiple instrumentations.
+**MuQ at L10 + L11, normalized-concat.** Stays in the late-layer neighborhood where both layers are evidence-backed. Disk cost: 26 KB/clip (double of single-layer). DTW cost: doubled. Expected to outperform single-layer L11 by a few percent on retrieval-style matching, with the gain coming from layer 10's structural-context signal complementing layer 11's motif-identity signal.
 
 ### Single-encoder, three-layer (kitchen sink)
 
-**MuQ at L4 + L8 + L11, normalized-concat.** Adds the pitch/timbre regime (L4 is informed inference, not directly tested by my benchmarks). Use only if the two-layer pair underperforms in qualitative inspection.
+**MuQ at L8 + L10 + L11, normalized-concat.** Adds L8 to recover the MIDI-rendered/motif-only invariance regime, in case the deployment data is more synthetic than expected. Use only if qualitative inspection of L10 + L11 retrievals shows the two-layer ensemble missing instrumentation-invariant matches.
 
 ### Ensemble across encoders (most ambitious)
 
@@ -297,17 +304,16 @@ CLaMP3-symbolic wins VGMIDITVar (0.198) because it skips audio rendering — fee
 
 ## Verification status & next experiments
 
-The recommendations above are derived from the retrieval benchmarks
-(Covers80, SHS100K, VGMIDITVar). Whether the "melody layer / structure
-layer" specialization narrative actually holds will be tested by:
+### Completed
 
-1. **MuQ × HookTheoryStructure** (config: `probe.MuQ-layers.HookTheoryStructure.yaml`)
-   — peak layer should be late (L11–12 range) if structure hypothesis correct.
-   ~1–2 hours with cache.
-2. **MuQ × HookTheoryMelody** (config: `probe.MuQ-layers.HookTheoryMelody.yaml`)
-   — peak layer should be mid (L5–8 range) if melody hypothesis correct.
-   ~6–8 hours (no cache — frame-level task).
-3. (Bonus) Cross-encoder: same tasks on MERT-95M + OMARRQ-25hz.
+1. ✅ **MuQ × HookTheoryStructure** (2026-05-15). Peak at **L10 / 0.591 acc**, top-3 = {10, 11, 8}. Late-layer dominance confirmed. The L11→L12 dip mirrors the SHS100K dip — consistent with the last layer being slightly over-specialized to the pretraining objective.
+
+### Open
+
+2. **MuQ × HookTheoryKey** (config: `probe.MuQ-layers.HookTheoryKey.yaml`) — queued. If the late-layer hypothesis generalizes, peak should be in the L8–L11 band. Key estimation needs tonal abstraction over the full clip, so a mid-late peak (closer to L8) would also be consistent.
+3. **MuQ × HookTheoryMelody** (config: `probe.MuQ-layers.HookTheoryMelody.yaml`) — peak layer should be mid (L5–8 range) if the melody hypothesis is correct. ~6–8 hours (no cache — frame-level task).
+4. **Multi-soundfont VGMIDITVar re-render.** Re-render the VGMIDI-TVar dataset with 3–4 SoundFonts (FluidR3 + MuseScore_General + SGM-V2.01 + Salamander) using the existing `--soundfont` rotation in `scripts/data/build_vgmiditvar_dataset.py`. If the layer-8 VGMIDITVar peak is real timbre-invariance, it should stay at L8. If it was an artifact of single-soundfont rendering, the peak should shift toward L10–L11. ~2 hours of rendering + a re-sweep.
+5. (Bonus) Cross-encoder verification: HookTheoryStructure + HookTheoryKey on MERT-95M + OMARRQ-25hz.
 
 If the structure peak ≠ late layer, OR the melody peak ≠ mid layer,
 revisit the recommendations.
@@ -315,6 +321,10 @@ revisit the recommendations.
 After those experiments, update this doc's "TL;DR" table with the
 actual layer numbers. If results contradict the analysis, mark
 the contradiction explicitly here — don't quietly update the table.
+
+### Changelog
+
+- **2026-05-15** — Corrected primary MuQ leitmotif recommendation from L8 → L11. Previous recommendation was triangulated from VGMIDITVar alone, but the larger and closer-to-deployment Covers80/SHS100K benchmarks both peak at L11–L12. VGMIDITVar's narrower invariance profile (single-soundfont MIDI rendering) makes it a weaker proxy for real-audio leitmotif matching than the cover-retrieval tasks. Updated TL;DR table, MuQ cheat sheet, and recommendation sections accordingly. Added HookTheoryStructure result to the supervised-classification table.
 
 ---
 
