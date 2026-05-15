@@ -107,7 +107,8 @@ class _EMOAudioBase(Dataset):
 
         # Cache hit — skip audio I/O entirely. The task's forward()
         # ignores ``x`` on cache hits and uses the cached (L, H) tensor.
-        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+        cache_check = getattr(self, "cache_check_fn", None)
+        if cache_check is not None and cache_check(clip_id):
             waveform = torch.zeros(self.channels, self.clip_len_target)
             return waveform, label, path, clip_id
 

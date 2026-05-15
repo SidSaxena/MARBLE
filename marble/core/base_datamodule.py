@@ -204,7 +204,12 @@ class BaseAudioDataset(Dataset, ABC):
         clip_id = make_clip_id(audio_path, slice_idx)
 
         # 1. Load & preprocess the audio slice — but skip if cache will hit.
-        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+        # Defensive getattr: when a DataLoader worker unpickles a dataset that
+        # was created under an older code version (e.g. mid-run ``git pull``)
+        # the pickled ``__dict__`` may lack this attribute. Falling back to
+        # ``None`` makes the bypass a no-op rather than crashing the worker.
+        cache_check = getattr(self, "cache_check_fn", None)
+        if cache_check is not None and cache_check(clip_id):
             # Placeholder waveform: the task's forward() ignores ``x`` on
             # cache hits and uses the cached (L, H) tensor instead.
             waveform = torch.zeros(self.channels, self.clip_len_target)

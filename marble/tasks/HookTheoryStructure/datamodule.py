@@ -136,13 +136,13 @@ class _HookTheoryStructureAudioBase(Dataset):
         file_idx, slice_idx, orig_sr, orig_clip, orig_channels = self.index_map[idx]
         info = self.meta[file_idx]
         path = info["audio_path"]
-        ori_uid = info["ori_uid"]
         label = self.LABEL2IDX[info["label"]]  # (1,)
         clip_id = make_clip_id(path, slice_idx)
 
         # Cache hit — skip audio I/O entirely. The task's forward() ignores
         # `x` on cache hits and uses the cached (L, H) tensor instead.
-        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+        cache_check = getattr(self, "cache_check_fn", None)
+        if cache_check is not None and cache_check(clip_id):
             waveform = torch.zeros(self.channels, self.clip_len_target)
             return waveform, label, path, clip_id
 
