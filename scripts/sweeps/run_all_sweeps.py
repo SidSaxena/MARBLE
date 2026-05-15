@@ -18,6 +18,10 @@ python scripts/sweeps/run_all_sweeps.py --models MERT
 python scripts/sweeps/run_all_sweeps.py --tasks GS HookTheoryKey
 python scripts/sweeps/run_all_sweeps.py --models CLaMP3 MERT --tasks GS
 
+# Exclude specific models or tasks (substring match, case-insensitive)
+python scripts/sweeps/run_all_sweeps.py --exclude-models MERT-v1-330M MusicFM
+python scripts/sweeps/run_all_sweeps.py --exclude-tasks NSynth Chords1217
+
 # Dry-run: print what would be run without running anything
 python scripts/sweeps/run_all_sweeps.py --dry-run
 
@@ -262,6 +266,13 @@ SWEEPS: list[SweepDef] = [
         base_config="configs/probe.MuQ-layers.HookTheoryStructure.yaml",
         num_layers=13,
         note="Structure class| 7 classes  | acc metric   | MuQ 13 layers",
+    ),
+    SweepDef(
+        model="MuQ",
+        task="HookTheoryKey",
+        base_config="configs/probe.MuQ-layers.HookTheoryKey.yaml",
+        num_layers=13,
+        note="Key estimation | 24 classes | weighted_score | MuQ 13 layers",
     ),
     # ══════════════════════════════════════════════════════════════════════════
     # MEDIUM — frame-level tasks (many predictions per clip → slower backprop)
@@ -536,7 +547,20 @@ def main():
         "--models", nargs="*", help="Filter to specific model tags (e.g. OMARRQ CLaMP3)"
     )
     parser.add_argument(
+        "--exclude-models",
+        nargs="*",
+        default=[],
+        help="Exclude specific model tags (substring match, case-insensitive). "
+        "Example: --exclude-models MERT-v1-330M MusicFM",
+    )
+    parser.add_argument(
         "--tasks", nargs="*", help="Filter to specific task tags (e.g. GS Chords1217 EMO)"
+    )
+    parser.add_argument(
+        "--exclude-tasks",
+        nargs="*",
+        default=[],
+        help="Exclude specific task tags. Example: --exclude-tasks Chords1217 NSynth",
     )
     parser.add_argument(
         "--no-skip", action="store_true", help="Re-run layers even if checkpoints exist"
@@ -594,8 +618,14 @@ def main():
     sweeps = SWEEPS
     if args.models:
         sweeps = [s for s in sweeps if any(m.lower() in s.model.lower() for m in args.models)]
+    if args.exclude_models:
+        sweeps = [
+            s for s in sweeps if not any(m.lower() in s.model.lower() for m in args.exclude_models)
+        ]
     if args.tasks:
         sweeps = [s for s in sweeps if s.task in args.tasks]
+    if args.exclude_tasks:
+        sweeps = [s for s in sweeps if s.task not in args.exclude_tasks]
 
     if not sweeps:
         print("No sweeps match the given filters.", file=sys.stderr)
