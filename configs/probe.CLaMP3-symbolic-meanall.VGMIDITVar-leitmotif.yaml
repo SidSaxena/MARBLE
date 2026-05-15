@@ -1,0 +1,82 @@
+seed_everything: 1234
+ckpt_path: null
+
+# VGMIDI-TVar zero-shot theme/variation retrieval — CLaMP3 SYMBOLIC per-layer sweep.
+#
+# Unlike the audio configs, this one feeds the .mid files DIRECTLY into
+# CLaMP3's native M3 symbolic encoder — no MIDI→audio rendering.  CLaMP3's
+# symbolic path is its own 12-layer BERT trained alongside the audio /
+# text branches on M3-tokenised music, so it's a true symbolic probe.
+#
+# max_epochs=0: no training. test stage embeds all MIDIs and computes MAP.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks: []
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "CLaMP3-symbolic / VGMIDITVar-leitmotif"
+      tags: ["CLaMP3-symbolic", "VGMIDITVar", "leitmotif", "layer-sweep", "probe", "symbolic", "mean-all"]
+      job_type: "probe"
+      name: "layer-meanall-fit"
+      save_dir: "./output/probe.VGMIDITVar-leitmotif.CLaMP3-symbolic-meanall/"
+
+
+model:
+  class_path: marble.tasks.VGMIDITVar.probe.CoverRetrievalTask
+  init_args:
+    sample_rate: 24000      # documentation only; symbolic path doesn't use it
+    cache_embeddings: true
+
+    encoder:
+      class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: ["0..12"]
+          mode: mean
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+
+data:
+  class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarDataModule
+  init_args:
+    batch_size: 4
+    num_workers: 4
+
+    # No audio_transforms: the dataset returns patches directly.
+    audio_transforms:
+      train: []
+      val:   []
+      test:  []
+
+    train:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarSymbolicDummy
+      init_args:
+        jsonl: data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl
+        midi_dir: data/VGMIDITVar-leitmotif/midi
+    val:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarSymbolicDummy
+      init_args:
+        jsonl: data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl
+        midi_dir: data/VGMIDITVar-leitmotif/midi
+    test:
+      class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarSymbolicAll
+      init_args:
+        jsonl: data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl
+        midi_dir: data/VGMIDITVar-leitmotif/midi
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
