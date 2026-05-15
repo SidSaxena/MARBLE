@@ -487,6 +487,58 @@ SWEEPS: list[SweepDef] = [
         num_layers=13,
         note="Cover retrieval | MAP | zero-shot | 80 songs | MusicFM 13 layers",
     ),
+    # ══════════════════════════════════════════════════════════════════════════
+    # VGMIDI-TVar  ·  MULTI-SOUNDFONT variant
+    # Same MIDIs, but rendered with rotating {FluidR3_GM, Shan SGM-Pro 14, ...}
+    # SoundFonts per piece so theme/variation pairs span multiple timbres.
+    # Tests whether the encoder's theme-variation invariance survives genuine
+    # timbral variation (the single-SF VGMIDITVar baseline may overstate it).
+    # Requires `data/VGMIDITVar-multisf/` to exist — re-run the renderer with
+    # multiple --soundfont flags first.  CLaMP3-symbolic is intentionally
+    # excluded (MIDI-native path, unaffected by SoundFont choice).
+    # ══════════════════════════════════════════════════════════════════════════
+    SweepDef(
+        model="CLaMP3",
+        task="VGMIDITVar-multisf",
+        base_config="configs/probe.CLaMP3-layers.VGMIDITVar-multisf.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | multi-SF render | CLaMP3 13 layers",
+    ),
+    SweepDef(
+        model="MERT-v1-95M",
+        task="VGMIDITVar-multisf",
+        base_config="configs/probe.MERT-v1-95M-layers.VGMIDITVar-multisf.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | multi-SF render | MERT 13 layers",
+    ),
+    SweepDef(
+        model="MERT-v1-330M",
+        task="VGMIDITVar-multisf",
+        base_config="configs/probe.MERT-v1-330M-layers.VGMIDITVar-multisf.yaml",
+        num_layers=25,
+        note="Theme→variation | MAP | zero-shot | multi-SF render | MERT-330M 25 layers",
+    ),
+    SweepDef(
+        model="MusicFM",
+        task="VGMIDITVar-multisf",
+        base_config="configs/probe.MusicFM-layers.VGMIDITVar-multisf.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | multi-SF render | MusicFM 13 layers",
+    ),
+    SweepDef(
+        model="MuQ",
+        task="VGMIDITVar-multisf",
+        base_config="configs/probe.MuQ-layers.VGMIDITVar-multisf.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | multi-SF render | MuQ 13 layers",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature-25hz",
+        task="VGMIDITVar-multisf",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.VGMIDITVar-multisf.yaml",
+        num_layers=24,
+        note="Theme→variation | MAP | zero-shot | multi-SF render | OMARRQ 24 layers",
+    ),
 ]
 
 
@@ -531,6 +583,11 @@ def _data_present(task: str) -> bool:
         # VGMIDITVar: built from MIDI zip via scripts/data/build_vgmiditvar_dataset.py
         # (single JSONL covering both train + test splits; no .train/.test variant).
         "VGMIDITVar": "data/VGMIDITVar/VGMIDITVar.jsonl",
+        # Multi-SoundFont VGMIDITVar variant. Re-render with multiple --soundfont
+        # flags into a separate audio dir so theme/variation pairs span multiple
+        # timbres.  Separate from VGMIDITVar so the FluidR3-only baseline is
+        # preserved and WandB comparisons are unambiguous.
+        "VGMIDITVar-multisf": "data/VGMIDITVar-multisf/VGMIDITVar.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()
