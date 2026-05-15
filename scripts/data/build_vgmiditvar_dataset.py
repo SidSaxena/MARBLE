@@ -374,6 +374,16 @@ def main():
         help="Don't render; rebuild JSONL from existing WAVs only.",
     )
     ap.add_argument(
+        "--allow-overwrite-default-dir",
+        action="store_true",
+        help="Override the multi-SoundFont safety guard. By default, "
+        "passing multiple --soundfont flags while writing into the "
+        "default `data/VGMIDITVar/audio` directory is rejected (the "
+        "no-overwrite policy would silently skip every file and leave "
+        "the new SoundFonts unused). Set this flag to acknowledge that "
+        "behaviour explicitly.",
+    )
+    ap.add_argument(
         "--midi-extract-dir",
         default=None,
         help="Where to extract the MIDI files (default: <data-dir>/midi)",
@@ -432,6 +442,56 @@ def main():
     audio_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Render plan + safety preamble ────────────────────────────────────────
+    # Print a one-page summary BEFORE the slow render so misconfiguration is
+    # caught in seconds rather than after waiting an hour for an "every file
+    # already existed → all skipped" no-op run.
+    n_existing = sum(
+        1
+        for ps in splits.values()
+        for p in ps
+        if (audio_dir / f"{p.stem}.wav").exists()
+        and (audio_dir / f"{p.stem}.wav").stat().st_size > 1024
+    )
+    n_to_render = sum(len(v) for v in splits.values()) - n_existing
+    log.info("")
+    log.info("─" * 60)
+    log.info("Render plan")
+    log.info("─" * 60)
+    log.info(f"  audio-dir         : {audio_dir}")
+    log.info(f"  data-dir (jsonl)  : {data_dir / 'VGMIDITVar.jsonl'}")
+    log.info(f"  SoundFonts ({len(soundfonts)}): {[s.name for s in soundfonts]}")
+    log.info(f"  MIDIs total       : {sum(len(v) for v in splits.values()):,}")
+    log.info(f"  already rendered  : {n_existing:,} (will be skipped)")
+    log.info(f"  to render now     : {n_to_render:,}")
+    log.info("─" * 60)
+
+    # Footgun guard — multiple --soundfont flags but the default single-SF
+    # data-dir.  The script's no-overwrite policy means re-running with new
+    # SoundFonts but the old data-dir silently reuses the previous renders
+    # and produces a JSONL pointing at audio that doesn't reflect the new
+    # SoundFonts at all.
+    multi_sf_into_single_sf_dir = (
+        len(soundfonts) >= 2
+        and str(audio_dir).rstrip("/").endswith("VGMIDITVar/audio")
+        and not args.allow_overwrite_default_dir
+        and n_existing > 0
+    )
+    if multi_sf_into_single_sf_dir:
+        log.error(
+            "Aborting: you passed %d SoundFonts but %d WAVs already exist in the "
+            "default single-SF directory `%s`. These would all be skipped, leaving "
+            "your new SoundFonts unused.\n"
+            "  Fix: render into a separate dir, e.g.\n"
+            "    --data-dir data/VGMIDITVar-multisf --audio-dir data/VGMIDITVar-multisf/audio\n"
+            "  Or, to deliberately overwrite-in-place: pass --allow-overwrite-default-dir "
+            "AND first delete the existing WAVs.",
+            len(soundfonts),
+            n_existing,
+            audio_dir,
+        )
+        sys.exit(2)
+
     # ── Render + parse ───────────────────────────────────────────────────────
     records: list[dict] = []
     total = sum(len(v) for v in splits.values())
@@ -477,6 +537,15 @@ def main():
     log.info(f"   train: {n_train:,}  test: {n_test:,}")
     log.info(f"   unique works (piece+section): {n_works:,}")
     log.info(f"   avg variations per work: {len(records) / n_works:.1f}")
+    if not args.skip_render and n_existing > 0:
+        log.info(f"   pre-existing WAVs reused : {n_existing:,}")
+        log.info(f"   freshly rendered now     : {len(records) - n_existing:,}")
+        if len(records) - n_existing == 0:
+            log.warning(
+                "   ⚠ NO new audio was rendered — every WAV already existed. "
+                "If you intended new SoundFonts to take effect, render into a "
+                "different --audio-dir or delete the existing WAVs first."
+            )
     log.info("=" * 60)
     log.info("Next: configure a layer sweep with this JSONL")
 
