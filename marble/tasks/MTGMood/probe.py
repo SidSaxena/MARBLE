@@ -87,8 +87,14 @@ class ProbeAudioTask(BaseTask):
         self._val_file_outputs: list[dict] = []
 
     def validation_step(self, batch, batch_idx):
-        x, y, uids = batch
-        logits = self(x)
+        # 4-tuple (waveform, label, path, clip_id) when caching is on;
+        # fall back to legacy 3-tuple shape for older datamodules.
+        if isinstance(batch, (tuple, list)) and len(batch) >= 4:
+            x, y, uids, clip_ids = batch[0], batch[1], batch[2], batch[3]
+        else:
+            x, y, uids = batch
+            clip_ids = None
+        logits = self(x, clip_ids=list(clip_ids) if clip_ids is not None else None)
 
         # We still need to compute and log the validation loss per epoch
         loss = self.loss_fns[0](logits, y.to(logits.dtype))
