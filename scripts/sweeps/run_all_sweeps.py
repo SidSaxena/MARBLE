@@ -351,80 +351,83 @@ SWEEPS: list[SweepDef] = [
         note="Pitch class.   | 88 MIDI   | 50K cap | OMARRQ 24 layers",
     ),
     # ══════════════════════════════════════════════════════════════════════════
-    # MERT-v1-330M — 24-layer transformer (+1 CNN feature extractor = 25 hidden
-    # states), 1024-dim, 75 Hz. Parameter-scaled-up sibling of MERT-v1-95M.
-    # Full 10-task coverage to mirror MERT-v1-95M-layers.
+    # MERT-v1-330M — DECOMMISSIONED 2026-05-16.
+    # 24-layer transformer, 1024-dim, 75 Hz. The parameter-scaled-up sibling of
+    # MERT-v1-95M. Verified empirically to lose head-to-head against 95M on 4/4
+    # tasks (Covers80, SHS100K, VGMIDITVar, VGMIDITVar-multisf) by MAP deltas
+    # of 0.006–0.018. The extra parameters do not help on these benchmarks.
+    # Configs still live on disk; un-comment + re-run if revisiting.
     # ══════════════════════════════════════════════════════════════════════════
-    SweepDef(
-        model="MERT-v1-330M",
-        task="Covers80",
-        base_config="configs/probe.MERT-v1-330M-layers.Covers80.yaml",
-        num_layers=25,
-        note="Cover retrieval | MAP | zero-shot | 80 songs | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="SHS100K",
-        base_config="configs/probe.MERT-v1-330M-layers.SHS100K.yaml",
-        num_layers=25,
-        note="Cover retrieval | MAP | zero-shot | 5K tracks | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="VGMIDITVar",
-        base_config="configs/probe.MERT-v1-330M-layers.VGMIDITVar.yaml",
-        num_layers=25,
-        note="Theme→variation | MAP | zero-shot | MIDI-rendered | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="GS",
-        base_config="configs/probe.MERT-v1-330M-layers.GS.yaml",
-        num_layers=25,
-        note="Key estimation | 24 classes | weighted_score | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="HookTheoryKey",
-        base_config="configs/probe.MERT-v1-330M-layers.HookTheoryKey.yaml",
-        num_layers=25,
-        note="Key estimation | 24 classes | weighted_score | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="HookTheoryStructure",
-        base_config="configs/probe.MERT-v1-330M-layers.HookTheoryStructure.yaml",
-        num_layers=25,
-        note="Structure cls.  | 7 classes  | macro-F1 | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="GTZANBeatTracking",
-        base_config="configs/probe.MERT-v1-330M-layers.GTZANBeatTracking.yaml",
-        num_layers=25,
-        note="Beat tracking  | beat_f1   | frame-level 75Hz | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="Chords1217",
-        base_config="configs/probe.MERT-v1-330M-layers.Chords1217.yaml",
-        num_layers=25,
-        note="Chord recog.   | 25 classes | frame-level 75Hz | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="HookTheoryMelody",
-        base_config="configs/probe.MERT-v1-330M-layers.HookTheoryMelody.yaml",
-        num_layers=25,
-        note="Melody pitch   | 128 MIDI  | frame-level 75Hz | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="NSynth",
-        base_config="configs/probe.MERT-v1-330M-layers.NSynth.yaml",
-        num_layers=25,
-        note="Pitch class.   | 88 MIDI   | 50K cap | MERT-330M 25 layers",
-    ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="Covers80",
+    #     base_config="configs/probe.MERT-v1-330M-layers.Covers80.yaml",
+    #     num_layers=25,
+    #     note="Cover retrieval | MAP | zero-shot | 80 songs | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="SHS100K",
+    #     base_config="configs/probe.MERT-v1-330M-layers.SHS100K.yaml",
+    #     num_layers=25,
+    #     note="Cover retrieval | MAP | zero-shot | 5K tracks | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="VGMIDITVar",
+    #     base_config="configs/probe.MERT-v1-330M-layers.VGMIDITVar.yaml",
+    #     num_layers=25,
+    #     note="Theme→variation | MAP | zero-shot | MIDI-rendered | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="GS",
+    #     base_config="configs/probe.MERT-v1-330M-layers.GS.yaml",
+    #     num_layers=25,
+    #     note="Key estimation | 24 classes | weighted_score | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="HookTheoryKey",
+    #     base_config="configs/probe.MERT-v1-330M-layers.HookTheoryKey.yaml",
+    #     num_layers=25,
+    #     note="Key estimation | 24 classes | weighted_score | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="HookTheoryStructure",
+    #     base_config="configs/probe.MERT-v1-330M-layers.HookTheoryStructure.yaml",
+    #     num_layers=25,
+    #     note="Structure cls.  | 7 classes  | macro-F1 | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="GTZANBeatTracking",
+    #     base_config="configs/probe.MERT-v1-330M-layers.GTZANBeatTracking.yaml",
+    #     num_layers=25,
+    #     note="Beat tracking  | beat_f1   | frame-level 75Hz | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="Chords1217",
+    #     base_config="configs/probe.MERT-v1-330M-layers.Chords1217.yaml",
+    #     num_layers=25,
+    #     note="Chord recog.   | 25 classes | frame-level 75Hz | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="HookTheoryMelody",
+    #     base_config="configs/probe.MERT-v1-330M-layers.HookTheoryMelody.yaml",
+    #     num_layers=25,
+    #     note="Melody pitch   | 128 MIDI  | frame-level 75Hz | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="NSynth",
+    #     base_config="configs/probe.MERT-v1-330M-layers.NSynth.yaml",
+    #     num_layers=25,
+    #     note="Pitch class.   | 88 MIDI   | 50K cap | MERT-330M 25 layers",
+    # ),
     # ══════════════════════════════════════════════════════════════════════════
     # MuQ + MusicFM — 12-layer transformer (+1 input = 13 hidden states),
     # 1024-dim, 25 Hz. The paper at arXiv:2505.16306 has layer-wise probes
@@ -459,34 +462,41 @@ SWEEPS: list[SweepDef] = [
         num_layers=13,
         note="Cover retrieval | MAP | zero-shot | 80 songs | MuQ 13 layers",
     ),
-    SweepDef(
-        model="MusicFM",
-        task="VGMIDITVar",
-        base_config="configs/probe.MusicFM-layers.VGMIDITVar.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | MIDI-rendered | MusicFM 13 layers",
-    ),
-    SweepDef(
-        model="MusicFM",
-        task="HookTheoryMelody",
-        base_config="configs/probe.MusicFM-layers.HookTheoryMelody.yaml",
-        num_layers=13,
-        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MusicFM 13 layers",
-    ),
-    SweepDef(
-        model="MusicFM",
-        task="SHS100K",
-        base_config="configs/probe.MusicFM-layers.SHS100K.yaml",
-        num_layers=13,
-        note="Cover retrieval | MAP | zero-shot | 5K tracks | MusicFM 13 layers",
-    ),
-    SweepDef(
-        model="MusicFM",
-        task="Covers80",
-        base_config="configs/probe.MusicFM-layers.Covers80.yaml",
-        num_layers=13,
-        note="Cover retrieval | MAP | zero-shot | 80 songs | MusicFM 13 layers",
-    ),
+    # ══════════════════════════════════════════════════════════════════════════
+    # MusicFM — DECOMMISSIONED 2026-05-16.
+    # 12-layer transformer, 1024-dim, 25 Hz. Registered alongside MuQ but
+    # NEVER successfully completed a single sweep — WandB shows 0 finished
+    # runs across all 4 tasks. Treated as inactive until the upstream
+    # checkpoint / pipeline issue is resolved. Un-comment to re-enable.
+    # ══════════════════════════════════════════════════════════════════════════
+    # SweepDef(
+    #     model="MusicFM",
+    #     task="VGMIDITVar",
+    #     base_config="configs/probe.MusicFM-layers.VGMIDITVar.yaml",
+    #     num_layers=13,
+    #     note="Theme→variation | MAP | zero-shot | MIDI-rendered | MusicFM 13 layers",
+    # ),
+    # SweepDef(
+    #     model="MusicFM",
+    #     task="HookTheoryMelody",
+    #     base_config="configs/probe.MusicFM-layers.HookTheoryMelody.yaml",
+    #     num_layers=13,
+    #     note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MusicFM 13 layers",
+    # ),
+    # SweepDef(
+    #     model="MusicFM",
+    #     task="SHS100K",
+    #     base_config="configs/probe.MusicFM-layers.SHS100K.yaml",
+    #     num_layers=13,
+    #     note="Cover retrieval | MAP | zero-shot | 5K tracks | MusicFM 13 layers",
+    # ),
+    # SweepDef(
+    #     model="MusicFM",
+    #     task="Covers80",
+    #     base_config="configs/probe.MusicFM-layers.Covers80.yaml",
+    #     num_layers=13,
+    #     note="Cover retrieval | MAP | zero-shot | 80 songs | MusicFM 13 layers",
+    # ),
     # ══════════════════════════════════════════════════════════════════════════
     # VGMIDI-TVar  ·  MULTI-SOUNDFONT variant
     # Same MIDIs, but rendered with rotating {FluidR3_GM, Shan SGM-Pro 14, ...}
@@ -511,20 +521,21 @@ SWEEPS: list[SweepDef] = [
         num_layers=13,
         note="Theme→variation | MAP | zero-shot | multi-SF render | MERT 13 layers",
     ),
-    SweepDef(
-        model="MERT-v1-330M",
-        task="VGMIDITVar-multisf",
-        base_config="configs/probe.MERT-v1-330M-layers.VGMIDITVar-multisf.yaml",
-        num_layers=25,
-        note="Theme→variation | MAP | zero-shot | multi-SF render | MERT-330M 25 layers",
-    ),
-    SweepDef(
-        model="MusicFM",
-        task="VGMIDITVar-multisf",
-        base_config="configs/probe.MusicFM-layers.VGMIDITVar-multisf.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | multi-SF render | MusicFM 13 layers",
-    ),
+    # MERT-v1-330M + MusicFM commented out per decommission note above.
+    # SweepDef(
+    #     model="MERT-v1-330M",
+    #     task="VGMIDITVar-multisf",
+    #     base_config="configs/probe.MERT-v1-330M-layers.VGMIDITVar-multisf.yaml",
+    #     num_layers=25,
+    #     note="Theme→variation | MAP | zero-shot | multi-SF render | MERT-330M 25 layers",
+    # ),
+    # SweepDef(
+    #     model="MusicFM",
+    #     task="VGMIDITVar-multisf",
+    #     base_config="configs/probe.MusicFM-layers.VGMIDITVar-multisf.yaml",
+    #     num_layers=13,
+    #     note="Theme→variation | MAP | zero-shot | multi-SF render | MusicFM 13 layers",
+    # ),
     SweepDef(
         model="MuQ",
         task="VGMIDITVar-multisf",
@@ -538,6 +549,51 @@ SWEEPS: list[SweepDef] = [
         base_config="configs/probe.OMARRQ-multifeature-25hz.VGMIDITVar-multisf.yaml",
         num_layers=24,
         note="Theme→variation | MAP | zero-shot | multi-SF render | OMARRQ 24 layers",
+    ),
+    # ══════════════════════════════════════════════════════════════════════════
+    # VGMIDI-TVar  ·  LEITMOTIF variant (cross-instrument)
+    # Same MIDIs but program_change events rewritten so theme/variation pairs
+    # span FIVE different GM instruments (Piano, Strings, French Horn, Flute,
+    # Trumpet — see scripts/data/rewrite_vgmidi_programs.py).  Single
+    # SoundFont (Shan SGM-Pro 14) — variation lives in the MIDI itself.
+    # Tests whether encoders that survived the (mild) multi-SoundFont
+    # variation also survive genuine cross-instrument variation, which is
+    # the real leitmotif scenario.  Requires data/VGMIDITVar-leitmotif/.
+    # ══════════════════════════════════════════════════════════════════════════
+    SweepDef(
+        model="CLaMP3",
+        task="VGMIDITVar-leitmotif",
+        base_config="configs/probe.CLaMP3-layers.VGMIDITVar-leitmotif.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | cross-instrument | CLaMP3 13 layers",
+    ),
+    SweepDef(
+        model="MERT-v1-95M",
+        task="VGMIDITVar-leitmotif",
+        base_config="configs/probe.MERT-v1-95M-layers.VGMIDITVar-leitmotif.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | cross-instrument | MERT 13 layers",
+    ),
+    SweepDef(
+        model="MuQ",
+        task="VGMIDITVar-leitmotif",
+        base_config="configs/probe.MuQ-layers.VGMIDITVar-leitmotif.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | cross-instrument | MuQ 13 layers",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature-25hz",
+        task="VGMIDITVar-leitmotif",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.VGMIDITVar-leitmotif.yaml",
+        num_layers=24,
+        note="Theme→variation | MAP | zero-shot | cross-instrument | OMARRQ 24 layers",
+    ),
+    SweepDef(
+        model="CLaMP3-symbolic",
+        task="VGMIDITVar-leitmotif",
+        base_config="configs/probe.CLaMP3-symbolic-layers.VGMIDITVar-leitmotif.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | MIDI-native (program-aware) | CLaMP3-symbolic 13 layers",
     ),
 ]
 
@@ -588,6 +644,11 @@ def _data_present(task: str) -> bool:
         # timbres.  Separate from VGMIDITVar so the FluidR3-only baseline is
         # preserved and WandB comparisons are unambiguous.
         "VGMIDITVar-multisf": "data/VGMIDITVar-multisf/VGMIDITVar.jsonl",
+        # Leitmotif variant: re-rewritten MIDIs (per-idx GM program rotation)
+        # rendered with a single high-quality SoundFont (Shan SGM-Pro 14).
+        # Produced by scripts/data/rewrite_vgmidi_programs.py +
+        # scripts/data/build_vgmiditvar_dataset.py --skip-extract.
+        "VGMIDITVar-leitmotif": "data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()
