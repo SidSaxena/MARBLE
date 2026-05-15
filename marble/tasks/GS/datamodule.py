@@ -134,7 +134,8 @@ class _GSAudioBase(Dataset):
         clip_id = make_clip_id(path, slice_idx)
 
         # Cache hit — skip audio I/O entirely.
-        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+        cache_check = getattr(self, "cache_check_fn", None)
+        if cache_check is not None and cache_check(clip_id):
             waveform = torch.zeros(self.channels, self.clip_len_target)
             return waveform, label, ori_uid, clip_id
 

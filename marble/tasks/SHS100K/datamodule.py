@@ -115,7 +115,8 @@ class _SHS100KAudioBase(Dataset):
         work_id = int(info["work_id"])
         clip_id = make_clip_id(path, slice_idx)
 
-        if self.cache_check_fn is not None and self.cache_check_fn(clip_id):
+        cache_check = getattr(self, "cache_check_fn", None)
+        if cache_check is not None and cache_check(clip_id):
             # Cache hit — skip audio I/O entirely. The task's forward()
             # ignores ``x`` on cache hits and uses the cached (L, H) tensor.
             target_len = int(self.clip_seconds * self.sample_rate)
