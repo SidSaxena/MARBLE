@@ -356,10 +356,58 @@ and the second machine will see all hits.
 | Cache-aware base task (covers 11 supervised tasks) | `marble/core/base_task.py:BaseTask` |
 | Cache-aware retrieval task | `marble/tasks/Covers80/probe.py` (used by SHS100K + VGMIDITVar via re-export) |
 | `clip_id` + audio-I/O bypass in base datamodule (inherited by 10 supervised + symbolic tasks) | `marble/core/base_datamodule.py:BaseAudioDataset` |
-| `clip_id` + audio-I/O bypass in 7 custom datasets | `marble/tasks/{Covers80,SHS100K,VGMIDITVar,GS,EMO,GTZANGenre,NSynth}/datamodule.py` |
+| `clip_id` + audio-I/O bypass in 9 custom datasets | `marble/tasks/{Covers80,SHS100K,VGMIDITVar,GS,EMO,GTZANGenre,NSynth,HookTheoryKey,HookTheoryStructure}/datamodule.py` |
 | Pass-through of extras in audio-transform wrapper | `marble/modules/transforms.py:AudioTransformDataset` |
 | Pre-warm CLI | `scripts/embeddings/extract.py` |
 | Inspect + cleanup CLI | `scripts/embeddings/manage.py` |
+| Static audit of cache integration | `scripts/embeddings/audit_cache_integration.py` |
+
+## Verifying cache integration is wired up (the audit script)
+
+The cache has several silent failure modes — `cache_embeddings: true`
+in a config + cache dir + `_meta.json` get created, but nothing
+actually populates because some link in the chain is missing
+(dataset doesn't emit `clip_id`, task overrides `forward` without
+calling `_cached_forward_layer_tuple`, custom `validation_step`
+drops `clip_ids`, etc.). These are nasty to detect from runtime
+wall-clock alone — fit time looks "about right" because the encoder
+runs cold every epoch, exactly like it did before caching shipped.
+
+`scripts/embeddings/audit_cache_integration.py` catches all of these
+statically:
+
+```bash
+# Audit every cache-enabled config in the repo
+uv run python scripts/embeddings/audit_cache_integration.py
+
+# Filter to a specific task family
+uv run python scripts/embeddings/audit_cache_integration.py --filter 'HookTheory'
+
+# Verbose mode — show every audited config, not just failures
+uv run python scripts/embeddings/audit_cache_integration.py -v
+
+# Best-effort runtime probe (instantiates one dataset, pulls one item,
+# validates 4-tuple shape — skips if jsonl isn't on disk)
+uv run python scripts/embeddings/audit_cache_integration.py --runtime
+```
+
+What it checks per config:
+1. Task class accepts `cache_embeddings` in its `__init__` chain
+2. Task class inherits `EmbeddingCacheMixin` transitively
+3. If `forward()` is overridden, the override actually **calls**
+   `_cached_forward_layer_tuple` (AST analysis, not substring match)
+4. If any `*_step` is overridden AND its body references `batch`, the
+   body must also reference `clip_ids` (no-op overrides that just
+   `return None` are correctly exempted)
+5. Dataset classes either inherit `BaseAudioDataset` or have all three
+   explicit-integration markers in source
+
+Exit code 0 if everything is wired up, 1 on any failure.
+
+**Run this before:**
+- Adding a new cache-enabled config
+- Changing the cache plumbing (any of the mixin / BaseTask / dataset code)
+- Investigating a suspicious sweep wall-clock
 
 **Audio-I/O bypass** plumbing:
 - Each cache-aware dataset has a `cache_check_fn: Callable[[str], bool]
