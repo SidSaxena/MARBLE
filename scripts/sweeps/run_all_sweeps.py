@@ -256,6 +256,13 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Structure class| 7 classes  | acc metric   | OMARRQ 24 layers",
     ),
+    SweepDef(
+        model="MuQ",
+        task="HookTheoryStructure",
+        base_config="configs/probe.MuQ-layers.HookTheoryStructure.yaml",
+        num_layers=13,
+        note="Structure class| 7 classes  | acc metric   | MuQ 13 layers",
+    ),
     # ══════════════════════════════════════════════════════════════════════════
     # MEDIUM — frame-level tasks (many predictions per clip → slower backprop)
     # CLaMP3 excluded: variable token rate incompatible with frame-level labels
@@ -306,6 +313,8 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ 24 layers",
     ),
+    # MuQ × HookTheoryMelody lives in the MuQ-block below alongside the other
+    # 4 MuQ tasks (Covers80, SHS100K, VGMIDITVar, HookTheoryMelody)
     # ══════════════════════════════════════════════════════════════════════════
     # LONG — NSynth pitch classification (50K train cap, still multi-hour/layer)
     # ══════════════════════════════════════════════════════════════════════════
