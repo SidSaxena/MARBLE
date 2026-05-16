@@ -103,17 +103,50 @@ def _find_cache_dir(cache_root: Path, encoder: str) -> Path:
             encoder,
             cands[0].name,
         )
-    return cands[0]
+    chosen = cands[0]
+    n_pt = sum(1 for _ in chosen.glob("*.pt"))
+    if n_pt == 0:
+        raise SystemExit(
+            f"\nCache directory {chosen} contains 0 .pt files.\n"
+            f"\n  This typically means the encoder's datamodule does not emit "
+            f"clip_ids and therefore bypasses the cache entirely.\n"
+            f"  CLaMP3-symbolic is one such case — VGMIDITVarSymbolicBase."
+            f"__getitem__ returns a 3-tuple (patches, work_id, midi_path) with "
+            f"no clip_id, so the cache mechanism never fires for it.\n"
+            f"\n  Workaround: use the WandB aggregate test/map for symbolic and "
+            f"only run this breakdown script on audio encoders (CLaMP3, "
+            f"MERT-v1-95M, MuQ, OMARRQ-multifeature-25hz)."
+        )
+    log.info("Cache contains %d .pt files", n_pt)
+    return chosen
 
 
 def _load_clip_embedding(cache_dir: Path, clip_id: str, layer: int) -> torch.Tensor | None:
-    """Load the (H,) embedding for ``layer`` from the cached ``(L, H)`` tensor."""
+    """Load the (H,) embedding for ``layer`` from the cached ``(L, H)`` tensor.
+
+    The MARBLE cache stores ``{"embedding": tensor}`` (dict, not raw tensor) —
+    see ``EmbeddingCache.put`` which calls ``torch.save({"embedding": emb}, ...)``.
+    We extract the inner tensor here.
+    """
     path = cache_dir / f"{clip_id}.pt"
     if not path.exists():
         return None
-    tensor = torch.load(path, map_location="cpu", weights_only=True)
-    if tensor.dim() != 2:
-        log.warning("Unexpected cache shape %s at %s", tuple(tensor.shape), path)
+    obj = torch.load(path, map_location="cpu", weights_only=True)
+    # Dict (current MARBLE convention) or bare tensor (defensive fallback).
+    if isinstance(obj, dict):
+        tensor = obj.get("embedding")
+        if tensor is None:
+            log.warning("Cache file %s missing 'embedding' key (keys=%s)", path, list(obj))
+            return None
+    else:
+        tensor = obj
+    if not isinstance(tensor, torch.Tensor) or tensor.dim() != 2:
+        log.warning(
+            "Unexpected cache content at %s: type=%s shape=%s",
+            path,
+            type(tensor).__name__,
+            getattr(tensor, "shape", None),
+        )
         return None
     if layer < 0 or layer >= tensor.size(0):
         log.warning(
