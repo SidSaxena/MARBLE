@@ -20,19 +20,19 @@ selection reference covering all tasks.
 
 ## TL;DR
 
-| Encoder | L total | Best layer (single-pool retrieval) | Best layer (cross-instr retrieval) | "Melody / theme" layer | "Song / structure" layer | Two-layer pair |
+| Encoder | L total | Default single-layer pick | Cross-instr peak | "Melody / theme" peak | "Song / structure" peak | Notes |
 |---|---:|---:|---:|---:|---:|---|
-| **MuQ** (primary recommendation) | 13 | **L11** | **L7** | L8 | L10 | L7 + L11 |
-| OMARRQ-multifeature-25hz | 24 | L20 | L15 | L14 | L20 | L15 + L20 |
-| MERT-v1-95M | 13 | L12 | L8 | L3 | L7 | L8 + L12 |
-| CLaMP3 (audio path) | 13 | (broken in aggregate — see leitmotif doc) | L5 | L5 | L11 | — |
-| MERT-v1-330M | 25 | DECOMMISSIONED — lost 4/4 vs 95M; see leitmotif doc | — | — | — | — |
-| **CLaMP3-symbolic** (when MIDI available) | 13 | **meanall** ≈ L11 | (≈ aggregate) | (uniform) | (uniform) | — |
+| **MuQ** (primary) | 13 | **L11** (Pareto-optimal) | L7 (≈L11) | L8 (≈L7) | L10 | Default for real-audio retrieval. L11 alone is enough for ~all use cases — ensemble not justified |
+| **OMARRQ-multifeature-25hz** (alternative) | 24 | **L15** (single layer wins both metrics) | L15 | L14 | L20 | Use if you value metric agreement / broad peak / robustness over absolute performance |
+| MERT-v1-95M | 13 | L12 (aggregate) / L8 (cross) | L8 | L3 | L7 | Consistently 4th audio encoder; not recommended unless infra forces |
+| CLaMP3 (audio path) | 13 | not for single-pool | L5 | L5 | L11 | Aggregate broken at every layer; OK in hybrid pipeline, never single-pool |
+| **CLaMP3-symbolic** (when MIDI available) | 13 | **meanall ≈ L11** | (≈ aggregate) | (uniform) | (uniform) | ~5× aggregate MAP of any audio encoder. Use audio-to-MIDI transcription if needed |
+| MERT-v1-330M | 25 | DECOMMISSIONED — lost 4/4 vs 95M | — | — | — | Configs commented out in run_all_sweeps.py |
 
-- **MuQ wins by a wide margin on real-audio retrieval** (1.3–2.3× the next-best encoder on Covers80 / SHS100K, and 1.06× the next-best on cross-instrument leitmotif).
-- **Two layer recommendations now exist for MuQ**: L11 for single-pool retrieval (Covers80, SHS100K, leitmotif aggregate) and L7 for genuine cross-instrument retrieval in a hybrid pipeline. The aggregate-MAP and per-pair MAP metrics disagree by ~5 layers — see [`leitmotif_findings.md`](leitmotif_findings.md) for the full story.
-- **CLaMP3-symbolic dominates when symbolic input is available.** Aggregate MAP ~5× any audio encoder on the cross-instrument benchmark. See the leitmotif doc for the structural-invariance argument.
-- The "two-layer pair" for MuQ is now **L7 + L11** (cross-instrument champion + single-pool champion), not L10 + L11 as previously recommended. L12 is *strictly weaker* on cross-instrument and only marginally better on aggregate; not worth the trade.
+- **MuQ L11 is Pareto-optimal as a single layer:** it strictly dominates OMARRQ L15 on both cross-instrument MAP (+5%) and aggregate MAP (+85%) at the same dimensionality (1024-dim). Within MuQ's own L7/L11/L12 trio, L11 trades small losses for large gains in either direction — almost any reasonable metric weighting picks L11.
+- **OMARRQ L15 is a strong "principled simple" alternative** when you want metric agreement (aggregate-best and cross-instrument-best are the same layer) and broader peak robustness (cross-instrument MAP stays ≥0.42 across L11–L21, vs MuQ's 5-layer plateau before L12 collapse).
+- **L7 + L11 ensemble was overengineered** — buys ~0.003 cross-instrument MAP at 2× embedding cost. Removed from recommendations. Use **L11 single-layer** by default.
+- **CLaMP3-symbolic dominates when symbolic input is available.** Structurally instrument-invariant via M3 token representation. See [`leitmotif_findings.md`](leitmotif_findings.md) for the full argument.
 
 ---
 
@@ -133,16 +133,15 @@ Hidden states 0–12, hidden dim 1024, token rate 25 Hz, sample rate 24 kHz
 | L12 | **0.198 (1st)** | 0.183 (3rd) | 0.164 (worst) | 0.447 | 0.571 | Covers80 + leitmotif-aggregate peak. Collapses on cross-instrument and VGMIDITVar. **Avoid** unless you specifically need single-pool retrieval and cannot use L11. |
 | L10 | 0.175 (4th) | 0.174 (4th) | 0.181 | 0.478 | **0.591 (1st)** | Structure/section optimum; defensible for context-aware retrieval. |
 
-**Two operational regimes** for MuQ:
+**MuQ L11 is the default.** It is Pareto-optimal as a single layer — within 0.6% of L7's cross-instrument MAP and within 4.4% of L12's aggregate MAP, while beating each of them by ~150% / ~10% on the *other* metric. Pick L11 for any deployment where you don't have a specific reason to favour an extreme.
 
-- **Single-pool retrieval** (one big index, no instrument pre-filter): use **L11**. It peaks on the larger SHS100K, is within 0.005 MAP of L12 on Covers80, and is near-peak on every other axis. L12 marginally beats L11 on aggregate but loses 9% on cross-instrument MAP — not a worthwhile trade.
-- **Hybrid retrieval** (instrument-aware: pre-filter candidates by detected/known instrument, then match): use **L7**. The leitmotif breakdown analysis (`scripts/analysis/vgmiditvar_leitmotif_sweep.py`) shows L7 wins the cross-instrument MAP at 0.493 vs L12's 0.447 — a 10% relative gain on the metric that matters.
+**When to consider L7 instead:** only if your retrieval pipeline pre-filters candidates by instrument so the cross-instrument MAP is the dominant metric. Even then, L7's edge over L11 is 0.003 absolute (0.6% relative) — not consequential for most deployments.
 
-**Two-layer pair:** **L7 + L11** L2-normalize-then-concat. Pairs the cross-instrument champion with the single-pool champion. Doubles embedding size to 2048-dim. **Do not include L12** — strictly weaker on cross-instrument and only marginally better on aggregate.
+**When to consider L12 instead:** only if you specifically need to maximise aggregate (single-pool) MAP and you accept the 10% cross-instrument MAP loss as a fair trade. Rare.
 
-**Three-layer ensemble:** L7 + L8 + L11 if you want maximum cross-instrument robustness (L7/L8 tied on cross, L11 hedges aggregate). 3072-dim.
+**Two-layer ensembles are NOT recommended for MuQ on this task.** The previous L7+L11 recommendation traded 2× embedding cost for ~0.003 MAP improvement — not worthwhile. **L11 single-layer is sufficient.** Re-evaluate this only if you find specific qualitative failure modes attributable to layer choice (verify case-by-case via the breakdown script's per-pair output before committing to an ensemble).
 
-**Why this changed:** the previous "L11 only, two-layer pair = L10 + L11" recommendation was based on aggregate MAP only. The cross-instrument per-pair analysis (built 2026-05-16) revealed that aggregate-MAP rankings disagree with cross-instrument-MAP rankings by 5+ layers for MuQ, MERT, and CLaMP3-audio. See [`leitmotif_findings.md`](leitmotif_findings.md) for the full story.
+**Why this changed (2026-05-16 second pass):** the original recommendation defaulted to ensembles because the previous analysis framed L11 as a "compromise" between L7 and L12. Re-examining the per-pair data, L11 is actually Pareto-optimal — neither L7 nor L12 dominates it on a meaningful trade-off. The ensemble was solving a problem that doesn't exist. See [`leitmotif_findings.md`](leitmotif_findings.md) § Second-pass observations for the full argument.
 
 ### OMARRQ-multifeature-25hz
 
@@ -150,13 +149,26 @@ Hidden states 0–12, hidden dim 1024, token rate 25 Hz, sample rate 24 kHz
 Hidden states 0–23, hidden dim 1024, token rate 25 Hz, sample rate 24 kHz
 ```
 
-| Pick | Covers80 | SHS100K | VGMIDITVar |
-|---|---:|---:|---:|
-| **L14** (single-layer pick — top-3 on all three) | **0.103** | **0.086** | 0.184 (3rd) |
-| L15 (compromise, 2nd on each) | 0.098 | 0.083 | 0.193 |
-| L20 (theme-variation peak) | ~0.097 | ~0.082 | **0.195** |
+| Pick | Covers80 | SHS100K | VGMIDITVar | Leitmotif cross-instr | Leitmotif aggregate |
+|---|---:|---:|---:|---:|---:|
+| **L15** (single-layer pick — wins both leitmotif metrics) | 0.098 | 0.083 | 0.193 | **0.466 (1st)** | **0.047 (1st)** |
+| L14 | **0.103** | **0.086** | 0.184 | 0.460 | 0.045 |
+| L20 (theme-variation peak on prior tasks) | ~0.097 | ~0.082 | **0.195** | 0.426 | 0.033 |
 
-**Two-layer pair:** L14 + L20 (mid-deep + very-deep). 6-layer spread between them is large; bimodality is more pronounced than MuQ.
+**OMARRQ's distinguishing property:** **the only encoder where aggregate-MAP and cross-instrument-MAP both peak at the same layer (L15)**. No specificity-invariance trade-off to manage. Broad peak: cross-instrument MAP stays ≥0.42 across L11–L21 (11 layers); MuQ's plateau is only L7–L11 (5 layers).
+
+**When OMARRQ L15 is preferable to MuQ L11:**
+- You value metric agreement over absolute performance — clean defence of "we used the best layer."
+- You want robustness to slight layer-choice errors (broad peak vs MuQ's narrow plateau).
+- Operational risk hedge against MuQ checkpoint availability.
+- Existing OMARRQ infrastructure makes inference cost amortise better.
+
+**When MuQ L11 is preferable to OMARRQ L15:**
+- You want the absolute best performance — MuQ L11 wins by 5% cross-instrument and 85% aggregate, same dimensionality.
+- You want lower cache footprint (13 MuQ layers vs 24 OMARRQ layers).
+- You want faster inference (half the depth).
+
+**Two-layer pair (only if you need it):** L14 + L20 (mid-deep + very-deep). 6-layer spread; bimodality is more pronounced than MuQ. As with MuQ, a single layer (L15) is usually sufficient for this task.
 
 ### MERT-v1-95M
 
@@ -269,26 +281,33 @@ just doing more compute for no gain.
 > § Recommendations.** This section covers the broader retrieval setup;
 > the leitmotif doc has the deployment-quality detail.
 
-### Single-encoder, single-layer (simplest)
+### Default single-layer pick (covers >90% of use cases)
 
-- **Single-pool retrieval:** MuQ at **L11**. Peaks on SHS100K, near-peak on Covers80, HookTheoryStructure, and VGMIDITVar. Best safe default.
-- **Cross-instrument retrieval (hybrid pipeline):** MuQ at **L7**. Best per-pair MAP (0.493) for the leitmotif scenario where you can pre-filter candidates by instrument.
+**MuQ at L11.** Pareto-optimal: cross-instrument MAP 0.490, aggregate MAP 0.087, both within 5% of their respective peaks at neighbouring layers. Strictly dominates OMARRQ L15 on both metrics at the same dimensionality.
 
-### Single-encoder, two-layer (best one-step improvement)
+### Principled-simple alternative (when metric agreement matters)
 
-**MuQ at L7 + L11, normalized-concat.** Pairs the cross-instrument champion with the single-pool champion. 2048-dim. Covers both retrieval failure modes. Strictly better than L10 + L11 (the previous recommendation) — see leitmotif doc for the per-pair MAP comparison.
+**OMARRQ-multifeature-25hz at L15.** The only encoder where aggregate-best and cross-instrument-best agree at one layer. Broader peak (more robust to layer choice). Loses 5% cross-instrument and 46% aggregate vs MuQ L11 — defensible if those losses don't matter to you.
 
-### Single-encoder, three-layer (kitchen sink)
+### Cross-instrument-only deployment (rare)
 
-**MuQ at L7 + L8 + L11, normalized-concat.** Adds L8 for cross-instrument robustness redundancy. 3072-dim. Use only if L7 + L11 retrieval shows specific failure modes you can attribute to layer choice (verifiable via the breakdown script per-pair output).
+**MuQ L7 OR OMARRQ L15.** Both within 0.005 cross-instrument MAP of MuQ L11 — if the per-pair MAP is the only metric, the absolute best is MuQ L7 (0.493) but the gap over MuQ L11 is small.
 
-### Ensemble across encoders (most ambitious)
+### Two-layer ensemble (rarely justified, see leitmotif doc § Second-pass observations)
 
-**MuQ L7 + L11 + OMARRQ-25hz L15, late fusion.** Combines MuQ's superior cross-instrument retrieval with OMARRQ's complementary depth profile (the only encoder where aggregate and cross-instrument metrics agree). Cost: 3× extraction, 3× DTW. Reserved for cases where MuQ alone plateaus.
+The previously-recommended **MuQ L7 + L11** ensemble buys ~0.003 cross-instrument MAP at 2× embedding cost. Not justified for most deployments. Stick with MuQ L11 single-layer unless you have a specific reason to ensemble (e.g. measured qualitative failure modes attributable to layer choice).
+
+### Cross-encoder ensemble (speculative — pilot before deploying)
+
+**MuQ L11 + OMARRQ-25hz L15, normalize-then-concat.** Combines the two strongest audio encoders. Plausible 3–5% relative gain over MuQ L11 alone; not validated empirically. Worth piloting if you've exhausted single-encoder optimisation, but don't deploy without measuring against your specific corpus.
 
 ### When MIDI is available — use symbolic instead
 
-**CLaMP3-symbolic** at meanall (or L11; basically tied). Aggregate MAP 0.195 on the cross-instrument leitmotif benchmark — roughly 5× the best audio encoder. Trade-off: requires symbolic input. Pair with audio-to-MIDI transcription (Basic Pitch / MT3) for an end-to-end audio pipeline that's likely better than any pure-audio approach. See leitmotif doc § Recommendations recipe A.
+**CLaMP3-symbolic** at meanall (or L11; basically tied). Aggregate MAP 0.195 on the cross-instrument leitmotif benchmark — roughly 5× the best audio encoder. Trade-off: requires symbolic input. Pair with audio-to-MIDI transcription (Basic Pitch / MT3) for an end-to-end audio pipeline that's likely better than any pure-audio approach. See leitmotif doc § Recommendations recipe G.
+
+### Free win for any recipe — exploit the index-direction asymmetry
+
+Index your library by canonical themes (low variation index); query with variations. Up to +0.34 absolute MAP on the right pair at zero cost. Applies to all recommended encoders/layers. See leitmotif doc § The most exploitable asymmetry.
 
 ---
 

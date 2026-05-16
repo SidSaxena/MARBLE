@@ -24,12 +24,13 @@ as CSVs to `output/analysis/leitmotif/`; visualisations as PNGs.
 
 | | |
 |---|---|
-| **Audio encoder for cross-instrument leitmotif retrieval** | **MuQ at L7–L11** (mid-late layer band, all ~0.49 cross-instrument MAP) |
-| **Best when symbolic transcription is available** | **CLaMP3-symbolic** (aggregate MAP 0.195, an order of magnitude above any audio encoder) |
-| **Critical insight** | Aggregate MAP is misleading on this task. The *cross-instrument MAP* (off-diagonal mean of per-pair grid) is the real metric and disagrees with aggregate by 5+ layers for 3 of 4 audio encoders |
-| **Practical recommendation** | If your retrieval architecture allows pre-filtering candidates by instrument, MuQ L7 + the per-pair workflow gives you 10× the per-pair MAP of its aggregate. Otherwise MuQ L11 is the single safest layer |
-| **Asymmetry to exploit** | Theme-as-query → variation-as-target is dramatically easier than the reverse. Index by canonical themes; query with variations |
-| **Ranked audio encoder shortlist** | MuQ (0.493) ≫ OMARRQ-25hz (0.466) > CLaMP3 (0.372) > MERT-95M (0.332) — by best-layer cross-instrument MAP |
+| **Default audio encoder + layer** | **MuQ L11** — Pareto-optimal: cross-instrument MAP 0.490, aggregate MAP 0.087. Strictly dominates OMARRQ L15 on both axes (+5% / +85%) at the same dimensionality |
+| **"Principled simple" alternative** | **OMARRQ-25hz L15** — only encoder where aggregate-best and cross-instrument-best are the same layer; broader peak (more robust to layer choice). Loses ~5% cross / ~46% aggregate vs MuQ L11 |
+| **Best when symbolic input is available** | **CLaMP3-symbolic** (meanall, agg MAP 0.195) — ~5× any audio encoder. Use audio-to-MIDI transcription if needed |
+| **Critical insight** | Aggregate MAP is misleading. The *cross-instrument MAP* (off-diagonal mean of the per-pair grid) is the operationally relevant metric. The two disagree on best layer by 5 layers for MuQ, MERT, and CLaMP3-audio. OMARRQ is the only encoder where they agree |
+| **Asymmetry to exploit** | Theme-as-query → variation-as-target is dramatically easier than the reverse. Index by canonical themes; query with variations. Free +0.34 MAP for the right pair |
+| **Ranked audio encoder shortlist** | MuQ (0.493) > OMARRQ-25hz (0.466) > CLaMP3 (0.372) > MERT-95M (0.332) — by best-layer cross-instrument MAP. MuQ leads OMARRQ by 6%, OMARRQ leads CLaMP3 by 25% |
+| **What changed in the second-pass review** | Previous turn recommended MuQ L7+L11 ensemble. After reanalysis: **L11 single-layer is sufficient**. The ensemble buys 0.003 MAP at 2× cost. Removed |
 
 If you read nothing else, read [§Headline numbers](#headline-numbers)
 and [§Recommendations](#recommendations).
@@ -240,25 +241,35 @@ future work.
 OMARRQ is the most "honest" encoder for this task — what aggregate MAP
 says is what cross-instrument MAP confirms.
 
-### CLaMP3 (audio path) — broken in aggregate, OK at cross-instrument
+### CLaMP3 (audio path) — competitive at cross-instrument, vulnerable to same-instrument distractors
 
 ![CLaMP3 dashboard](../output/analysis/leitmotif/dashboard_CLaMP3.png)
 
-The strangest result. **L5 has cross-instrument MAP 0.372** (3rd-best
-audio encoder), but aggregate MAP is in the noise (0.014) at every
-layer. The L0 "winner" by aggregate (0.017) is a meaningless artefact
-of being slightly less terrible.
+The most diagnostic result. **L5 cross-instrument MAP 0.372** (3rd-best
+audio encoder, competitive with MERT-95M's 0.332), but aggregate MAP
+is uniformly low across all layers (~0.011–0.017). The L0 "winner" by
+aggregate (0.017) is a tiny edge in a noisy regime — don't read
+meaning into it.
 
-What this means: CLaMP3's audio path *can* match across instruments
-(0.37 cross-instrument MAP is not nothing — it's competitive with
-MERT-95M), but it is dominated by same-instrument distractors at every
-layer. Likely cause: contrastive cross-modal pretraining (text + audio
-+ MIDI) pushed CLaMP3 toward strong timbre clustering, which is
-adversarial here.
+What this actually says: CLaMP3's audio path *can* match across
+instruments at usable strength, but is uniquely dominated by
+same-instrument distractors at every layer. The framing is "extreme
+specificity-invariance trade-off in the wrong direction" — the
+encoder has both timbre-specific and content-aware signal, and
+content-aware loses to timbre-specific in the full pool.
 
-**Practical implication:** use CLaMP3 audio only in pre-filtered
-hybrid pipelines, never in single-pool retrieval. Or just use CLaMP3-
-symbolic if you have MIDI, which has aggregate MAP of 0.195.
+Hypothesis for the cause: contrastive cross-modal pretraining (text +
+audio + symbolic) pushes CLaMP3 toward strong timbre clustering, which
+is adversarial here. The depth-normalized peak supports this — CLaMP3
+peaks at L5 / 13 = 0.38 normalized depth, vs masked-prediction
+encoders (MERT, MuQ, OMARRQ) which peak around 0.55–0.62. Contrastive
+training pushes "semantic" features earlier in the network.
+
+**Practical implication:** CLaMP3 audio is a *real* alternative for
+pre-filtered hybrid pipelines (its 0.372 cross-instrument MAP is
+within 25% of MuQ's best). It is **never** the right pick for
+single-pool retrieval. If you have MIDI input, the symbolic variant
+sidesteps the issue entirely (agg MAP 0.195).
 
 ### MERT-v1-95M — same divergence as MuQ, weaker absolute
 
@@ -432,56 +443,92 @@ Caveats:
   input tokenisation, not via learned representation. This means it
   also won't *exploit* instrument cues you might want it to.
 
-### B. You have audio only — single-pool retrieval (one big index)
+### B. You have audio only — default single-layer pick
 
-**Use MuQ L11 or L12.** Aggregate MAP 0.087 / 0.091 respectively. L11
-is the safer pick:
-- Within 0.005 MAP of L12 on aggregate (essentially tied)
-- 9% better than L12 on cross-instrument MAP (0.490 vs 0.447)
-- Far less likely to get caught by edge cases of "last layer
-  over-specialisation"
+**Use MuQ L11.** This is the operationally-optimal single layer
+for the leitmotif task. It Pareto-dominates every other audio
+encoder at the same dimensionality, and Pareto-dominates the
+"obvious" alternatives within MuQ (L7 and L12) on practical trade-offs:
 
-**Avoid:** CLaMP3 audio (broken in aggregate at every layer; do not
-deploy single-pool), MERT-95M (consistently 4th-place on every
-relevant metric).
+|  | Cross-instr MAP | Aggregate MAP |
+|---|---:|---:|
+| **MuQ L11** | **0.490** | **0.087** |
+| OMARRQ L15 | 0.466 (−5%) | 0.047 (−46%) |
+| MuQ L7 | 0.493 (+0.6%) | 0.035 (−60%) |
+| MuQ L12 | 0.447 (−9%) | 0.091 (+4.6%) |
 
-### C. You have audio only — pre-filtered hybrid pipeline
+**Why L11 is genuinely the sweet spot, not a compromise:**
+- vs MuQ L7: gives up 0.003 cross-instrument MAP (0.6%), gains 0.052
+  aggregate (+149%).
+- vs MuQ L12: gives up 0.004 aggregate (4.4%), gains 0.043
+  cross-instrument (+9.6%).
+Almost any reasonable weighting of the two metrics picks L11.
+
+L7 only wins if you weight cross-instrument at >99% importance; L12
+only wins if you weight aggregate at >96%. For pure-audio
+single-pool retrieval, neither is justified over L11.
+
+### C. You have audio only — alternative if you want metric simplicity
+
+**Use OMARRQ-multifeature-25hz L15** if you specifically value:
+- A single layer where aggregate-best and cross-instrument-best agree
+  (no L7-vs-L12 trade-off to defend).
+- Robustness to slight layer choice errors — OMARRQ's cross-instrument
+  MAP stays ≥0.42 over 11 layers (L11–L21); MuQ's plateau is only 5
+  layers (L7–L11) before collapsing.
+- Operational hedge against MuQ checkpoint availability.
+
+OMARRQ L15 loses 5% cross-instrument MAP and 46% aggregate MAP vs MuQ
+L11. If neither of those losses matters in your context, OMARRQ is the
+"principled simple" pick: one layer, one metric, no trade-off
+narrative. For most metric-driven deployments, MuQ L11 wins anyway.
+
+### D. You have audio only — pre-filtered hybrid pipeline
 
 If your retrieval architecture pre-filters candidates by instrument
 (e.g. via an instrument classifier or by orchestrating the index per
-instrument-section), the per-pair MAP is the metric, and **MuQ L7 is
-the choice**. Cross-instrument MAP 0.493, vs. 0.447 at L12 — a 10%
-relative gain.
+instrument-section), the per-pair MAP is the metric. **Either MuQ L7
+(0.493) or OMARRQ L15 (0.466) works** — the cross-instrument gap is
+small enough that other operational considerations (depth, cache size,
+existing infra) probably matter more.
 
-In practice, a hybrid pipeline:
-1. Detect dominant instrument(s) per audio query (e.g. via a small
-   classifier trained on GM instrument labels).
-2. Restrict retrieval to candidates of compatible instruments (or
-   re-rank cross-instrument candidates using L7 features).
-3. Use MuQ L11 for fallback single-pool retrieval if instrument
-   detection confidence is low.
+If MuQ L11 is already in your pipeline as the single-pool layer, MuQ L7
+is the natural addition since it shares the encoder and hidden dim.
 
-### D. Two-layer ensemble
+### E. Two-layer ensemble (rarely justified)
 
-**MuQ L7 + L11, L2-normalize-then-concat.** Pairs the cross-instrument
-champion with the aggregate-balanced layer. Doubles embedding size
-(2048-dim vs 1024-dim) but covers both failure modes.
+The previously-recommended **MuQ L7 + L11** ensemble buys you ~0.003
+MAP on cross-instrument (L7's narrow edge over L11) at 2× embedding
+cost. **For most deployments this is not a worthwhile trade.**
+Reasons to skip the ensemble:
+- L11 already gives 99.4% of L7's cross-instrument MAP.
+- 2× the storage in your retrieval index.
+- 2× the DTW or cosine compute downstream.
 
-L8 + L11 is a reasonable alternative if L7's "L8 plateau" makes you
-prefer slightly later layers. Both are within 0.005 MAP of each other
-on the relevant metric.
+The ensemble only justifies its cost if you either have qualitative
+failure modes you've traced to layer choice (verify case-by-case
+first), or you specifically need to maximise cross-instrument MAP and
+storage cost is irrelevant. In all other cases, **stick with MuQ L11
+single-layer**.
 
-**Avoid L12 in any ensemble** — its cross-instrument collapse hurts
-the joint embedding more than its aggregate gain helps.
+### F. Cross-encoder ensemble (speculative)
 
-### E. Cross-encoder ensemble (most ambitious)
+**MuQ L11 + OMARRQ-25hz L15, normalize-then-concat.** Combines the
+two strongest audio encoders. Speculative ~3–5% relative gain over MuQ
+L11 alone; not validated empirically. Worth piloting if you've
+exhausted single-encoder optimization, but don't deploy without
+measuring against your specific corpus.
 
-**MuQ L7 + L11 + OMARRQ-25hz L15, normalize-then-concat.** Three
-embeddings, 3072-dim. Expected ~5% relative gain over best single
-encoder; pricier in disk and inference compute. Worth piloting if
-you've maxed out single-encoder gains.
+### G. Have MIDI? Skip audio entirely
 
-### F. Index-direction trick (free win)
+CLaMP3-symbolic (meanall) at aggregate MAP 0.195. ~5× any audio
+encoder. The trade-off is needing MIDI input — either native MIDI
+corpus or audio-to-MIDI transcription as a preprocessing step.
+Transcription quality becomes the bottleneck, but for a leitmotif
+corpus where transcription is feasible, this is by far the strongest
+option.
+
+### H. Index-direction trick (free win, applies to all recipes)
 
 Regardless of which encoder/layer you use: **index your library by
 canonical themes (low variation index), query with variations**. The
@@ -559,6 +606,107 @@ test on 20–50 query-candidate pairs across encoders would be a
 valuable sanity check. Future work.
 
 ---
+
+## Second-pass observations (added 2026-05-16)
+
+After the first-pass analysis was published, a careful re-read
+surfaced several things the first pass missed or framed misleadingly.
+Documented here for transparency.
+
+### MuQ L11 is Pareto-optimal, not a "compromise"
+
+The first pass framed L11 as "the safer pick between L7 and L12." That
+undersells it. L11 trades 0.003 cross-instrument MAP (0.6% relative)
+for 0.052 aggregate MAP (+149% relative) vs L7. It trades 0.004
+aggregate MAP (4.4% relative) for 0.043 cross-instrument MAP (+9.6%
+relative) vs L12. Almost any reasonable weighting picks L11; L7 only
+wins at >99% cross weighting; L12 only wins at >96% aggregate
+weighting. **L11 is the operationally-optimal single layer.**
+
+### The L7 + L11 ensemble was overengineered
+
+First-pass recommendation was MuQ L7 + L11 normalize-then-concat. The
+ensemble buys ~0.003 MAP on cross-instrument (L7's narrow edge over
+L11) at 2× embedding storage cost. Not justified. **Removed from
+recommendations.** Use L11 alone.
+
+### OMARRQ L15 is a stronger alternative than I implied
+
+First-pass framed OMARRQ as "second-best." That's true on raw numbers
+(MuQ L11 dominates OMARRQ L15 by 5–46% across both metrics), but
+OMARRQ has unique properties that may matter for some deployments:
+
+- **Single layer satisfies both metrics** (aggregate-best and
+  cross-instrument-best agree at L15). Cleaner story for paper /
+  production interpretability.
+- **Broad peak**: cross-instrument MAP stays ≥0.42 across L11–L21
+  (11 consecutive layers). MuQ's plateau is L7–L11 (5 layers) before
+  collapsing at L12. OMARRQ is more robust to slight layer choice
+  errors.
+- **Depth-normalised peak position is identical to MERT**: both at
+  0.62 normalised depth, suggesting the architectural pattern
+  generalises across masked-prediction encoders.
+
+OMARRQ should be presented as a real alternative, not relegated to
+"second place." For deployments that prioritise operational simplicity
+over absolute performance, OMARRQ L15 is defensible.
+
+### Depth-normalised peak position is itself a finding
+
+Three of four masked-prediction-style encoders cross-peak at 0.54–0.62
+normalised depth:
+
+```
+MuQ              L7 / 13 = 0.54
+MERT-v1-95M      L8 / 13 = 0.62
+OMARRQ-25hz      L15 / 24 = 0.62
+CLaMP3 (audio)   L5 / 13 = 0.38   ← outlier
+```
+
+The CLaMP3 outlier is consistent with its contrastive cross-modal
+pretraining pushing semantic features earlier. The MuQ / MERT / OMARRQ
+convergence around 0.55–0.62 is consistent with masked-prediction
+training building "abstract" features in a structurally similar
+mid-late layer band regardless of encoder architecture. Suggestive
+evidence for a general principle, though n=3 isn't conclusive.
+
+### The Trumpet anomaly is real, not just statistical noise
+
+First-pass dismissed Trumpet cells as low-N noise. While the N is
+indeed small (16–22 per cell), all four encoders agree
+Piano→Trumpet retrieval is unusually high:
+
+| Encoder | Layer | Piano→Trumpet MAP | N |
+|---|---:|---:|---:|
+| MuQ | L7 | 0.799 | 22 |
+| OMARRQ-25hz | L15 | 0.682 | 22 |
+| MERT-v1-95M | L8 | 0.639 | 22 |
+| CLaMP3 (audio) | L5 | 0.606 | 22 |
+
+Cross-encoder agreement at this N is more credible than any single
+encoder's number. Plausible mechanism: trumpet's strong fundamental +
+simple harmonic structure overlaps spectrally with piano's clear
+upper-register fundamentals — easy to "match by note content."
+Alternatively (less interesting): the Variation-Transformer happens
+to produce melodically faithful trumpet variations specifically.
+
+Doesn't change recommendations but worth flagging for the paper.
+
+### CLaMP3-symbolic meanall vs L11 flip is small but consistent
+
+On original VGMIDITVar (single SoundFont), L11 wins. On the leitmotif
+variant, meanall ties L11. The meanall ≈ L11 finding on the harder
+task suggests early-layer "raw note token" representations are more
+program-invariant than L11's program-aware abstraction — averaging
+dilutes L11's specificity in the right direction. Tiny effect (0.0005
+absolute MAP) but consistent with the structural-invariance argument.
+
+### Cross-encoder ensemble was speculative, not validated
+
+First-pass listed MuQ L7 + L11 + OMARRQ L15 as the "most ambitious"
+recipe. Re-classified as "speculative — pilot before deploying." The
+expected gain (~3–5%) is plausible but unmeasured. Not a default
+recommendation.
 
 ## Open questions / future work
 
