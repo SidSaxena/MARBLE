@@ -5,25 +5,34 @@ layer to extract from each frozen encoder. Used to drive the
 leitmotifs project's per-track embedding strategy and any
 downstream MARBLE probe work.
 
-Last updated: 2026-05-15 (results through MuQ + MERT-v1-330M sweeps).
+Last updated: 2026-05-16 (after VGMIDITVar-leitmotif cross-instrument sweep).
 For implementation details on caching / extracting, see
 [`embedding_cache.md`](embedding_cache.md).
+
+**For the deep-dive on cross-instrument leitmotif retrieval (the headline
+deployment scenario): see [`leitmotif_findings.md`](leitmotif_findings.md).**
+That doc covers the per-instrument-pair MAP analysis, the
+aggregate-vs-cross-instrument metric divergence, the theme→variation
+asymmetry, and per-encoder dashboards. This doc is the broader layer-
+selection reference covering all tasks.
 
 ---
 
 ## TL;DR
 
-| Encoder | L total | Best single layer for leitmotif | "Melody / theme" layer | "Song / structure" layer | Two-layer pair |
-|---|---:|---:|---:|---:|---|
-| **MuQ** (primary recommendation) | 13 | **L11** | L8 | L10 | L10 + L11 |
-| OMARRQ-multifeature-25hz | 24 | **L14** | L14 | L20 | L14 + L20 |
-| MERT-v1-95M | 13 | **L7** | L3 | L7 | L3 + L7 |
-| CLaMP3 (audio path) | 13 | L11 | L5 | L11 | — |
-| MERT-v1-330M | 25 | (sparse data — see § Sparse-data row) | — | — | — |
+| Encoder | L total | Best layer (single-pool retrieval) | Best layer (cross-instr retrieval) | "Melody / theme" layer | "Song / structure" layer | Two-layer pair |
+|---|---:|---:|---:|---:|---:|---|
+| **MuQ** (primary recommendation) | 13 | **L11** | **L7** | L8 | L10 | L7 + L11 |
+| OMARRQ-multifeature-25hz | 24 | L20 | L15 | L14 | L20 | L15 + L20 |
+| MERT-v1-95M | 13 | L12 | L8 | L3 | L7 | L8 + L12 |
+| CLaMP3 (audio path) | 13 | (broken in aggregate — see leitmotif doc) | L5 | L5 | L11 | — |
+| MERT-v1-330M | 25 | DECOMMISSIONED — lost 4/4 vs 95M; see leitmotif doc | — | — | — | — |
+| **CLaMP3-symbolic** (when MIDI available) | 13 | **meanall** ≈ L11 | (≈ aggregate) | (uniform) | (uniform) | — |
 
-- **MuQ wins by a wide margin on real-audio retrieval** (1.3–2.3× the next-best encoder on Covers80 / SHS100K). It's the right primary encoder for leitmotif.
-- **The MuQ layer pick is governed by Covers80 + SHS100K, not VGMIDITVar.** Earlier drafts of this doc named L8 as the leitmotif layer based on VGMIDITVar alone — that was a triangulation error. Real-audio cover retrieval (the closer proxy to real-soundtrack leitmotif matching) peaks at L11–L12. VGMIDITVar peaks at L8 but tests a narrower invariance (MIDI-rendered, single-soundfont, model-generated variations); see § _Sparse-data row_ and the audit notes below.
-- The "two-layer pair" combines two late-block representations (motif-aware + structure-aware). L2-normalize each then concat is the default combination strategy.
+- **MuQ wins by a wide margin on real-audio retrieval** (1.3–2.3× the next-best encoder on Covers80 / SHS100K, and 1.06× the next-best on cross-instrument leitmotif).
+- **Two layer recommendations now exist for MuQ**: L11 for single-pool retrieval (Covers80, SHS100K, leitmotif aggregate) and L7 for genuine cross-instrument retrieval in a hybrid pipeline. The aggregate-MAP and per-pair MAP metrics disagree by ~5 layers — see [`leitmotif_findings.md`](leitmotif_findings.md) for the full story.
+- **CLaMP3-symbolic dominates when symbolic input is available.** Aggregate MAP ~5× any audio encoder on the cross-instrument benchmark. See the leitmotif doc for the structural-invariance argument.
+- The "two-layer pair" for MuQ is now **L7 + L11** (cross-instrument champion + single-pool champion), not L10 + L11 as previously recommended. L12 is *strictly weaker* on cross-instrument and only marginally better on aggregate; not worth the trade.
 
 ---
 
@@ -116,18 +125,24 @@ in priority order:
 Hidden states 0–12, hidden dim 1024, token rate 25 Hz, sample rate 24 kHz
 ```
 
-| Pick | Covers80 MAP | SHS100K MAP | VGMIDITVar MAP | HookTheoryStructure acc | Use when |
-|---|---:|---:|---:|---:|---|
-| **L11** | 0.193 (2nd) | **0.190** (1st) | 0.175 | 0.589 (2nd) | **Primary leitmotif pick** — peaks on the larger real-audio cover-retrieval task and is near-peak on every other axis. |
-| L12 | **0.198** (1st) | 0.183 (3rd) | 0.164 (worst) | 0.571 | Covers80 optimum, but a 16% relative MAP drop on VGMIDITVar warns this layer is task-specialized — risky default. |
-| L10 | 0.175 (4th) | 0.174 (4th) | 0.181 | **0.591** (1st) | Structure/section optimum; defensible for context-aware retrieval but trails on raw retrieval. |
-| L8 | 0.151 | 0.139 | **0.196** (1st) | 0.582 | MIDI-rendered theme/variation optimum only. Trails badly on real audio. |
+| Pick | Covers80 MAP | SHS100K MAP | VGMIDITVar MAP | Leitmotif cross-instr MAP | HookTheoryStructure acc | Use when |
+|---|---:|---:|---:|---:|---:|---|
+| **L11** | 0.193 (2nd) | **0.190** (1st) | 0.175 | 0.490 | 0.589 (2nd) | **Primary single-pool pick** — peaks on real-audio cover retrieval and near-peak on cross-instrument leitmotif. |
+| **L7** | 0.148 | 0.134 | 0.196 (3rd) | **0.493 (1st)** | 0.545 | **Primary cross-instrument pick** — best layer when retrieval is restricted to per-instrument pools (hybrid pipeline). |
+| L8 | 0.151 | 0.139 | **0.196 (1st)** | 0.491 | 0.582 | MIDI-rendered theme/variation peak; tied with L7/L11 on cross-instrument. |
+| L12 | **0.198 (1st)** | 0.183 (3rd) | 0.164 (worst) | 0.447 | 0.571 | Covers80 + leitmotif-aggregate peak. Collapses on cross-instrument and VGMIDITVar. **Avoid** unless you specifically need single-pool retrieval and cannot use L11. |
+| L10 | 0.175 (4th) | 0.174 (4th) | 0.181 | 0.478 | **0.591 (1st)** | Structure/section optimum; defensible for context-aware retrieval. |
 
-**Why L11 over L12:** L12 wins Covers80 by 0.005 MAP but loses SHS100K (the larger, harder, noisier dataset) by 0.007 MAP and collapses on VGMIDITVar. The cross-task average and the variance both favor L11. The L11–L12 dip pattern (L11 strong, L12 slightly worse on larger sets) repeats across both MuQ retrieval results and the HookTheoryStructure classification result — consistent with the last layer being slightly over-specialized to MuQ's pretraining objective.
+**Two operational regimes** for MuQ:
 
-**Why not L8 (the previous recommendation):** L8 only wins on VGMIDITVar, which is single-soundfont MIDI-rendered audio with model-generated *musical* variations (different notes, not different instruments). It's a *narrower* invariance test than Covers80/SHS100K — those test full real-audio variation including timbre, key, tempo, recording fidelity, and vocal/mix differences simultaneously. For real-soundtrack leitmotif retrieval (real audio, real orchestrations), the wider invariance test is the closer proxy.
+- **Single-pool retrieval** (one big index, no instrument pre-filter): use **L11**. It peaks on the larger SHS100K, is within 0.005 MAP of L12 on Covers80, and is near-peak on every other axis. L12 marginally beats L11 on aggregate but loses 9% on cross-instrument MAP — not a worthwhile trade.
+- **Hybrid retrieval** (instrument-aware: pre-filter candidates by detected/known instrument, then match): use **L7**. The leitmotif breakdown analysis (`scripts/analysis/vgmiditvar_leitmotif_sweep.py`) shows L7 wins the cross-instrument MAP at 0.493 vs L12's 0.447 — a 10% relative gain on the metric that matters.
 
-**Two-layer pair:** L10 + L11 (structure + motif), L2-normalize-then-concat. Stays in the late-layer neighborhood — both layers are evidence-backed across multiple tasks. Don't include L12 (collapses on VGMIDITVar) or pair L8 with a late layer (L8 already trails on real audio).
+**Two-layer pair:** **L7 + L11** L2-normalize-then-concat. Pairs the cross-instrument champion with the single-pool champion. Doubles embedding size to 2048-dim. **Do not include L12** — strictly weaker on cross-instrument and only marginally better on aggregate.
+
+**Three-layer ensemble:** L7 + L8 + L11 if you want maximum cross-instrument robustness (L7/L8 tied on cross, L11 hedges aggregate). 3072-dim.
+
+**Why this changed:** the previous "L11 only, two-layer pair = L10 + L11" recommendation was based on aggregate MAP only. The cross-instrument per-pair analysis (built 2026-05-16) revealed that aggregate-MAP rankings disagree with cross-instrument-MAP rankings by 5+ layers for MuQ, MERT, and CLaMP3-audio. See [`leitmotif_findings.md`](leitmotif_findings.md) for the full story.
 
 ### OMARRQ-multifeature-25hz
 
@@ -248,21 +263,32 @@ just doing more compute for no gain.
 
 ## Suggestions and recommendations
 
+> **For deployment-scenario-specific recipes covering single-pool vs hybrid
+> retrieval, the index-direction asymmetry trick, and per-encoder-pair
+> ensemble guidance, see [`leitmotif_findings.md`](leitmotif_findings.md)
+> § Recommendations.** This section covers the broader retrieval setup;
+> the leitmotif doc has the deployment-quality detail.
+
 ### Single-encoder, single-layer (simplest)
 
-**MuQ at L11.** Peaks on SHS100K and is near-peak on Covers80, HookTheoryStructure, and VGMIDITVar. Best single-layer baseline for real-soundtrack leitmotif retrieval.
+- **Single-pool retrieval:** MuQ at **L11**. Peaks on SHS100K, near-peak on Covers80, HookTheoryStructure, and VGMIDITVar. Best safe default.
+- **Cross-instrument retrieval (hybrid pipeline):** MuQ at **L7**. Best per-pair MAP (0.493) for the leitmotif scenario where you can pre-filter candidates by instrument.
 
 ### Single-encoder, two-layer (best one-step improvement)
 
-**MuQ at L10 + L11, normalized-concat.** Stays in the late-layer neighborhood where both layers are evidence-backed. Disk cost: 26 KB/clip (double of single-layer). DTW cost: doubled. Expected to outperform single-layer L11 by a few percent on retrieval-style matching, with the gain coming from layer 10's structural-context signal complementing layer 11's motif-identity signal.
+**MuQ at L7 + L11, normalized-concat.** Pairs the cross-instrument champion with the single-pool champion. 2048-dim. Covers both retrieval failure modes. Strictly better than L10 + L11 (the previous recommendation) — see leitmotif doc for the per-pair MAP comparison.
 
 ### Single-encoder, three-layer (kitchen sink)
 
-**MuQ at L8 + L10 + L11, normalized-concat.** Adds L8 to recover the MIDI-rendered/motif-only invariance regime, in case the deployment data is more synthetic than expected. Use only if qualitative inspection of L10 + L11 retrievals shows the two-layer ensemble missing instrumentation-invariant matches.
+**MuQ at L7 + L8 + L11, normalized-concat.** Adds L8 for cross-instrument robustness redundancy. 3072-dim. Use only if L7 + L11 retrieval shows specific failure modes you can attribute to layer choice (verifiable via the breakdown script per-pair output).
 
 ### Ensemble across encoders (most ambitious)
 
-**MuQ L8+L11 + OMARRQ-25hz L14, late fusion.** Combines MuQ's superior real-audio retrieval with OMARRQ's complementary theme-variation profile. Cost: 3× extraction, 3× DTW. Reserved for the case where the single-encoder approach plateaus.
+**MuQ L7 + L11 + OMARRQ-25hz L15, late fusion.** Combines MuQ's superior cross-instrument retrieval with OMARRQ's complementary depth profile (the only encoder where aggregate and cross-instrument metrics agree). Cost: 3× extraction, 3× DTW. Reserved for cases where MuQ alone plateaus.
+
+### When MIDI is available — use symbolic instead
+
+**CLaMP3-symbolic** at meanall (or L11; basically tied). Aggregate MAP 0.195 on the cross-instrument leitmotif benchmark — roughly 5× the best audio encoder. Trade-off: requires symbolic input. Pair with audio-to-MIDI transcription (Basic Pitch / MT3) for an end-to-end audio pipeline that's likely better than any pure-audio approach. See leitmotif doc § Recommendations recipe A.
 
 ---
 
