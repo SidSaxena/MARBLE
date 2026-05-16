@@ -40,6 +40,8 @@ dependencies = [
     "yt-dlp",        # download_hooktheory.py
     "numpy>=1.19",
     "scipy>=1.5",
+    "matplotlib",    # scripts/analysis/* visualisations
+    "seaborn",       # scripts/analysis/* heatmaps + nicer defaults
     "numba",         # GTZANBeatTracking HMM (replaces the old Cython extension)
     "omar-rq @ git+https://github.com/MTG/omar-rq.git",  # OMARRQ encoder
     "hf-xet>=1.5.0",
