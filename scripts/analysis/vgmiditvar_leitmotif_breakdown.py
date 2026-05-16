@@ -19,7 +19,7 @@ The script reads:
   1. The JSONL at  data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl
      (must have a `gm_program` field per record, written by the renderer
      when --instrument-map is passed).
-  2. Cached embeddings under  data/embeddings_cache/<encoder>/
+  2. Cached embeddings under  output/.emb_cache/<encoder>/
      VGMIDITVar-leitmotif__<config_hash>/  — written by the cache during
      the layer sweep.
 
@@ -29,10 +29,9 @@ the cosine similarity matrix is sliced by gm_program to compute MAP per
 
 Usage:
     uv run python scripts/analysis/vgmiditvar_leitmotif_breakdown.py \\
-        --cache-root data/embeddings_cache \\
-        --encoder MuQ \\
-        --jsonl data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl \\
-        --layer 11
+        --encoder MuQ --layer 11
+
+The default --cache-root is output/.emb_cache (the MARBLE convention).
 """
 
 from __future__ import annotations
@@ -54,12 +53,21 @@ log = logging.getLogger(__name__)
 def _clip_id(audio_path: str, slice_idx: int = 0) -> str:
     """Replicate ``marble.utils.emb_cache.make_clip_id``.
 
+    Format: ``<stem>__<sha1(posix-path)[:8]>__c<slice_idx>``.
+
+    IMPORTANT: must normalize via ``as_posix()`` BEFORE hashing —
+    otherwise on Windows the backslash vs forward-slash difference
+    yields a different hash than what the cache used at write time
+    and every lookup misses. This precisely matches the upstream
+    implementation in marble/utils/emb_cache.py:make_clip_id.
+
     Inline to avoid pulling in the full marble import chain (heavy)
     for a small analysis script.
     """
     stem = Path(audio_path).stem
-    h = hashlib.sha1(audio_path.encode()).hexdigest()[:8]
-    return f"{stem}__{h}__c{slice_idx}"
+    norm = Path(audio_path).as_posix()
+    h = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:8]
+    return f"{stem}__{h}__c{int(slice_idx)}"
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -236,7 +244,11 @@ def main() -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--cache-root", default="data/embeddings_cache")
+    ap.add_argument(
+        "--cache-root",
+        default="output/.emb_cache",
+        help="Cache root. Default matches MARBLE's DEFAULT_CACHE_ROOT.",
+    )
     ap.add_argument(
         "--encoder",
         required=True,
