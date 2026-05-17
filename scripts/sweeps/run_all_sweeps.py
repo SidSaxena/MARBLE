@@ -267,6 +267,40 @@ SWEEPS: list[SweepDef] = [
         num_layers=13,
         note="Structure class| 7 classes  | acc metric   | MuQ 13 layers",
     ),
+    # ── HXMSA (Harmonix Set) — track-level structure on 912 Western pop tracks ─
+    # 13 functional classes (canonical Harmonix inventory after dropping the
+    # "end" terminator and merging "instrumental" → "inst"). Metrics: accuracy
+    # + macro-F1 (the 13 classes are imbalanced ~60×). Build via
+    # scripts/data/build_hxmsa_dataset.py — yt-dlp + ffmpeg segment slicing.
+    # CLaMP3-symbolic skipped: Harmonix has no MIDI distribution.
+    SweepDef(
+        model="CLaMP3",
+        task="HXMSA",
+        base_config="configs/probe.CLaMP3-layers.HXMSA.yaml",
+        num_layers=13,
+        note="Structure class| 13 classes | acc+macro_f1 | CLaMP3 13 layers",
+    ),
+    SweepDef(
+        model="MERT-v1-95M",
+        task="HXMSA",
+        base_config="configs/probe.MERT-v1-95M-layers.HXMSA.yaml",
+        num_layers=13,
+        note="Structure class| 13 classes | acc+macro_f1 | MERT 13 layers",
+    ),
+    SweepDef(
+        model="MuQ",
+        task="HXMSA",
+        base_config="configs/probe.MuQ-layers.HXMSA.yaml",
+        num_layers=13,
+        note="Structure class| 13 classes | acc+macro_f1 | MuQ 13 layers",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature-25hz",
+        task="HXMSA",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.HXMSA.yaml",
+        num_layers=24,
+        note="Structure class| 13 classes | acc+macro_f1 | OMARRQ 24 layers",
+    ),
     SweepDef(
         model="MuQ",
         task="HookTheoryKey",
@@ -649,6 +683,11 @@ def _data_present(task: str) -> bool:
         # Produced by scripts/data/rewrite_vgmidi_programs.py +
         # scripts/data/build_vgmiditvar_dataset.py --skip-extract.
         "VGMIDITVar-leitmotif": "data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl",
+        # HXMSA (Harmonix Set): build via
+        # `uv run python scripts/data/build_hxmsa_dataset.py`
+        # which clones the upstream annotations, downloads audio via yt-dlp,
+        # and slices per-segment FLACs. See docs/data/hxmsa_setup.md.
+        "HXMSA": "data/HXMSA/HXMSA.train.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()
