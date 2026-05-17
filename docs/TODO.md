@@ -60,6 +60,25 @@ estimated <1 min per layer.
 
 ## Open
 
+### 0. Music structure analysis dataset queue
+
+Live priority list for adding new MSA tasks to MARBLE. Full survey + per-dataset profiles in [`structure_datasets_survey.md`](structure_datasets_survey.md).
+
+| Status | Dataset | Domain | Why |
+|---|---|---|---|
+| 🚧 Queued (configs landed) | **HXMSA** | Western pop (Harmonix) | 912 tracks, 13-class functional segments. See [`data/hxmsa_setup.md`](data/hxmsa_setup.md). Next sweep candidate. |
+| 📝 Planned (runbook drafted) | **SuperMario Structure** | Video game | 554 Mario pieces, 6-class VGM-native labels (`loop`, `stinger`). See [`data/supermario_setup.md`](data/supermario_setup.md). MIDI-render via SGM-Pro. |
+| 📋 Recommended next | **SongFormBench** (Oct 2025) | General pop | 300 expert-verified tracks; SOTA benchmark from current paper. ~3 h impl. |
+| 📋 Recommended next | **BPS-Motif** | Classical (Beethoven) | Direct leitmotif analogue — 263 motifs in Beethoven sonatas. ~6 h impl. |
+| 📋 Strong candidate | **JSD** (Jazz Structure Dataset) | Jazz | 340 tracks; extends genre coverage. ~4 h impl. |
+| 📋 Strong candidate | **TAVERN** | Classical | Theme+variation parallel to VGMIDITVar in the classical canon. ~5 h impl. |
+| 📋 Strong candidate | **BPSD** | Classical (Beethoven) | Multi-version retrieval analogue to Covers80 for classical. ~6 h impl. |
+| 📋 Large but expensive | **NES-VMDB** | Video game (NES) | 474 hours; largest VGM dataset. ~8 h impl. |
+| 📋 Large but expensive | **SALAMI** | Multi-genre | 1356 tracks, gold-standard boundary benchmark. ~8 h impl. |
+| 📋 Lower priority | Raveform, Annotated Mozart Sonatas, YM2413-MDB, OSSL, Mozart Texture, Isophonics/RWC | Various | Niche or partial fit — see survey doc for details. |
+
+**Recommended implementation sequence:** finish HXMSA → SuperMario → SongFormBench → BPS-Motif. That gives 4 distinct axes (large pop / VGM / SOTA general / classical motif) in ~14 hours of focused work.
+
 ### 1. Leitmotifs matrix-profile result cache (separate repo)
 
 In `/Users/sid/leitmotifs/`. The matrix-profile cosine-similarity step
