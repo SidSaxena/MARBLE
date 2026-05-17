@@ -23,6 +23,9 @@ Subcommands
     uv run python scripts/embeddings/manage.py clear \\
         OMARRQ-multifeature-25hz/SHS100K__a3b8c1d2
 
+    # Delete all caches
+    uv run python scripts/embeddings/manage.py clear --all
+
 All destructive ops dry-run by default — pass ``--apply`` to actually
 delete.
 """
@@ -121,7 +124,43 @@ def cmd_info(args: argparse.Namespace) -> None:
 
 
 def cmd_clear(args: argparse.Namespace) -> None:
+    if args.all and args.target:
+        print("Error: cannot use both --all and specify a target", file=sys.stderr)
+        sys.exit(1)
+    if not args.all and not args.target:
+        print("Error: must specify a target or use --all", file=sys.stderr)
+        sys.exit(1)
+
     root = Path(args.root)
+
+    if args.all:
+        # Clear all caches under the root
+        if not root.exists():
+            print(f"No cache root at {root}")
+            return
+        encoder_dirs = [d for d in root.iterdir() if d.is_dir()]
+        if not encoder_dirs:
+            print(f"Cache root {root} is empty.")
+            return
+
+        n_clips = sum(
+            _count_clips(d)
+            for enc_dir in encoder_dirs
+            for d in enc_dir.iterdir() if d.is_dir()
+        )
+        size = sum(_dir_size_bytes(d) for d in encoder_dirs)
+        print(f"Target:  All caches under {root}")
+        print(f"Will delete: {n_clips:,} cached clips, {_human_bytes(size)}")
+        if not args.apply:
+            print("\n(dry-run — pass --apply to actually delete)")
+            return
+
+        for enc_dir in encoder_dirs:
+            shutil.rmtree(enc_dir)
+        print("✓ deleted all caches.")
+        return
+
+    # Clear specific target
     rel = args.target  # may be "<encoder>" or "<encoder>/<task__hash>"
     target = root / rel
     if not target.exists():
@@ -174,9 +213,14 @@ def main() -> None:
     sp_clear = sub.add_parser("clear", help="Delete cache directories.")
     sp_clear.add_argument(
         "target",
+        nargs="?",
         help="Subdirectory under the cache root to delete. Can be an "
         "encoder slug (e.g. 'OMARRQ-multifeature-25hz' deletes all of "
-        "its caches) or '<encoder>/<task__hash>' for one specific cache.",
+        "its caches) or '<encoder>/<task__hash>' for one specific cache. "
+        "Omit this to use --all.",
+    )
+    sp_clear.add_argument(
+        "--all", action="store_true", help="Delete all caches under the root."
     )
     sp_clear.add_argument(
         "--apply", action="store_true", help="Actually delete (default: dry-run)."
