@@ -260,7 +260,33 @@ def main() -> None:
         "neither system Chrome nor system Edge works (e.g. corporate "
         "Windows machine that only has Firefox).",
     )
+    ap.add_argument(
+        "--no-proxy",
+        action="store_true",
+        help="Bypass the system proxy. Chromium-based browsers (bundled "
+        "Chromium, system Edge, system Chrome) all inherit the Windows "
+        "system proxy via WinHTTP / Internet Options, which causes "
+        "ERR_TUNNEL_CONNECTION_FAILED when the proxy is misconfigured, "
+        "behind a stale VPN, or set to a PAC URL that's unreachable. "
+        "Firefox uses its own proxy settings, which is why it often "
+        "works when Chromium doesn't. Pass this flag to force a direct "
+        "connection (sets proxy={'server':'direct://'} on the context, "
+        "equivalent to Chromium's --no-proxy-server). Check what's "
+        "configured: `netsh winhttp show proxy` on Windows.",
+    )
+    ap.add_argument(
+        "--proxy-server",
+        default=None,
+        help="Explicit proxy URL to use (e.g. 'http://proxy.corp:8080' or "
+        "'socks5://127.0.0.1:1080'). Use this if you actually DO need a "
+        "proxy and the system one is wrong. Mutually exclusive with "
+        "--no-proxy.",
+    )
     args = ap.parse_args()
+
+    if args.no_proxy and args.proxy_server:
+        log.error("--no-proxy and --proxy-server are mutually exclusive.")
+        sys.exit(1)
 
     # Lazy import — playwright is an optional extra. Prefer `patchright`
     # (drop-in fork with better anti-detection) when available; fall back
@@ -425,6 +451,17 @@ def main() -> None:
         launch_extra: dict = {}
         if not args.firefox and args.channel:
             launch_extra["channel"] = args.channel
+        # Proxy override: 'direct://' = bypass any system proxy. This is
+        # the fix for ERR_TUNNEL_CONNECTION_FAILED on Windows machines
+        # where the system proxy (WinHTTP / Internet Options / VPN /
+        # corporate PAC) is misconfigured or unreachable but Firefox
+        # works because it ignores the system proxy.
+        if args.no_proxy:
+            launch_extra["proxy"] = {"server": "direct://"}
+            log.info("  proxy: bypassed (--no-proxy → direct connection)")
+        elif args.proxy_server:
+            launch_extra["proxy"] = {"server": args.proxy_server}
+            log.info(f"  proxy: {args.proxy_server}")
         # Firefox doesn't accept Chromium-style --disable-blink-features
         # args; pass them only for chromium.
         engine_args = launch_args if not args.firefox else []
