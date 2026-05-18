@@ -301,6 +301,40 @@ SWEEPS: list[SweepDef] = [
         num_layers=24,
         note="Structure class| 13 classes | acc+macro_f1 | OMARRQ 24 layers",
     ),
+    # ── SuperMarioStructure — Super Mario VGM functional segments ────────────
+    # 554 pieces from NinSheetMusic transcriptions. 6 VGM-native classes
+    # (intro/loop/transition/bridge/outro/stinger). Audio is user-supplied;
+    # build via scripts/data/build_supermario_dataset.py which uses MIDI
+    # tempo events for bar→time mapping. CLaMP3-symbolic could also run here
+    # via the source MIDIs — added to TODO once we want the symbolic side.
+    SweepDef(
+        model="CLaMP3",
+        task="SuperMarioStructure",
+        base_config="configs/probe.CLaMP3-layers.SuperMarioStructure.yaml",
+        num_layers=13,
+        note="Structure class| 6 classes  | acc+macro_f1 | CLaMP3 13 layers | VGM",
+    ),
+    SweepDef(
+        model="MERT-v1-95M",
+        task="SuperMarioStructure",
+        base_config="configs/probe.MERT-v1-95M-layers.SuperMarioStructure.yaml",
+        num_layers=13,
+        note="Structure class| 6 classes  | acc+macro_f1 | MERT 13 layers | VGM",
+    ),
+    SweepDef(
+        model="MuQ",
+        task="SuperMarioStructure",
+        base_config="configs/probe.MuQ-layers.SuperMarioStructure.yaml",
+        num_layers=13,
+        note="Structure class| 6 classes  | acc+macro_f1 | MuQ 13 layers | VGM",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature-25hz",
+        task="SuperMarioStructure",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.SuperMarioStructure.yaml",
+        num_layers=24,
+        note="Structure class| 6 classes  | acc+macro_f1 | OMARRQ 24 layers | VGM",
+    ),
     SweepDef(
         model="MuQ",
         task="HookTheoryKey",
@@ -688,6 +722,12 @@ def _data_present(task: str) -> bool:
         # which clones the upstream annotations, downloads audio via yt-dlp,
         # and slices per-segment FLACs. See docs/data/hxmsa_setup.md.
         "HXMSA": "data/HXMSA/HXMSA.train.jsonl",
+        # SuperMarioStructure: build via
+        # `uv run python scripts/data/build_supermario_dataset.py --audio-dir <your-audio>`
+        # which clones the upstream annotations, uses MIDI bar→time mapping,
+        # and slices user audio into per-segment FLACs. See
+        # docs/data/supermario_setup.md.
+        "SuperMarioStructure": "data/SuperMarioStructure/SuperMarioStructure.train.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()
