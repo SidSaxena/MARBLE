@@ -75,14 +75,39 @@ _KIND_TO_URL_COL = {"mid": "url_mid", "pdf": "url_pdf", "mus": "url_mus"}
 # ── Pieces CSV parsing ────────────────────────────────────────────────────────
 
 
+def _resolve_csv_path(raw: Path) -> Path:
+    """Accept either a CSV file path or a directory containing pieces.csv.
+
+    Friendlier than failing with a cryptic PermissionError when the user
+    passes the parent dir by mistake.
+    """
+    if raw.is_dir():
+        candidate = raw / "pieces.csv"
+        if candidate.exists():
+            log.info(f"  --csv pointed at a directory; resolved to: {candidate}")
+            return candidate
+        log.error(
+            f"--csv is a directory ({raw}) and contains no pieces.csv. "
+            f"Either pass the full path to the CSV file, or place it under "
+            f"this directory as 'pieces.csv'."
+        )
+        sys.exit(1)
+    if not raw.exists():
+        log.error(
+            f"--csv does not exist: {raw}. Expected a path to a CSV file with "
+            f"columns: piece_id, url_pdf, url_mid, url_mus (the format from the "
+            f"upstream supermario-structure-annotation repo)."
+        )
+        sys.exit(1)
+    return raw
+
+
 def _parse_pieces_csv(csv_path: Path, kinds: list[str]) -> list[tuple[str, dict[str, str]]]:
     """Parse pieces.csv → [(piece_id, {kind: url})].
 
     Skips rows missing piece_id or where all selected kind URLs are blank.
     """
-    if not csv_path.exists():
-        log.error(f"CSV not found: {csv_path}")
-        sys.exit(1)
+    csv_path = _resolve_csv_path(csv_path)
     out: list[tuple[str, dict[str, str]]] = []
     with csv_path.open(newline="") as f:
         reader = csv.DictReader(f)
