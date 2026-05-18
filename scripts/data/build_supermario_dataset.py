@@ -415,6 +415,89 @@ def _slice_segment(
     return dst_audio.exists() and dst_audio.stat().st_size > 1024
 
 
+# ── MIDI segment slicing ──────────────────────────────────────────────────────
+
+
+def _slice_midi(
+    src_path: Path,
+    dst_path: Path,
+    start_sec: float,
+    end_sec: float,
+) -> bool:
+    """Slice MIDI to keep notes in [start_sec, end_sec] and rebase to t=0.
+
+    Uses pretty_midi: drops tempo / control-change events but preserves
+    note pitches, velocities, durations, and program-change info per
+    instrument — adequate for CLaMP3 M3 tokenisation, which encodes
+    note + program semantics. The new MIDI's initial tempo is taken
+    from the source MIDI's local tempo at ``start_sec`` so absolute
+    durations are preserved.
+
+    Idempotent: skips if dst exists with size > 100 bytes.
+    """
+    if dst_path.exists() and dst_path.stat().st_size > 100:
+        return True
+    if end_sec <= start_sec:
+        return False
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        import pretty_midi
+    except ImportError:
+        log.error("pretty_midi not installed — `uv sync` to install.")
+        sys.exit(1)
+    try:
+        pm_src = pretty_midi.PrettyMIDI(str(src_path))
+    except Exception as e:
+        log.warning(f"  pretty_midi failed to load {src_path.name}: {e}")
+        return False
+
+    # Use the source MIDI's local tempo at start_sec for the new MIDI's
+    # initial tempo. Falls back to 120 BPM if no tempo events.
+    initial_tempo = 120.0
+    try:
+        import numpy as np
+
+        times, tempos = pm_src.get_tempo_changes()
+        if len(tempos):
+            idx = max(0, int(np.searchsorted(times, start_sec, side="right")) - 1)
+            initial_tempo = float(tempos[idx])
+    except Exception:
+        pass
+
+    pm_new = pretty_midi.PrettyMIDI(initial_tempo=initial_tempo)
+    for inst in pm_src.instruments:
+        new_inst = pretty_midi.Instrument(
+            program=inst.program, is_drum=inst.is_drum, name=inst.name
+        )
+        for note in inst.notes:
+            # Keep notes that overlap [start_sec, end_sec]; clip to the
+            # boundary and rebase to t=0 relative to start_sec.
+            if note.end <= start_sec or note.start >= end_sec:
+                continue
+            new_inst.notes.append(
+                pretty_midi.Note(
+                    velocity=note.velocity,
+                    pitch=note.pitch,
+                    start=max(0.0, note.start - start_sec),
+                    end=min(end_sec, note.end) - start_sec,
+                )
+            )
+        if new_inst.notes:
+            pm_new.instruments.append(new_inst)
+
+    if not pm_new.instruments:
+        # Empty segment — no notes overlap the window. Skip cleanly.
+        return False
+
+    try:
+        pm_new.write(str(dst_path))
+    except Exception as e:
+        log.warning(f"  pretty_midi write failed for {dst_path}: {e}")
+        return False
+    return dst_path.exists() and dst_path.stat().st_size > 100
+
+
 # ── Split assignment ──────────────────────────────────────────────────────────
 
 
@@ -469,9 +552,23 @@ def main() -> None:
     )
     ap.add_argument(
         "--audio-dir",
-        required=True,
+        default=None,
         help="Directory containing user audio files. Matched by piece_id stem "
-        "(e.g. 00001.flac, 00001.wav, 00001.mp3, ...).",
+        "(e.g. 00001.flac, 00001.wav, 00001.mp3, ...). "
+        "OPTIONAL: omit to run the symbolic-only build (MIDI segments only). "
+        "The annotations are bar-based, derived from the score; MIDI is the "
+        "exact-match input domain, audio is a derivation.",
+    )
+    ap.add_argument(
+        "--midi-segments-dir",
+        default=None,
+        help="Where per-segment MIDIs go. Default: <data-dir>/midi_segments. "
+        "Always populated regardless of --audio-dir (symbolic is the primary path).",
+    )
+    ap.add_argument(
+        "--skip-midi-slice",
+        action="store_true",
+        help="Skip MIDI segment slicing; assume segment MIDIs are already present.",
     )
     ap.add_argument(
         "--data-dir",
@@ -532,20 +629,28 @@ def main() -> None:
 
     data_dir = Path(args.data_dir)
     segments_dir = Path(args.segments_dir) if args.segments_dir else data_dir / "segments"
+    midi_segments_dir = (
+        Path(args.midi_segments_dir) if args.midi_segments_dir else data_dir / "midi_segments"
+    )
     midi_dir = Path(args.midi_dir) if args.midi_dir else data_dir / "midi"
-    audio_dir = Path(args.audio_dir)
-    for d in (data_dir, segments_dir, midi_dir):
+    audio_dir = Path(args.audio_dir) if args.audio_dir else None
+    for d in (data_dir, segments_dir, midi_segments_dir, midi_dir):
         d.mkdir(parents=True, exist_ok=True)
-    if not audio_dir.exists():
+    if audio_dir is not None and not audio_dir.exists():
         log.error(f"--audio-dir does not exist: {audio_dir}")
         sys.exit(1)
+    audio_enabled = audio_dir is not None
 
     # ── Validate dependencies ──────────────────────────────────────────────
-    for tool, hint in [
-        ("ffmpeg", "needed for segment slicing"),
-        ("ffprobe", "comes with ffmpeg"),
+    needed_tools = [
         ("git", "needed to clone the annotation repo"),
-    ]:
+    ]
+    if audio_enabled:
+        needed_tools += [
+            ("ffmpeg", "needed for audio segment slicing"),
+            ("ffprobe", "comes with ffmpeg"),
+        ]
+    for tool, hint in needed_tools:
         if shutil.which(tool) is None:
             log.error(f"{tool} not found on PATH — {hint}. See script header.")
             sys.exit(1)
@@ -567,7 +672,11 @@ def main() -> None:
     pieces_meta = _parse_pieces_csv(repo_dir / "metadata" / "pieces.csv")
     upstream_splits = _parse_pairs_csv_for_splits(repo_dir / "metadata" / "pairs.csv")
 
-    # ── Build candidate piece list (intersection of pieces.csv + annotations + audio) ──
+    # ── Build candidate piece list ──
+    # Symbolic (MIDI) is the primary path — annotations are bar-based, derived
+    # from the score, so MIDI is the exact-match domain. Audio is secondary.
+    # Candidates need: (1) annotation JSON, (2) entry in pieces.csv. Audio is
+    # OPTIONAL — if --audio-dir is not given, only MIDI segments are produced.
     all_annotation_files = sorted(annotations_root.glob("*.json"))
     candidates: list[str] = []
     no_audio: list[str] = []
@@ -576,9 +685,10 @@ def main() -> None:
         if pid not in pieces_meta:
             log.debug(f"  {pid}: missing from pieces.csv; skipping")
             continue
-        if _find_user_audio(pid, audio_dir) is None:
+        if audio_enabled and _find_user_audio(pid, audio_dir) is None:
             no_audio.append(pid)
-            continue
+            # Audio missing is NOT fatal — we still build the symbolic
+            # records for this piece. Audio records just get skipped.
         candidates.append(pid)
 
     if args.max_pieces:
@@ -595,19 +705,31 @@ def main() -> None:
     log.info("─" * 60)
     log.info("Build plan")
     log.info("─" * 60)
-    log.info(f"  audio-dir         : {audio_dir}")
     log.info(f"  data-dir          : {data_dir}")
-    log.info(f"  segments-dir      : {segments_dir}")
-    log.info(f"  midi-dir          : {midi_dir}")
+    log.info(f"  midi-dir          : {midi_dir}   (source MIDIs from NinSheetMusic)")
+    log.info(
+        f"  midi-segments-dir : {midi_segments_dir}   "
+        f"(per-segment sliced MIDIs — primary symbolic path)"
+    )
+    log.info(
+        f"  audio-dir         : {audio_dir if audio_enabled else '(none — symbolic-only mode)'}"
+    )
+    log.info(
+        f"  segments-dir      : "
+        f"{segments_dir if audio_enabled else '(skipped)'}   "
+        f"(per-segment sliced audio FLACs — only if --audio-dir given)"
+    )
     log.info(
         f"  candidate pieces  : {len(candidates):,} "
-        f"({len(all_annotation_files):,} annotations available, "
-        f"{len(no_audio):,} have no audio in --audio-dir)"
+        f"({len(all_annotation_files):,} annotations available; "
+        f"audio missing for {len(no_audio):,} of these)"
     )
-    if no_audio and not args.max_pieces:
+    if no_audio and audio_enabled and not args.max_pieces:
         sample = ", ".join(no_audio[:5])
         log.info(
-            f"  missing audio for : {len(no_audio)} pieces — first 5: {sample}{'...' if len(no_audio) > 5 else ''}"
+            f"  audio gaps        : {len(no_audio)} pieces — first 5: "
+            f"{sample}{'...' if len(no_audio) > 5 else ''}  "
+            f"(these still get symbolic records)"
         )
     log.info(f"  MIDI already cached  : {n_midi_present:,}")
     log.info(
@@ -615,9 +737,14 @@ def main() -> None:
         f"{'  (SKIPPED via --skip-midi-download)' if args.skip_midi_download else ''}"
     )
     log.info(
-        f"  segment slicing   : {'SKIPPED via --skip-slice' if args.skip_slice else 'enabled'}"
+        f"  MIDI segment slice : {'SKIPPED via --skip-midi-slice' if args.skip_midi_slice else 'enabled'}"
     )
-    log.info(f"  target sr         : {args.target_sr} Hz (mono FLAC)")
+    if audio_enabled:
+        log.info(
+            f"  audio slicing     : "
+            f"{'SKIPPED via --skip-slice' if args.skip_slice else 'enabled'} "
+            f"({args.target_sr} Hz mono FLAC)"
+        )
     log.info(
         f"  upstream splits   : honoured for {len(upstream_splits):,} pieces; "
         f"seed-{args.seed} 70/15/15 for the rest"
@@ -642,21 +769,24 @@ def main() -> None:
             if i % 50 == 0 or i == len(candidates):
                 log.info(f"  [{i:>4}/{len(candidates)}]")
 
-    # ── Step 2: For each piece, parse → bar-time-map → slice ───────────────
+    # ── Step 2: For each piece, parse → bar-time-map → slice MIDI (+ audio) ─
+    # Symbolic is primary: every record gets a per-segment MIDI. Audio
+    # records (with audio_path + audio metadata) are emitted alongside
+    # when --audio-dir was given AND the audio slice succeeded.
     records: list[dict] = []
     canonical_label_counter: Counter[str] = Counter()
     dropped_short = 0
     dropped_oor = 0
     dropped_no_midi = 0
-    failed_slice = 0
+    failed_midi_slice = 0
+    failed_audio_slice = 0
+    audio_segments_written = 0
+    midi_segments_written = 0
 
     for pid in candidates:
-        audio_path = _find_user_audio(pid, audio_dir)
-        if audio_path is None:
-            continue
         midi_path = midi_dir / f"{pid}.mid"
         if not midi_path.exists():
-            log.debug(f"  {pid}: no MIDI; skipping (need bar→time mapping)")
+            log.debug(f"  {pid}: no source MIDI; skipping (need bar→time mapping)")
             dropped_no_midi += 1
             continue
         bar_times = _midi_bar_times(midi_path)
@@ -670,8 +800,10 @@ def main() -> None:
             log.debug(f"  {pid}: no parseable Function segments; skipping")
             continue
 
-        out_piece_dir = segments_dir / pid
         meta = pieces_meta[pid]
+        audio_path = _find_user_audio(pid, audio_dir) if audio_enabled else None
+        out_midi_dir = midi_segments_dir / pid
+        out_audio_dir = segments_dir / pid
 
         for seg_idx, (bar_start, bar_end, label) in enumerate(segments):
             time_range = _bar_range_to_time(bar_start, bar_end, bar_times)
@@ -687,25 +819,46 @@ def main() -> None:
                 dropped_short += 1
                 continue
 
-            seg_path = out_piece_dir / f"{seg_idx:03d}_{label}.flac"
-            if not args.skip_slice:
-                ok = _slice_segment(audio_path, seg_path, start_sec, end_sec, args.target_sr)
-                if not ok:
-                    failed_slice += 1
+            # ── MIDI segment (always — primary symbolic path) ──────────
+            midi_seg_path = out_midi_dir / f"{seg_idx:03d}_{label}.mid"
+            if not args.skip_midi_slice:
+                if not _slice_midi(midi_path, midi_seg_path, start_sec, end_sec):
+                    failed_midi_slice += 1
                     continue
-            elif not seg_path.exists():
+                midi_segments_written += 1
+            elif not midi_seg_path.exists():
                 continue
 
-            seg_info = _ffprobe_info(seg_path)
-            if seg_info[0] == 0:
-                failed_slice += 1
-                continue
-            seg_sr, seg_nsamp, seg_chan = seg_info
+            # ── Audio segment (only if --audio-dir given) ──────────────
+            audio_record_fields: dict = {}
+            if audio_enabled and audio_path is not None:
+                audio_seg_path = out_audio_dir / f"{seg_idx:03d}_{label}.flac"
+                if not args.skip_slice:
+                    ok = _slice_segment(
+                        audio_path, audio_seg_path, start_sec, end_sec, args.target_sr
+                    )
+                    if not ok:
+                        failed_audio_slice += 1
+                        # Continue with MIDI-only record — symbolic still works
+                        audio_seg_path = None
+                if audio_seg_path is not None and audio_seg_path.exists():
+                    seg_info = _ffprobe_info(audio_seg_path)
+                    if seg_info[0] != 0:
+                        seg_sr, seg_nsamp, seg_chan = seg_info
+                        audio_record_fields = {
+                            "audio_path": str(audio_seg_path.as_posix()),
+                            "audio_sample_rate": seg_sr,
+                            "audio_num_samples": seg_nsamp,
+                            "audio_channels": seg_chan,
+                            "audio_duration": round(seg_nsamp / seg_sr, 3),
+                        }
+                        audio_segments_written += 1
 
             canonical_label_counter[label] += 1
             records.append(
                 {
-                    "audio_path": str(seg_path.as_posix()),
+                    # ── symbolic-primary fields ────────────────────────
+                    "midi_path": str(midi_seg_path.as_posix()),
                     "ori_uid": f"{pid}_{seg_idx:03d}",  # per-segment uid
                     "work_id": pid,  # track-level grouping
                     "label": label,
@@ -714,11 +867,25 @@ def main() -> None:
                     "bar_end": bar_end,
                     "seg_start": round(start_sec, 3),
                     "seg_end": round(end_sec, 3),
-                    "duration": round(seg_nsamp / seg_sr, 3),
-                    "sample_rate": seg_sr,
-                    "num_samples": seg_nsamp,
-                    "channels": seg_chan,
-                    "bit_depth": 16,
+                    # ── audio-derived fields (subset, only when slicing succeeded) ──
+                    # The audio_path / audio_* fields are absent on
+                    # symbolic-only records. The audio datamodule reads
+                    # `audio_path` (top-level) and the standard
+                    # sample_rate/num_samples/channels — for backwards
+                    # compatibility with the HXMSA datamodule pattern we
+                    # mirror those names below when audio is present.
+                    **(
+                        {
+                            "audio_path": audio_record_fields["audio_path"],
+                            "duration": audio_record_fields["audio_duration"],
+                            "sample_rate": audio_record_fields["audio_sample_rate"],
+                            "num_samples": audio_record_fields["audio_num_samples"],
+                            "channels": audio_record_fields["audio_channels"],
+                            "bit_depth": 16,
+                        }
+                        if audio_record_fields
+                        else {}
+                    ),
                     "title": meta.get("title", ""),
                     "ninsheetmusic_id": meta.get("ninsheetmusic_id", ""),
                 }
@@ -727,8 +894,14 @@ def main() -> None:
     log.info("")
     log.info(
         f"  built {len(records):,} segment records "
-        f"(dropped: {dropped_short} short, {dropped_oor} bar-out-of-range, "
-        f"{dropped_no_midi} missing/unparseable MIDI, {failed_slice} ffmpeg failures)"
+        f"(MIDI segments written: {midi_segments_written:,}, "
+        f"audio segments written: {audio_segments_written:,})"
+    )
+    log.info(
+        f"  dropped: {dropped_short} short, {dropped_oor} bar-out-of-range, "
+        f"{dropped_no_midi} missing/unparseable MIDI, "
+        f"{failed_midi_slice} MIDI-slice failures, "
+        f"{failed_audio_slice} audio-slice failures"
     )
     if not records:
         log.error("No segment records — aborting.")

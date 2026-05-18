@@ -303,16 +303,27 @@ SWEEPS: list[SweepDef] = [
     ),
     # ── SuperMarioStructure — Super Mario VGM functional segments ────────────
     # 554 pieces from NinSheetMusic transcriptions. 6 VGM-native classes
-    # (intro/loop/transition/bridge/outro/stinger). Audio is user-supplied;
-    # build via scripts/data/build_supermario_dataset.py which uses MIDI
-    # tempo events for bar→time mapping. CLaMP3-symbolic could also run here
-    # via the source MIDIs — added to TODO once we want the symbolic side.
+    # (intro/loop/transition/bridge/outro/stinger).
+    #
+    # PRIMARY representation: SYMBOLIC. The annotations are bar-based,
+    # derived from the source MUS/MXL scores — MIDI is the exact-match
+    # input domain. CLaMP3-symbolic is therefore the lead sweep.
+    # Audio is a derivation (user-supplied; built by scripts/data/
+    # build_supermario_dataset.py via MIDI bar→time mapping) and runs
+    # as the secondary cross-encoder comparison.
+    SweepDef(
+        model="CLaMP3-symbolic",
+        task="SuperMarioStructure",
+        base_config="configs/probe.CLaMP3-symbolic-layers.SuperMarioStructure.yaml",
+        num_layers=13,
+        note="Structure class| 6 classes  | acc+macro_f1 | CLaMP3-symbolic 13 layers | VGM | PRIMARY (symbolic)",
+    ),
     SweepDef(
         model="CLaMP3",
         task="SuperMarioStructure",
         base_config="configs/probe.CLaMP3-layers.SuperMarioStructure.yaml",
         num_layers=13,
-        note="Structure class| 6 classes  | acc+macro_f1 | CLaMP3 13 layers | VGM",
+        note="Structure class| 6 classes  | acc+macro_f1 | CLaMP3 13 layers | VGM | audio derivation",
     ),
     SweepDef(
         model="MERT-v1-95M",

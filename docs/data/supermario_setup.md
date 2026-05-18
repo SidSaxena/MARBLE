@@ -1,20 +1,26 @@
 # SuperMarioStructure — dataset setup
 
-Standalone runbook for building the SuperMarioStructure dataset that
-the MARBLE SuperMarioStructure probes consume.
+Standalone runbook for building the SuperMarioStructure dataset for
+MARBLE probes.
 
-**Status:** implemented (2026-05-17). Configs + datamodule + build
-script all landed. You bring your own audio; the build script handles
-the rest (annotation clone, MIDI download for bar→time mapping, ffmpeg
-segment slicing, JSONL emission).
+> **Symbolic (MIDI) is the primary representation.** The annotations
+> are bar-based, derived from the source MUS/MXL scores — MIDI is the
+> exact-match input domain. CLaMP3-symbolic is the lead encoder.
+> Audio is a derivation (rendered or recorded from the score) and
+> runs as the secondary cross-encoder comparison. You can build
+> symbolic-only without supplying any audio.
 
-**Wall-clock budget:** ~5 min to clone annotations + download all 554
-MIDIs, then ~10–20 min for ffmpeg segment slicing depending on
-storage speed. Total: under 30 min once you have the audio.
+**Status:** implemented (2026-05-17). Build script, datamodule (both
+symbolic + audio paths), probe, 10 configs (CLaMP3-symbolic × 2 +
+CLaMP3-audio × 2 + MERT-v1-95M × 2 + MuQ × 2 + OMARRQ-25hz × 2), and
+sweep registry all landed.
 
-**Disk budget:** ~0.5 GB total (~5 MB annotation repo + ~5 MB cached
-MIDIs + ~0.4 GB per-segment FLACs). Your audio is read-only — we
-don't copy or duplicate it.
+**Wall-clock budget:** ~5 min annotation clone + MIDI download, then
+~5 min for MIDI segment slicing (always runs). Audio slicing (only if
+you provide `--audio-dir`) adds ~10–20 min. Total: well under an hour.
+
+**Disk budget (symbolic-only):** ~15 MB. **With audio:** add ~0.4 GB
+for per-segment FLACs (your source audio is read-only).
 
 ---
 
@@ -23,13 +29,18 @@ don't copy or duplicate it.
 - 554 Super Mario pieces from the upstream
   [supermario-structure-annotation](https://github.com/ShxLuo-Saxon/supermario-structure-annotation)
   repo (Function-level annotations, ~3,500 segments after filtering).
-- Per-segment FLAC files (24 kHz mono) at
-  `data/SuperMarioStructure/segments/<piece_id>/<seg_idx>_<label>.flac`.
+- Per-segment MIDI files at
+  `data/SuperMarioStructure/midi_segments/<piece_id>/<seg_idx>_<label>.mid`
+  (**primary**, always present).
+- Optional per-segment FLAC files at
+  `data/SuperMarioStructure/segments/<piece_id>/<seg_idx>_<label>.flac`
+  (only if `--audio-dir` provided).
 - Three JSONL splits at
   `data/SuperMarioStructure/SuperMarioStructure.{train,val,test}.jsonl`
-  (70/15/15 by piece, honouring upstream split where present, seed 1234
-  for the rest).
-- 6 functional classes (VGM-native):
+  (70/15/15 by piece, upstream split for the 334 paired pieces, seed
+  1234 70/15/15 for the rest).
+- 6 functional classes (VGM-native, shared between symbolic + audio
+  datamodules):
 
 | Class | Raw code | Description |
 |---|---|---|
@@ -40,138 +51,152 @@ don't copy or duplicate it.
 | `outro` | `Ou` | Closing segment |
 | `stinger` | `St` | Short punctuation cue (often <2 s) |
 
+### Per-record JSONL fields
+
+**Always present** (symbolic-primary fields):
+
+```
+midi_path  ori_uid  work_id  label  seg_idx  bar_start  bar_end
+seg_start  seg_end  title  ninsheetmusic_id
+```
+
+**Audio-derived fields** (only when `--audio-dir` was supplied AND
+audio slice succeeded for that segment):
+
+```
+audio_path  duration  sample_rate  num_samples  channels  bit_depth
+```
+
+This means symbolic configs work on all records; audio configs filter
+to records with `audio_path` present. Cleanly separated by the
+respective datamodule.
+
 ---
 
 ## Prerequisites
 
 | Tool | Why | Install |
 |---|---|---|
-| **ffmpeg** | Segment slicing + metadata probe | macOS: `brew install ffmpeg`; Linux: `sudo apt install ffmpeg`; Windows: `winget install Gyan.FFmpeg` |
 | **git** | Clone the upstream annotation repo | already required |
-| **pretty_midi** | Bar→time conversion via MIDI tempo events | already a MARBLE dep |
+| **pretty_midi** | Bar→time mapping + MIDI segment slicing | already a MARBLE dep |
+| **ffmpeg + ffprobe** | Audio segment slicing | macOS: `brew install ffmpeg`; only required if you pass `--audio-dir` |
 
-### User audio
+### User audio (optional)
 
-**You must provide audio yourself** — the upstream repo doesn't
-distribute it. The build script expects files named by `piece_id`
-(zero-padded 5-digit) in your `--audio-dir`. Supported extensions:
-`.flac`, `.wav`, `.mp3`, `.m4a`, `.ogg`, `.opus` (first match wins).
-
-Example:
+If you do want to also build the audio path, files must be named
+`<piece_id>.<ext>` (zero-padded 5-digit). Supported extensions
+(first match wins): `.flac`, `.wav`, `.mp3`, `.m4a`, `.ogg`, `.opus`.
 
 ```
 /my/audio/dir/
   00001.flac    ← Captain Toad - Retro RampUp
   00002.mp3     ← Dr Mario - Chill
-  00003.wav     ← Dr Mario - Endings
   ...
 ```
 
-Pieces without audio in the dir are skipped (with a list of the first
-5 missing piece_ids logged for sanity).
+Pieces with no matching audio still get symbolic records — they just
+don't get an `audio_path` field. The audio datamodule silently skips
+those records at load time.
 
-### Critical assumption: tempo alignment
+### Critical assumption: audio tempo-alignment (only matters if using audio)
 
-The build script extracts bar→time mapping from each piece's source
-MIDI (auto-downloaded from NinSheetMusic). If your audio is performed
-at a different tempo than the MIDI (e.g., human performance), segment
-boundaries will drift. For MIDI-rendered audio (the expected v1 case),
-the mapping is exact.
-
-**Tested OK:** audio rendered via fluidsynth + SGM-Pro 14 from the
-same source MIDIs (matches our VGMIDI pipeline).
-
-**Likely OK with caveats:** professional VGM rips at the original game
-tempo.
-
-**Will drift:** human piano performances, tempo-modified arrangements.
+The bar→time mapping comes from each piece's source MIDI (auto-
+downloaded from NinSheetMusic). If your audio is performed at a
+different tempo than the MIDI (e.g., human performance), audio segment
+boundaries will drift. **This does not affect the symbolic build** —
+MIDI segment slicing uses the exact same MIDI as the source.
 
 ---
 
-## Build (the canonical command)
+## Build (the canonical commands)
+
+### Symbolic-only build (recommended for first run)
 
 ```bash
-# Pilot first — smoke-test on 5 pieces (~30 s)
-uv run python scripts/data/build_supermario_dataset.py \
-    --audio-dir /path/to/your/audio --max-pieces 5
+# Pilot — 5 pieces, ~1 min
+uv run python scripts/data/build_supermario_dataset.py --max-pieces 5
 
-# Full build (under 30 min once audio is in place)
-uv run python scripts/data/build_supermario_dataset.py \
-    --audio-dir /path/to/your/audio
+# Full symbolic build (~10 min, no audio needed)
+uv run python scripts/data/build_supermario_dataset.py
 ```
 
-What happens:
+### Symbolic + audio build
 
-1. **Clones** the upstream `ShxLuo-Saxon/supermario-structure-annotation`
-   repo (~5 MB) into `data/SuperMarioStructure/_upstream/`. Re-runs
-   `git pull` if already present.
+```bash
+uv run python scripts/data/build_supermario_dataset.py \
+    --audio-dir /path/to/your/mario/audio
+```
+
+What happens (in order):
+
+1. **Clones** the upstream annotation repo (~5 MB) into
+   `data/SuperMarioStructure/_upstream/`.
 2. **Parses** `metadata/pieces.csv` (piece IDs + MIDI URLs) and
-   `metadata/pairs.csv` (upstream train/val/test split for the 334
-   pieces covered by the similarity dataset; the build script honours
-   these and assigns the remaining pieces randomly with seed 1234).
-3. **Downloads** the source MIDI for each piece from NinSheetMusic
-   (purely as the bar→time clock, not for audio). Cached at
-   `data/SuperMarioStructure/midi/<piece_id>.mid`.
-4. **For each piece with both audio + MIDI:**
-   - Loads the MIDI via `pretty_midi`, gets downbeat times via
-     `get_downbeats()` (handles tempo + time-signature changes).
-   - Parses `annotations/<piece_id>.json`. Uses the `Function` array
-     (coarse, 6-class). Skips the `Section` array (reserved for v2
-     section-similarity task).
-   - For each `(bar_start, bar_end, label)` triple, computes
-     `(start_sec, end_sec)` from the MIDI downbeat table.
-   - Slices user audio via
-     `ffmpeg -ss <start> -t <dur> -ar 24000 -ac 1 -c:a flac`.
-5. **Emits** per-segment JSONL records (audio_path, ori_uid, work_id,
-   label, seg_idx, bar_start/end, seg_start/end, duration, sample_rate,
-   num_samples, channels, title, ninsheetmusic_id).
-6. **Splits** train/val/test at piece level (no segment leakage).
+   `metadata/pairs.csv` (upstream train/val/test split for 334
+   pieces).
+3. **Downloads** each piece's source MIDI from NinSheetMusic (cached
+   at `data/SuperMarioStructure/midi/<piece_id>.mid`). Used as the
+   bar→time clock AND as the source for symbolic slicing.
+4. **For each piece:**
+   - Loads the source MIDI via `pretty_midi` → downbeat times.
+   - Parses `annotations/<piece_id>.json` Function array (6 classes).
+   - For each `(bar_start, bar_end, label)`:
+     - Computes `(start_sec, end_sec)` from the downbeat table.
+     - **Slices the source MIDI to a per-segment .mid file** (using
+       `pretty_midi`, preserving notes + program-changes per
+       instrument; tempo is taken from the source MIDI's local
+       tempo at `start_sec`).
+     - If `--audio-dir` provided AND audio for the piece is found AND
+       ffmpeg slice succeeds: also produces a per-segment FLAC.
+5. **Splits** train/val/test at piece level.
+6. **Emits** the three JSONL files.
 
 ### Render-plan preamble
 
-Before any slow work, the script prints:
+Before any slow work the script prints (symbolic-only example):
 
 ```
 ────────────────────────────────────────────────────────────
 Build plan
 ────────────────────────────────────────────────────────────
-  audio-dir         : /path/to/your/audio
   data-dir          : data/SuperMarioStructure
-  segments-dir      : data/SuperMarioStructure/segments
-  midi-dir          : data/SuperMarioStructure/midi
-  candidate pieces  : 554  (554 annotations available, 0 have no audio in --audio-dir)
+  midi-dir          : data/SuperMarioStructure/midi   (source MIDIs from NinSheetMusic)
+  midi-segments-dir : data/SuperMarioStructure/midi_segments   (per-segment sliced MIDIs — primary symbolic path)
+  audio-dir         : (none — symbolic-only mode)
+  segments-dir      : (skipped)   (per-segment sliced audio FLACs — only if --audio-dir given)
+  candidate pieces  : 554  (554 annotations available; audio missing for 0 of these)
   MIDI already cached  : 0
   MIDI to download now : 554
-  segment slicing   : enabled
-  target sr         : 24000 Hz (mono FLAC)
-  upstream splits   : honoured for 334 pieces; seed-1234 70/15/15 for the rest
+  MIDI segment slice : enabled
 ────────────────────────────────────────────────────────────
 ```
-
-If "candidate pieces" is suspiciously low, check the audio-dir naming
-convention before the slow loop starts.
-
----
-
-## Idempotency + resume
-
-- Existing audio files in `--audio-dir` are never modified.
-- Existing per-segment FLACs are skipped (size-aware existence check).
-- Existing source MIDIs are skipped.
-- The JSONL is always rewritten from the current on-disk state.
-
-To force re-slice (e.g., changed `--target-sr`): delete
-`data/SuperMarioStructure/segments/` first.
 
 ---
 
 ## Running the layer sweeps
 
-```bash
-# Verify
-uv run python scripts/sweeps/run_all_sweeps.py --tasks SuperMarioStructure --dry-run
+The 5 sweeps registered for SuperMarioStructure, in the order
+`run_all_sweeps.py` will execute them:
 
-# Meanall first — baseline in <30 min × 4 encoders
+| # | Encoder | Layers | Notes |
+|---|---|---:|---|
+| 1 | **CLaMP3-symbolic** | 13 | **PRIMARY** — symbolic; exact-match domain |
+| 2 | CLaMP3 (audio) | 13 | audio derivation (only runs if you built audio) |
+| 3 | MERT-v1-95M | 13 | audio derivation |
+| 4 | MuQ | 13 | audio derivation |
+| 5 | OMARRQ-multifeature-25hz | 24 | audio derivation |
+
+### Symbolic-only sweep (works without audio)
+
+```bash
+uv run python scripts/sweeps/run_all_sweeps.py \
+    --tasks SuperMarioStructure --models CLaMP3-symbolic
+```
+
+### Full cross-encoder comparison (requires audio build)
+
+```bash
+# Meanall first — baseline in <30 min × 5 encoders
 uv run python scripts/sweeps/run_all_sweeps.py \
     --tasks SuperMarioStructure --only-meanall
 
@@ -179,27 +204,38 @@ uv run python scripts/sweeps/run_all_sweeps.py \
 uv run python scripts/sweeps/run_all_sweeps.py --tasks SuperMarioStructure
 ```
 
-Active encoders: CLaMP3, MERT-v1-95M, MuQ, OMARRQ-multifeature-25hz.
-
-**Symbolic note:** the source MIDIs are available via the cached
-`data/SuperMarioStructure/midi/` directory, so a CLaMP3-symbolic
-variant is possible as a follow-up. Not implemented in v1 — would need
-a separate config that points at the MIDI dir instead of audio. The
-symbolic comparison would be especially interesting given the strong
-showing of CLaMP3-symbolic on VGMIDITVar / leitmotif tasks.
-
 ---
 
 ## Verification before launching the sweep
 
 | Check | How |
 |---|---|
-| JSONL has ~3500 records | `wc -l data/SuperMarioStructure/SuperMarioStructure.*.jsonl` |
+| JSONL has ~3500 records, all with `midi_path` | `head -1 data/SuperMarioStructure/SuperMarioStructure.train.jsonl \| jq 'keys'` (look for `midi_path`) |
 | Class distribution looks reasonable | `jq -r .label data/SuperMarioStructure/SuperMarioStructure.train.jsonl \| sort \| uniq -c \| sort -rn` — expect `loop` to dominate |
 | No piece appears in multiple splits | `for f in data/SuperMarioStructure/SuperMarioStructure.*.jsonl; do jq -r .work_id $f \| sort -u; done \| sort \| uniq -c \| awk '$1>1 {print}'` — should be empty |
-| Configs parse cleanly | `uv run python cli.py test -c configs/probe.MuQ-layers.SuperMarioStructure.yaml --print_config \| head -20` |
-| Cache audit passes | `uv run python scripts/embeddings/audit_cache_integration.py` reports 183/183 |
+| Configs parse cleanly | `uv run python cli.py test -c configs/probe.CLaMP3-symbolic-layers.SuperMarioStructure.yaml --print_config \| head -20` |
+| Cache audit passes | `uv run python scripts/embeddings/audit_cache_integration.py` reports 185/185 |
 | Sweep planner sees data | `uv run python scripts/sweeps/run_all_sweeps.py --tasks SuperMarioStructure --dry-run` shows `✓ data` |
+| (Audio only) `audio_path` present on most records | `jq 'select(.audio_path != null) | .audio_path' data/SuperMarioStructure/SuperMarioStructure.train.jsonl \| wc -l` |
+
+---
+
+## Idempotency + resume
+
+- Source MIDIs: skipped if cached at `<midi-dir>/<piece_id>.mid`.
+- MIDI segments: skipped if present (size-aware).
+- Audio segments: skipped if present.
+- JSONL: always rewritten from current on-disk state.
+
+To force re-slice MIDIs (e.g., after a build-script bugfix): delete
+`data/SuperMarioStructure/midi_segments/` first.
+
+To rebuild JSONL only (no new slicing):
+
+```bash
+uv run python scripts/data/build_supermario_dataset.py \
+    --skip-midi-slice --skip-midi-download --skip-slice
+```
 
 ---
 
@@ -207,47 +243,63 @@ showing of CLaMP3-symbolic on VGMIDITVar / leitmotif tasks.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| "candidate pieces: 0" | Audio file naming doesn't match piece_id convention | Rename audio files to `<5-digit-piece_id>.<ext>` matching pieces.csv |
-| Many pieces in "no audio" list | Same — partial match | Inspect the listed names, fix naming convention |
-| MIDI download fails (NinSheetMusic down) | Network issue | Retry later; use `--skip-midi-download` if MIDIs already cached |
-| `pretty_midi could not load X.mid` | Malformed MIDI | Skip happens automatically; piece gets dropped with `dropped_no_midi` count |
-| `BarRange out of range for MIDI` | Annotation references bar number beyond MIDI's downbeat count | Likely a MIDI/annotation mismatch (different versions of the score); piece's affected segments dropped, counted as `dropped_oor` |
-| `Unknown Function code` at parse time | Annotation has a Function code outside {In, Lp, Tr, Br, Ou, St} | Add the new code to `RAW_TO_CANONICAL` in the build script and re-run |
-| `ffmpeg slice failed` | Source audio unseekable / corrupted | Re-encode source to FLAC first; or substitute that piece |
-| Datamodule `Unknown label: …` at train start | Stale JSONL from before LABEL2IDX change | Re-run build with `--skip-slice` to rewrite JSONL |
-| Segments very short (<2 s dropped) | Stinger label hit `--min-segment-sec` filter | Lower `--min-segment-sec 1.0` if you want to keep them |
+| `candidate pieces: 0` | First-run: upstream repo not yet cloned | The script clones automatically; if this fails, check git + network |
+| `MIDI download failed` (NinSheetMusic down) | Network issue | Retry later; uses `urllib` not yt-dlp so no special auth needed |
+| `pretty_midi could not load X.mid` | Malformed source MIDI | Piece is dropped automatically; counted as `dropped_no_midi` |
+| `BarRange out of range for MIDI` | Annotation references bar number beyond MIDI's downbeat count | Likely a MIDI/annotation version mismatch; piece's affected segments dropped, counted as `dropped_oor` |
+| `Unknown Function code` | Annotation has a Function code outside {In, Lp, Tr, Br, Ou, St} | Add a defensive alias to `RAW_TO_CANONICAL` in the build script |
+| `pretty_midi write failed for X.mid` | Disk full / permission issue | Check disk + permissions on `midi-segments-dir` |
+| MIDI segments very short (<2 s) dropped | Stinger label hit `--min-segment-sec` | Lower `--min-segment-sec 1.0` if you want to keep them |
+| Datamodule `Unknown label: …` at train start | Stale JSONL from before LABEL2IDX change | Re-run build with `--skip-midi-slice --skip-slice` to rewrite JSONL only |
+| (Audio only) "audio missing for N pieces" warning | Some pieces have no matching audio file in `--audio-dir` | Either rename audio files to match `<piece_id>.<ext>` or accept the partial coverage (symbolic still works for all pieces) |
 
 ---
 
 ## Files this dataset touches
 
-- `data/SuperMarioStructure/_upstream/supermario-structure-annotation/` — clone (~5 MB)
-- `data/SuperMarioStructure/midi/<piece_id>.mid` — source MIDIs (~5 MB)
-- `data/SuperMarioStructure/segments/<piece_id>/<seg_idx>_<label>.flac` — per-segment audio (~0.4 GB)
-- `data/SuperMarioStructure/SuperMarioStructure.{train,val,test}.jsonl` — annotation files
-- `marble/tasks/SuperMarioStructure/{datamodule,probe}.py` — Lightning task
-- `configs/probe.<encoder>-{layers,meanall}.SuperMarioStructure.yaml` — 8 configs
-- `output/.emb_cache/<encoder>/SuperMarioStructure__<hash>/` — embedding cache (auto)
+```
+data/SuperMarioStructure/
+  _upstream/supermario-structure-annotation/   ← clone (~5 MB)
+  midi/<piece_id>.mid                          ← source MIDIs (~5 MB)
+  midi_segments/<piece_id>/<seg_idx>_<label>.mid   ← per-segment MIDIs (~10 MB)
+  segments/<piece_id>/<seg_idx>_<label>.flac   ← per-segment audio (~0.4 GB, optional)
+  SuperMarioStructure.{train,val,test}.jsonl   ← annotation files
+
+marble/tasks/SuperMarioStructure/
+  datamodule.py   ← audio + symbolic base classes
+  probe.py        ← shared probe (BaseTask + per-segment aggregation)
+
+configs/probe.<encoder>-{layers,meanall}.SuperMarioStructure.yaml   ← 10 configs
+
+output/.emb_cache/<encoder>/SuperMarioStructure__<hash>/   ← embedding cache (auto)
+```
 
 ---
 
 ## Why this dataset matters (research framing)
 
-- **Only VGM-native structure benchmark** with labels (`loop`, `stinger`)
-  that don't exist in pop-music structure datasets (Harmonix /
-  HookTheoryStructure).
+- **Only VGM-native structure benchmark** with labels (`loop`,
+  `stinger`) that don't exist in pop-music structure datasets
+  (Harmonix / HookTheoryStructure).
 - **Highest annotation agreement** of any structure dataset we surveyed:
   95.77% function-boundary and 97.68% section-boundary inter-rater
   agreement on the 50-piece validation subset.
+- **Direct comparison of symbolic vs audio paths** on a single
+  dataset. Most of our other datasets are either audio-only
+  (HookTheoryStructure, HXMSA) or where symbolic doesn't add much
+  (VGMIDI/leitmotif where the MIDIs were already piano-only). Here,
+  the symbolic input is the exact match to the annotation domain, so
+  the cross-encoder comparison is genuinely interesting:
+  - Does CLaMP3-symbolic dominate the audio encoders here the way it
+    did on the leitmotif task?
+  - Or does the small dataset (vs the leitmotif task's larger pool)
+    favour the more parameter-efficient audio encoders?
 - **Companion to leitmotif work.** Same domain (VGM); different level
   (structure vs motif). End-to-end pipeline becomes possible: detect
   structural boundaries → extract leitmotifs within sections.
-- **Small but high-fidelity.** 554 pieces is smaller than HXMSA (912)
-  or SALAMI (1400), but with much better label agreement and
-  domain-targeted labels.
 
 See [`docs/structure_datasets_survey.md`](../structure_datasets_survey.md)
-for the full survey context.
+for the full survey context and ranking.
 
 ---
 
@@ -256,6 +308,7 @@ for the full survey context.
 - [SuperMario Structure Annotation repo](https://github.com/ShxLuo-Saxon/supermario-structure-annotation)
 - [NinSheetMusic](https://www.ninsheetmusic.org) — source of the MUS/MXL transcriptions and MIDIs
 - Companion docs:
-  - [`hxmsa_setup.md`](hxmsa_setup.md) — closest comparable task (Harmonix structure)
-  - [`vgmiditvar_setup.md`](vgmiditvar_setup.md) — MIDI-rendering pipeline (relevant if you want to render audio yourself)
+  - [`hxmsa_setup.md`](hxmsa_setup.md) — closest comparable audio task (Harmonix structure)
+  - [`vgmiditvar_setup.md`](vgmiditvar_setup.md) — MIDI-rendering pipeline (if you want to render audio from the source MIDIs)
   - [`../structure_datasets_survey.md`](../structure_datasets_survey.md) — full MSA dataset survey
+  - [`../leitmotif_findings.md`](../leitmotif_findings.md) — CLaMP3-symbolic vs audio findings on the leitmotif task (informs expectations)

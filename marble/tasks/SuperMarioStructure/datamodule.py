@@ -239,3 +239,156 @@ class SuperMarioStructureAudioTest(SuperMarioStructureAudioVal):
 
 class SuperMarioStructureDataModule(BaseDataModule):
     pass
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Symbolic path (CLaMP3 native MIDI encoder) — PRIMARY representation
+# ────────────────────────────────────────────────────────────────────────────
+#
+# The SuperMario annotations are *bar-based*, derived from the source MUS/MXL
+# scores. MIDI is therefore the exact-match input domain (audio is a
+# derivation). For classification we slice the source MIDI per segment via
+# scripts/data/build_supermario_dataset.py (using pretty_midi), then feed
+# the per-segment MIDI fragments through CLaMP3's M3 tokeniser.
+#
+# Contract per item — 4-tuple matching the audio path:
+#   patches : LongTensor (MAX_PATCHES, PATCH_SIZE) — padded with pad_token_id
+#   label   : int — 6-class canonical inventory (shares LABEL2IDX with audio)
+#   ori_uid : str — per-segment id; probe averages slices per uid
+#   clip_id : str — per-segment cache key (only one "slice" per MIDI segment;
+#                   the patchilizer is deterministic so caching the encoder
+#                   output gives the full speedup)
+#
+# Cache integration mirrors the audio path's BaseTask flow — same
+# EmbeddingCacheMixin handles hit/miss routing. M3 tokenisation is cheap
+# (~10 ms / segment) but the CLaMP3 BERT forward pass is the expensive
+# step; caching its (L, H) output is the speedup.
+
+
+class _SuperMarioStructureSymbolicBase(Dataset):
+    """Symbolic dataset: returns CLaMP3 M3 patches per pre-sliced MIDI segment.
+
+    Reads ``midi_path`` from each JSONL record (the per-segment MIDI file
+    produced by ``scripts/data/build_supermario_dataset.py``). M3
+    patchilization happens lazily in ``__getitem__`` so cold-start cost
+    is bounded; warm-cache hits skip the patchilizer entirely via
+    ``cache_check_fn``.
+    """
+
+    # ── Reuse the 6-class inventory from the audio path ───────────────────
+    # Same dict object — kept in sync automatically. The classification head
+    # is shared, so symbolic and audio configs use the same out_dim=6.
+    LABEL2IDX = _SuperMarioStructureAudioBase.LABEL2IDX
+    IDX2LABEL = _SuperMarioStructureAudioBase.IDX2LABEL
+    NUM_CLASSES = _SuperMarioStructureAudioBase.NUM_CLASSES
+
+    EXAMPLE_JSONL = {
+        "midi_path": "data/SuperMarioStructure/midi_segments/00001/000_intro.mid",
+        "ori_uid": "00001_000",
+        "work_id": "00001",
+        "label": "intro",
+        "seg_idx": 0,
+        "bar_start": 1,
+        "bar_end": 10,
+        "seg_start": 0.0,
+        "seg_end": 18.75,
+        "title": "Captain Toad Treasure Tracker - Retro RampUp",
+        "ninsheetmusic_id": "4405",
+    }
+
+    def __init__(
+        self,
+        jsonl: str,
+        max_patches: int | None = None,
+    ):
+        # Intentional lazy import — matches the VGMIDITVar symbolic pattern.
+        # Eagerly importing CLaMP3 at module top level would force the heavy
+        # CLaMP3 weight download on machines that never run the symbolic
+        # config (e.g. audio-only sweeps over MuQ / MERT / OMARRQ).
+        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+        from marble.encoders.CLaMP3.midi_util import midi_to_mtf
+        from marble.encoders.CLaMP3.model import CLaMP3Config
+
+        self._midi_to_mtf = midi_to_mtf
+        self.patchilizer = M3Patchilizer()
+        self.max_patches = max_patches or CLaMP3Config.PATCH_LENGTH
+        self.patch_size = CLaMP3Config.PATCH_SIZE
+        self.pad_token_id = self.patchilizer.pad_token_id
+
+        with open(jsonl, encoding="utf-8") as f:
+            self.meta: list[dict] = [json.loads(line) for line in f]
+
+        # Fail-loud label validation (same as audio path).
+        for info in self.meta:
+            if "midi_path" not in info:
+                raise ValueError(
+                    f"JSONL record missing `midi_path`: {info.get('ori_uid', '?')} — "
+                    f"re-run scripts/data/build_supermario_dataset.py to regenerate"
+                )
+            lbl = info["label"]
+            if isinstance(lbl, list):
+                lbl = lbl[0] if lbl else None
+                info["label"] = lbl
+            if lbl not in self.LABEL2IDX:
+                raise ValueError(
+                    f"Unknown label {lbl!r} for {info.get('midi_path', '?')}; "
+                    f"valid labels: {sorted(set(self.LABEL2IDX))}"
+                )
+
+        # Set by the task at setup() time when the per-clip embedding cache
+        # is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
+        self.cache_check_fn = None
+
+    def __len__(self) -> int:
+        return len(self.meta)
+
+    def __getitem__(self, idx: int):
+        """Return ``(patches, label, ori_uid, clip_id)`` 4-tuple."""
+        info = self.meta[idx]
+        midi_path = info["midi_path"]
+        label = self.LABEL2IDX[info["label"]]
+        ori_uid = info["ori_uid"]
+        # One "slice" per MIDI segment (the patchilizer is deterministic
+        # and processes the whole MIDI as a single sequence).
+        clip_id = make_clip_id(midi_path, 0)
+
+        # Cache hit — skip patchilization entirely. Defensive getattr against
+        # the Windows-spawn pickle/state-mismatch (commit 23f8e36 pattern).
+        cache_check = getattr(self, "cache_check_fn", None)
+        if cache_check is not None and cache_check(clip_id):
+            patches = torch.zeros((self.max_patches, self.patch_size), dtype=torch.long)
+            return patches, label, ori_uid, clip_id
+
+        # M3 tokenize → list of patches; each patch is a list of int tokens.
+        mtf = self._midi_to_mtf(midi_path)
+        patches_list = self.patchilizer.encode(
+            mtf, patch_size=self.patch_size, add_special_patches=True
+        )
+        patches_list = patches_list[: self.max_patches]
+        patches = torch.tensor(patches_list, dtype=torch.long)  # (P, patch_size)
+
+        # Pad to (max_patches, patch_size) so default_collate can batch.
+        if patches.size(0) < self.max_patches:
+            pad_rows = self.max_patches - patches.size(0)
+            pad_block = torch.full((pad_rows, self.patch_size), self.pad_token_id, dtype=torch.long)
+            patches = torch.cat([patches, pad_block], dim=0)
+
+        return patches, label, ori_uid, clip_id
+
+
+class SuperMarioStructureSymbolicTrain(_SuperMarioStructureSymbolicBase):
+    """Training split — DataModule sets shuffle=True."""
+
+    pass
+
+
+class SuperMarioStructureSymbolicVal(_SuperMarioStructureSymbolicBase):
+    """Validation split — DataModule sets shuffle=False."""
+
+    pass
+
+
+class SuperMarioStructureSymbolicTest(SuperMarioStructureSymbolicVal):
+    """Test split — same logic as val."""
+
+    pass
