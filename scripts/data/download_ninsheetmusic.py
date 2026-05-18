@@ -241,19 +241,46 @@ def main() -> None:
         "runs: pass the same dir to reuse the cached session and avoid "
         "re-challenges. Recommended: '<data-dir>/.playwright_profile'.",
     )
+    ap.add_argument(
+        "--channel",
+        default=None,
+        choices=["chrome", "msedge", "chromium", "chrome-beta", "msedge-beta"],
+        help="Which browser binary to launch. Default: the Chromium that "
+        "playwright/patchright bundled (works on most setups). Use 'chrome' "
+        "or 'msedge' to launch your system-installed browser instead — "
+        "useful when the bundled Chromium can't reach the network (DNS / "
+        "proxy / firewall blocking the bundled binary but not the system "
+        "Chrome). On Windows: 'msedge' is always installed; 'chrome' "
+        "requires Chrome to be installed.",
+    )
+    ap.add_argument(
+        "--firefox",
+        action="store_true",
+        help="Use Firefox instead of Chromium. Slowest fallback when "
+        "neither system Chrome nor system Edge works (e.g. corporate "
+        "Windows machine that only has Firefox).",
+    )
     args = ap.parse_args()
 
     # Lazy import — playwright is an optional extra. Prefer `patchright`
     # (drop-in fork with better anti-detection) when available; fall back
-    # to stock playwright otherwise.
-    try:
-        from patchright.sync_api import sync_playwright
-
-        _backend = "patchright"
-    except ImportError:
+    # to stock playwright otherwise. NOTE: patchright is Chromium-only, so
+    # if the user passed --firefox we MUST use stock playwright.
+    sync_playwright = None
+    _backend = None
+    if not args.firefox:
         try:
-            from playwright.sync_api import sync_playwright
+            from patchright.sync_api import sync_playwright as _sp
 
+            sync_playwright = _sp
+            _backend = "patchright"
+        except ImportError:
+            pass
+    if sync_playwright is None:
+        try:
+            from playwright.sync_api import sync_playwright as _sp
+
+            sync_playwright = _sp
             _backend = "playwright"
         except ImportError:
             log.error(
@@ -262,10 +289,18 @@ def main() -> None:
                 "    uv run playwright install chromium\n"
                 "    # Optional but recommended:\n"
                 "    uv pip install patchright && uv run patchright install chromium\n"
+                "    # For --firefox fallback:\n"
+                "    uv run playwright install firefox\n"
                 "Then re-run this script."
             )
             sys.exit(1)
     log.info(f"Using browser backend: {_backend}")
+    if args.firefox:
+        log.info("  browser engine: Firefox (--firefox)")
+    elif args.channel:
+        log.info(f"  browser channel: {args.channel} (system-installed binary)")
+    else:
+        log.info("  browser channel: bundled Chromium (default)")
 
     # Resolve kinds list
     if args.kind == "all":
@@ -378,6 +413,22 @@ def main() -> None:
             },
         }
 
+        # Pick the engine: firefox (when --firefox) or chromium (default).
+        # Firefox uses the system network stack out-of-the-box, so it's
+        # the safe fallback when bundled Chromium can't resolve DNS.
+        engine = p.firefox if args.firefox else p.chromium
+
+        # Extra kwargs forwarded to launch / launch_persistent_context.
+        # `channel=` selects a system-installed Chromium variant (chrome,
+        # msedge, ...). Only valid for the chromium engine — Firefox
+        # rejects unknown kwargs.
+        launch_extra: dict = {}
+        if not args.firefox and args.channel:
+            launch_extra["channel"] = args.channel
+        # Firefox doesn't accept Chromium-style --disable-blink-features
+        # args; pass them only for chromium.
+        engine_args = launch_args if not args.firefox else []
+
         if args.persistent_context_dir:
             # Persistent context: cookies (cf_clearance especially) survive
             # across runs. Single-step launch returns a Context directly,
@@ -389,15 +440,20 @@ def main() -> None:
             profile = _P(args.persistent_context_dir)
             profile.mkdir(parents=True, exist_ok=True)
             log.info(f"Using persistent context: {profile}")
-            context = p.chromium.launch_persistent_context(
+            context = engine.launch_persistent_context(
                 user_data_dir=str(profile),
                 headless=args.headless,
-                args=launch_args,
+                args=engine_args,
+                **launch_extra,
                 **ctx_kwargs,
             )
             browser = None
         else:
-            browser = p.chromium.launch(headless=args.headless, args=launch_args)
+            browser = engine.launch(
+                headless=args.headless,
+                args=engine_args,
+                **launch_extra,
+            )
             context = browser.new_context(**ctx_kwargs)
 
         if has_stealth:
