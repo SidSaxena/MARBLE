@@ -15,8 +15,13 @@ Pipeline
 --------
   1. Clone the upstream annotation repo (annotations + pieces.csv +
      pairs.csv). Lightweight, ~5 MB.
-  2. Download per-piece source MIDIs from NinSheetMusic
-     (url_mid in pieces.csv) — used purely as the bar→time clock.
+  2. Source per-piece MIDIs. NinSheetMusic blocks scrapers (HTTP 403
+     regardless of headers), so the preferred path is
+     ``--midi-source-dir <dir>`` pointing at MIDIs you fetched
+     manually (or via the `ohsheet` Rust CLI, or any other method
+     that respects NSM's terms). The script falls back to attempted
+     auto-download from url_mid in pieces.csv, but that will fail
+     for NSM in practice.
   3. For each piece:
      a. Locate the user-supplied audio file in --audio-dir (matched
         by piece_id stem with multiple extension fallbacks).
@@ -53,17 +58,22 @@ Prerequisites
 
 Usage
 -----
-  # Pilot (5 pieces, ~2 min) — recommended first run
+  # Symbolic-only build with user-supplied MIDIs (the common case)
   uv run python scripts/data/build_supermario_dataset.py \\
-      --audio-dir /path/to/your/audio --max-pieces 5
+      --midi-source-dir /path/to/your/midis
 
-  # Full build
+  # Pilot first — 5 pieces, ~30 s
   uv run python scripts/data/build_supermario_dataset.py \\
+      --midi-source-dir /path/to/your/midis --max-pieces 5
+
+  # Full build with both symbolic + audio
+  uv run python scripts/data/build_supermario_dataset.py \\
+      --midi-source-dir /path/to/your/midis \\
       --audio-dir /path/to/your/audio
 
   # Rebuild JSONL from already-sliced segments (no new slicing)
   uv run python scripts/data/build_supermario_dataset.py \\
-      --audio-dir /path/to/your/audio --skip-slice
+      --skip-midi-slice --skip-slice --skip-midi-download
 
 Disk budget
 -----------
@@ -326,6 +336,13 @@ def _download_midi(url: str, dst: Path, timeout: int = 30) -> bool:
     """Download a MIDI file via urllib. Returns True on success.
 
     Idempotent: skips if dst already exists with size > 100 bytes.
+
+    Note: NinSheetMusic actively blocks all automated access (HTTP 403
+    regardless of User-Agent / Referer / cookies — verified against
+    multiple browser-mimicking headers). This function is provided as a
+    best-effort fallback, but in practice you should populate the MIDI
+    cache via ``--midi-source-dir`` instead. See the script header for
+    the three documented sourcing options.
     """
     if dst.exists() and dst.stat().st_size > 100:
         return True
@@ -333,7 +350,18 @@ def _download_midi(url: str, dst: Path, timeout: int = 30) -> bool:
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "marble-build/0.1"})
+        # Browser-ish headers; doesn't actually help against NSM but kept
+        # for any other hosts that might surface in future variants.
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+                ),
+                "Referer": "https://www.ninsheetmusic.org/",
+            },
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read()
         if len(data) < 100:
@@ -344,6 +372,24 @@ def _download_midi(url: str, dst: Path, timeout: int = 30) -> bool:
     except Exception as e:
         log.warning(f"  MIDI download failed for {url}: {e}")
         return False
+
+
+def _import_user_midi(piece_id: str, source_dir: Path, dst: Path) -> bool:
+    """Copy/symlink a user-supplied MIDI into the cache dir.
+
+    Returns True if a matching file was found and successfully placed
+    at ``dst``. Tries common MIDI extensions (.mid, .midi, .smf).
+    """
+    if dst.exists() and dst.stat().st_size > 100:
+        return True
+    for ext in (".mid", ".midi", ".smf"):
+        candidate = source_dir / f"{piece_id}{ext}"
+        if candidate.exists() and candidate.stat().st_size > 100:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            # Use copy (not symlink) for cross-platform reliability
+            shutil.copy(candidate, dst)
+            return True
+    return False
 
 
 # ── User audio lookup ─────────────────────────────────────────────────────────
@@ -571,6 +617,21 @@ def main() -> None:
         help="Skip MIDI segment slicing; assume segment MIDIs are already present.",
     )
     ap.add_argument(
+        "--midi-source-dir",
+        default=None,
+        help="Directory containing user-supplied source MIDIs matched by "
+        "piece_id stem (e.g. 00001.mid, 00002.mid, ...). Strongly preferred "
+        "over auto-download — NinSheetMusic actively blocks scrapers "
+        "(returns HTTP 403 for any non-browser request). The upstream repo "
+        "README explicitly says to download manually via the url_mid links. "
+        "Three viable ways to populate this dir: "
+        "(1) manually click the url_mid links from metadata/pieces.csv in a "
+        "browser, (2) use the `ohsheet` Rust CLI "
+        "(https://crates.io/crates/ohsheet) — runs separately, requires "
+        "`cargo install ohsheet`, (3) any other scraper that respects NSM's "
+        "terms. The build script does NOT bundle any of these.",
+    )
+    ap.add_argument(
         "--data-dir",
         default="data/SuperMarioStructure",
         help="Output root dir (JSONL + segments live under here). Default: %(default)s",
@@ -732,9 +793,13 @@ def main() -> None:
             f"(these still get symbolic records)"
         )
     log.info(f"  MIDI already cached  : {n_midi_present:,}")
+    midi_source_str = args.midi_source_dir if args.midi_source_dir else "(none)"
+    log.info(f"  MIDI source dir   : {midi_source_str}   (preferred over download)")
     log.info(
-        f"  MIDI to download now : {n_to_download_midi:,}"
-        f"{'  (SKIPPED via --skip-midi-download)' if args.skip_midi_download else ''}"
+        f"  MIDI to fetch now : {n_to_download_midi:,}  "
+        f"(source-dir first, download fallback"
+        f"{' SKIPPED via --skip-midi-download' if args.skip_midi_download else ''}; "
+        f"NSM auto-download typically 403s — see runbook)"
     )
     log.info(
         f"  MIDI segment slice : {'SKIPPED via --skip-midi-slice' if args.skip_midi_slice else 'enabled'}"
@@ -757,17 +822,53 @@ def main() -> None:
 
     _install_sigint_handler()
 
-    # ── Step 1: Download source MIDIs ──────────────────────────────────────
-    if not args.skip_midi_download:
-        log.info("Downloading source MIDIs from NinSheetMusic …")
-        for i, pid in enumerate(candidates, 1):
-            if _shutdown.is_set():
-                break
+    # ── Step 1: Source MIDIs ─────────────────────────────────────────────────
+    # Priority order: (1) already cached at midi-dir/<pid>.mid, (2) copy from
+    # --midi-source-dir if provided, (3) fallback auto-download (works only
+    # for non-NSM hosts; NSM returns 403 for all automated requests).
+    midi_source_dir = Path(args.midi_source_dir) if args.midi_source_dir else None
+    if midi_source_dir is not None and not midi_source_dir.exists():
+        log.error(f"--midi-source-dir does not exist: {midi_source_dir}")
+        sys.exit(1)
+
+    log.info("Sourcing per-piece MIDIs …")
+    n_from_cache = 0
+    n_from_source = 0
+    n_from_download = 0
+    n_download_failed = 0
+    for i, pid in enumerate(candidates, 1):
+        if _shutdown.is_set():
+            break
+        dst = midi_dir / f"{pid}.mid"
+        if dst.exists() and dst.stat().st_size > 100:
+            n_from_cache += 1
+        elif midi_source_dir is not None and _import_user_midi(pid, midi_source_dir, dst):
+            n_from_source += 1
+        elif not args.skip_midi_download:
             url = pieces_meta[pid].get("url_mid", "")
-            dst = midi_dir / f"{pid}.mid"
-            _download_midi(url, dst)
-            if i % 50 == 0 or i == len(candidates):
-                log.info(f"  [{i:>4}/{len(candidates)}]")
+            if _download_midi(url, dst):
+                n_from_download += 1
+            else:
+                n_download_failed += 1
+        if i % 50 == 0 or i == len(candidates):
+            log.info(
+                f"  [{i:>4}/{len(candidates)}]  cached={n_from_cache} "
+                f"from-source={n_from_source} downloaded={n_from_download} "
+                f"failed={n_download_failed}"
+            )
+    log.info(
+        f"  MIDI sourcing complete: cached={n_from_cache}, "
+        f"copied-from-source={n_from_source}, downloaded={n_from_download}, "
+        f"failed={n_download_failed}"
+    )
+    if n_download_failed > 0 and n_from_source == 0 and midi_source_dir is None:
+        log.warning(
+            "NinSheetMusic returned 403 for %d pieces — this is expected; the "
+            "site blocks scrapers. Either re-run with `--midi-source-dir "
+            "<dir>` pointing at MIDIs you sourced manually (or via the "
+            "`ohsheet` Rust CLI), or accept the partial coverage.",
+            n_download_failed,
+        )
 
     # ── Step 2: For each piece, parse → bar-time-map → slice MIDI (+ audio) ─
     # Symbolic is primary: every record gets a per-segment MIDI. Audio

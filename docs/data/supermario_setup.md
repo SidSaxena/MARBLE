@@ -81,6 +81,35 @@ respective datamodule.
 | **pretty_midi** | Bar→time mapping + MIDI segment slicing | already a MARBLE dep |
 | **ffmpeg + ffprobe** | Audio segment slicing | macOS: `brew install ffmpeg`; only required if you pass `--audio-dir` |
 
+### Sourcing the MIDIs (the one manual step)
+
+**NinSheetMusic actively blocks scrapers** — every automated request
+returns HTTP 403, regardless of User-Agent, Referer, or cookies (we
+verified this). The upstream dataset README also explicitly says to
+download manually. So our build script does **not** include a working
+auto-downloader; instead, you populate a directory of source MIDIs
+and pass it via `--midi-source-dir`. Three ways to fill that dir:
+
+1. **Manual download (recommended).** Open
+   `data/SuperMarioStructure/_upstream/supermario-structure-annotation/metadata/pieces.csv`
+   after the first build run (it gets cloned automatically), and
+   click the `url_mid` link for each piece in a browser. Tedious for
+   all 554; cheap for a pilot of 10–20.
+2. **`ohsheet` Rust CLI** ([crates.io/crates/ohsheet](https://crates.io/crates/ohsheet)).
+   Purpose-built NinSheetMusic scraper. Requires
+   `cargo install ohsheet` (one-time, installs the Rust toolchain if
+   you don't have it). Run separately and point the output at our
+   `--midi-source-dir`. Worth the setup for the full 554-piece build.
+3. **Any other scraper that respects NSM's terms.** Whatever works
+   for you — the build script just consumes a directory of
+   `<piece_id>.mid` files (5-digit zero-padded, e.g. `00001.mid`).
+   Supported extensions: `.mid`, `.midi`, `.smf`.
+
+Without `--midi-source-dir`, the build script will attempt the
+auto-download anyway as a fallback, but expect ~all 554 pieces to
+fail with 403. Pieces without MIDIs get dropped (no symbolic record,
+no audio record — the entire piece is skipped).
+
 ### User audio (optional)
 
 If you do want to also build the audio path, files must be named
@@ -113,17 +142,20 @@ MIDI segment slicing uses the exact same MIDI as the source.
 ### Symbolic-only build (recommended for first run)
 
 ```bash
-# Pilot — 5 pieces, ~1 min
-uv run python scripts/data/build_supermario_dataset.py --max-pieces 5
+# Pilot — 5 pieces, ~1 min (assumes you've populated --midi-source-dir)
+uv run python scripts/data/build_supermario_dataset.py \
+    --midi-source-dir /path/to/your/midis --max-pieces 5
 
-# Full symbolic build (~10 min, no audio needed)
-uv run python scripts/data/build_supermario_dataset.py
+# Full symbolic build (~10 min for 554 pieces, no audio needed)
+uv run python scripts/data/build_supermario_dataset.py \
+    --midi-source-dir /path/to/your/midis
 ```
 
 ### Symbolic + audio build
 
 ```bash
 uv run python scripts/data/build_supermario_dataset.py \
+    --midi-source-dir /path/to/your/midis \
     --audio-dir /path/to/your/mario/audio
 ```
 
@@ -244,7 +276,7 @@ uv run python scripts/data/build_supermario_dataset.py \
 | Symptom | Cause | Fix |
 |---|---|---|
 | `candidate pieces: 0` | First-run: upstream repo not yet cloned | The script clones automatically; if this fails, check git + network |
-| `MIDI download failed` (NinSheetMusic down) | Network issue | Retry later; uses `urllib` not yt-dlp so no special auth needed |
+| `MIDI download failed for ... HTTP Error 403: Forbidden` | NinSheetMusic blocks all scrapers — see Prerequisites § Sourcing the MIDIs | Populate `--midi-source-dir` via manual download or `ohsheet`; re-run the build. The 403 is expected, not a bug |
 | `pretty_midi could not load X.mid` | Malformed source MIDI | Piece is dropped automatically; counted as `dropped_no_midi` |
 | `BarRange out of range for MIDI` | Annotation references bar number beyond MIDI's downbeat count | Likely a MIDI/annotation version mismatch; piece's affected segments dropped, counted as `dropped_oor` |
 | `Unknown Function code` | Annotation has a Function code outside {In, Lp, Tr, Br, Ou, St} | Add a defensive alias to `RAW_TO_CANONICAL` in the build script |
