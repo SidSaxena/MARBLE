@@ -52,6 +52,15 @@ dependencies = [
 xcodec = [
     "descript-audiotools @ git+https://github.com/descriptinc/audiotools",
 ]
+# uv sync --extra ninsheetmusic   (then `playwright install chromium`)
+# Required only for scripts/data/download_ninsheetmusic.py — the
+# SuperMarioStructure dataset's MIDI source. NSM blocks all non-browser
+# HTTP requests (403); Playwright drives a real Chromium that handles
+# whatever cookie/JS dance NSM expects.
+ninsheetmusic = [
+    "playwright>=1.40",
+    "playwright-stealth>=2.0",   # patches navigator.webdriver + other bot tells
+]
 
 [dependency-groups]
 # Install with: uv sync --group dev

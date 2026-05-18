@@ -83,32 +83,76 @@ respective datamodule.
 
 ### Sourcing the MIDIs (the one manual step)
 
-**NinSheetMusic actively blocks scrapers** — every automated request
-returns HTTP 403, regardless of User-Agent, Referer, or cookies (we
-verified this). The upstream dataset README also explicitly says to
-download manually. So our build script does **not** include a working
-auto-downloader; instead, you populate a directory of source MIDIs
-and pass it via `--midi-source-dir`. Three ways to fill that dir:
+**NinSheetMusic actively blocks scrapers** — every automated HTTP
+request returns 403, regardless of User-Agent / Referer / cookies (we
+verified across stock Playwright, patchright, and direct urllib). The
+site is fronted by Cloudflare's anti-bot, which reliably detects
+headless Chromium and pins the browser at the "Just a moment..."
+challenge page indefinitely. The upstream dataset README also
+explicitly says to download manually.
 
-1. **Manual download (recommended).** Open
-   `data/SuperMarioStructure/_upstream/supermario-structure-annotation/metadata/pieces.csv`
-   after the first build run (it gets cloned automatically), and
-   click the `url_mid` link for each piece in a browser. Tedious for
-   all 554; cheap for a pilot of 10–20.
-2. **`ohsheet` Rust CLI** ([crates.io/crates/ohsheet](https://crates.io/crates/ohsheet)).
-   Purpose-built NinSheetMusic scraper. Requires
-   `cargo install ohsheet` (one-time, installs the Rust toolchain if
-   you don't have it). Run separately and point the output at our
-   `--midi-source-dir`. Worth the setup for the full 554-piece build.
-3. **Any other scraper that respects NSM's terms.** Whatever works
-   for you — the build script just consumes a directory of
-   `<piece_id>.mid` files (5-digit zero-padded, e.g. `00001.mid`).
-   Supported extensions: `.mid`, `.midi`, `.smf`.
+So our build script does **not** include a working auto-downloader;
+it consumes a directory of MIDIs you sourced separately. Recommended
+path:
 
-Without `--midi-source-dir`, the build script will attempt the
-auto-download anyway as a fallback, but expect ~all 554 pieces to
-fail with 403. Pieces without MIDIs get dropped (no symbolic record,
-no audio record — the entire piece is skipped).
+#### Option A — `scripts/data/download_ninsheetmusic.py` (built-in Playwright downloader, recommended)
+
+We ship a Playwright-based downloader that runs Chromium *visibly*
+(headed mode) — this is the most reliable way to get past Cloudflare's
+anti-bot, because it IS a real browser. Setup is one-time:
+
+```bash
+# 1. Install the optional Playwright dep + browser (~250 MB)
+uv sync --extra ninsheetmusic
+uv run playwright install chromium
+# Optional but recommended (drop-in Playwright fork with stealth patches):
+uv pip install patchright && uv run patchright install chromium
+
+# 2. Download MIDIs (visible browser opens; ~15–30 min for all 554)
+uv run python scripts/data/download_ninsheetmusic.py \
+    --csv data/SuperMarioStructure/_upstream/supermario-structure-annotation/metadata/pieces.csv \
+    --out-dir data/SuperMarioStructure/midi_user \
+    --kind mid \
+    --persistent-context-dir data/SuperMarioStructure/.playwright_profile
+```
+
+What happens: Chromium opens, visits the NSM homepage, Cloudflare's
+JS challenge runs (you may briefly see "Just a moment..." then it
+clears automatically — if it doesn't, click through any CAPTCHA
+manually), then the script iterates the CSV and downloads each MIDI
+via the browser's HTTP API (with the now-valid `cf_clearance`
+cookie). `--persistent-context-dir` saves the session so re-runs
+don't need to re-clear Cloudflare.
+
+The downloader saves files as `<piece_id>.mid` ready to feed straight
+into `build_supermario_dataset.py --midi-source-dir`. Pilot first
+with `--max-pieces 5` to verify your browser session works.
+
+#### Option B — `ohsheet` Rust CLI
+
+[crates.io/crates/ohsheet](https://crates.io/crates/ohsheet) — a
+purpose-built NinSheetMusic scraper. Requires `cargo install ohsheet`
+(installs Rust if you don't have it). Output naming may not match
+our `<piece_id>.mid` convention; rename as needed.
+
+#### Option C — manual click-through
+
+Open
+`data/SuperMarioStructure/_upstream/supermario-structure-annotation/metadata/pieces.csv`
+in a spreadsheet, click each `url_mid` link in a browser, save with
+the piece_id stem. Tedious for all 554; only practical for a small
+pilot.
+
+#### Option D — any other scraper
+
+The build script just consumes a directory of `<piece_id>.<ext>`
+files (5-digit zero-padded). Supported extensions: `.mid`, `.midi`,
+`.smf`. Whatever fills that dir works.
+
+Without any sourced MIDIs, the build script attempts the urllib
+fallback download and gracefully fails (logging the 403 count).
+Pieces without MIDIs get dropped — no symbolic record, no audio
+record.
 
 ### User audio (optional)
 
