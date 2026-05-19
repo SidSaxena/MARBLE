@@ -18,7 +18,8 @@ we discovered with MuQ: aggregate-best L12 is NOT cross-instrument-best
 hides that. The cached embeddings make full-layer enumeration cheap —
 each layer is a tensor slice + matrix product over ~1700 files.
 
-Outputs (all under <out-dir>, default output/analysis/leitmotif/):
+Outputs (all under <out-dir>, default docs/figures/leitmotif/ so the
+PNGs live with the doc that references them — see docs/leitmotif_findings.md):
   • per_pair_map.csv          long format: (encoder, layer, q_program, t_program, map, n)
   • per_layer_summary.csv     wide format: (encoder, layer, agg, same, cross)
   • cross_encoder_summary.csv per-encoder best-layer per metric, plus the WandB
@@ -48,7 +49,7 @@ Usage:
     uv run python scripts/analysis/vgmiditvar_leitmotif_sweep.py \\
         --cache-root output/.emb_cache \\
         --jsonl data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl \\
-        --out-dir output/analysis/leitmotif \\
+        --out-dir docs/figures/leitmotif \\
         --no-wandb           # skip WandB pulls if running offline
 """
 
@@ -654,7 +655,7 @@ def main() -> None:
     )
     ap.add_argument(
         "--out-dir",
-        default="output/analysis/leitmotif",
+        default="docs/figures/leitmotif",
         help="Output directory for CSVs and PNGs",
     )
     ap.add_argument(

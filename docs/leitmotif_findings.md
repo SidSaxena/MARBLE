@@ -148,7 +148,7 @@ remains the highest of any encoder by a factor of ~5×, almost certainly
 because note tokens dominate the M3 token sequence and program-change
 events are a tiny fraction of the input.
 
-![Cross-encoder summary](../output/analysis/leitmotif/cross_encoder_summary.png)
+![Cross-encoder summary](figures/leitmotif/cross_encoder_summary.png)
 
 ### The metric divergence
 
@@ -192,7 +192,7 @@ aggregate-best layer (lets you see Panel B vs D directly).
 
 ### MuQ — the audio winner
 
-![MuQ dashboard](../output/analysis/leitmotif/dashboard_MuQ.png)
+![MuQ dashboard](figures/leitmotif/dashboard_MuQ.png)
 
 **Layer profile:**
 - L0–L6: cross-instrument MAP rises from 0.295 → 0.422 (early-layer
@@ -223,7 +223,7 @@ The right call depends on architecture (see [§Recommendations](#recommendations
 
 ### OMARRQ-multifeature-25hz — the only encoder where the metrics agree
 
-![OMARRQ dashboard](../output/analysis/leitmotif/dashboard_OMARRQ-multifeature-25hz.png)
+![OMARRQ dashboard](figures/leitmotif/dashboard_OMARRQ-multifeature-25hz.png)
 
 **Layer profile:**
 - Cross-instrument and aggregate MAP both peak at **L15** (0.466 / 0.047).
@@ -243,7 +243,7 @@ says is what cross-instrument MAP confirms.
 
 ### CLaMP3 (audio path) — competitive at cross-instrument, vulnerable to same-instrument distractors
 
-![CLaMP3 dashboard](../output/analysis/leitmotif/dashboard_CLaMP3.png)
+![CLaMP3 dashboard](figures/leitmotif/dashboard_CLaMP3.png)
 
 The most diagnostic result. **L5 cross-instrument MAP 0.372** (3rd-best
 audio encoder, competitive with MERT-95M's 0.332), but aggregate MAP
@@ -273,7 +273,7 @@ sidesteps the issue entirely (agg MAP 0.195).
 
 ### MERT-v1-95M — same divergence as MuQ, weaker absolute
 
-![MERT-95M dashboard](../output/analysis/leitmotif/dashboard_MERT-v1-95M.png)
+![MERT-95M dashboard](figures/leitmotif/dashboard_MERT-v1-95M.png)
 
 Cleanest "depth = invariance" story:
 - L0: cross MAP 0.244 (worst)
