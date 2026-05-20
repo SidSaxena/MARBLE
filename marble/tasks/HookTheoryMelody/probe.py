@@ -121,7 +121,19 @@ class MelodyCrossEntropyLoss(nn.Module):
         flat_targets = targets.reshape(-1)
         valid_mask = flat_targets != self.ignore_index
         if valid_mask.sum() == 0:
-            return torch.tensor(0.0, device=logits.device)
+            # All frames in the batch are silent (target == ignore_index).
+            # Common in melody data: a 15-s clip drawn from an instrumental
+            # section of the song has no labelled frames at all.
+            #
+            # We cannot ``return torch.tensor(0.0, device=logits.device)``
+            # here — that creates a fresh leaf tensor with no grad_fn,
+            # detached from the autograd graph, and ``loss.backward()``
+            # crashes with "element 0 of tensors does not require grad".
+            # Multiplying ``logits`` by zero produces the same numerical
+            # value (0) BUT keeps the graph wired up so backward succeeds
+            # with zero gradient — effectively a no-op optimizer step for
+            # this batch.
+            return logits.sum() * 0.0
         return self.ce(flat_logits[valid_mask], flat_targets[valid_mask])
 
 

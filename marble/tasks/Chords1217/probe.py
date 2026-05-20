@@ -2,21 +2,16 @@
 
 import torch
 import torch.nn as nn
-import lightning.pytorch as pl
-import numpy as np
-
-from torchmetrics import Metric
-from torchmetrics import MetricCollection
-from einops import rearrange
+from torchmetrics import Metric, MetricCollection
 
 from marble.core.base_task import BaseTask
-from marble.core.utils import instantiate_from_config
 
 
 class ProbeAudioTask(BaseTask):
     """
     Chord Recognition Probe Task (Frame‐level classification).
     """
+
     def test_step(self, batch, batch_idx: int):
         """
         Default test: returns raw logits and labels for aggregation.
@@ -24,7 +19,7 @@ class ProbeAudioTask(BaseTask):
         """
         x, y, paths = batch
         logits = self(x)
-        mc: MetricCollection = getattr(self, f"test_metrics", None)
+        mc: MetricCollection = getattr(self, "test_metrics", None)
         if mc is not None:
             metrics_out = mc(logits, y)
             self.log_dict(metrics_out, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
@@ -35,9 +30,9 @@ class ChordAccuracy(Metric):
     Masked Accuracy for frame‐level chord classification.
 
     - Inputs:
-        logits: Tensor of shape (B, T_logits, C) with raw scores for each frame, 
+        logits: Tensor of shape (B, T_logits, C) with raw scores for each frame,
                 where C is the number of classes.
-        targets: Tensor of shape (B, T_targets) with integer labels in {0..C-1} 
+        targets: Tensor of shape (B, T_targets) with integer labels in {0..C-1}
                  or -1 for ignored frames.
 
     - Behavior:
@@ -46,7 +41,7 @@ class ChordAccuracy(Metric):
         3) Otherwise, crops both logits and targets to T_min = min(T_logits, T_targets).
         4) Flattens logits and targets, then masks out any positions where target == ignore_index.
         5) Counts correct predictions and total valid frames, and accumulates them.
-        6) compute() returns overall accuracy = correct_total / total_valid. 
+        6) compute() returns overall accuracy = correct_total / total_valid.
            If total_valid = 0, returns 0.0.
     """
 
@@ -54,19 +49,19 @@ class ChordAccuracy(Metric):
         self,
         time_dim_mismatch_tol: int = 0,
         ignore_index: int = -1,
-        dist_sync_on_step: bool = False
+        dist_sync_on_step: bool = False,
     ):
         """
         Args:
-            time_dim_mismatch_tol (int): 
-                Maximum allowed difference between the time dimensions 
-                of logits (T_logits) and targets (T_targets). 
+            time_dim_mismatch_tol (int):
+                Maximum allowed difference between the time dimensions
+                of logits (T_logits) and targets (T_targets).
                 Default = 0 (must match exactly).
-            ignore_index (int): 
-                Any target equal to this value will be ignored. 
+            ignore_index (int):
+                Any target equal to this value will be ignored.
                 Default = -1.
-            dist_sync_on_step (bool): 
-                If True, syncs states across processes at each step in DDP. 
+            dist_sync_on_step (bool):
+                If True, syncs states across processes at each step in DDP.
                 Default = False.
         """
         super().__init__(dist_sync_on_step=dist_sync_on_step)
@@ -76,7 +71,7 @@ class ChordAccuracy(Metric):
         # Register states to accumulate correct count and total count across updates
         # Use dist_reduce_fx="sum" so that in distributed training these get summed across all processes
         self.add_state("correct", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
-        self.add_state("total",   default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
 
     def update(self, logits: torch.Tensor, targets: torch.Tensor):
         """
@@ -102,13 +97,13 @@ class ChordAccuracy(Metric):
         # 3) Crop both to the same minimum time length
         T_min = min(T_logits, T_targets)
         if T_logits != T_min:
-            logits = logits[:, :T_min, :]    # (B, T_min, C)
+            logits = logits[:, :T_min, :]  # (B, T_min, C)
         if T_targets != T_min:
-            targets = targets[:, :T_min]     # (B, T_min)
+            targets = targets[:, :T_min]  # (B, T_min)
 
         # 4) Flatten and mask out ignored positions
-        flat_logits  = logits.reshape(-1, C)   # shape = (B * T_min, C)
-        flat_targets = targets.reshape(-1)     # shape = (B * T_min,)
+        flat_logits = logits.reshape(-1, C)  # shape = (B * T_min, C)
+        flat_targets = targets.reshape(-1)  # shape = (B * T_min,)
 
         # Create a mask for positions where target != ignore_index
         valid_mask = flat_targets != self.ignore_index
@@ -116,17 +111,17 @@ class ChordAccuracy(Metric):
             # No valid frames in this batch → do not update correct/total
             return
 
-        valid_logits  = flat_logits[valid_mask]   # shape = (N, C)
+        valid_logits = flat_logits[valid_mask]  # shape = (N, C)
         valid_targets = flat_targets[valid_mask]  # shape = (N,)
 
         # 5) Compute number of correct predictions in this batch
-        preds = torch.argmax(valid_logits, dim=-1)        # (N,)
-        batch_correct = (preds == valid_targets).sum()    # scalar
-        batch_total   = valid_targets.numel()             # N
+        preds = torch.argmax(valid_logits, dim=-1)  # (N,)
+        batch_correct = (preds == valid_targets).sum()  # scalar
+        batch_total = valid_targets.numel()  # N
 
         # 6) Accumulate into the metric state
         self.correct += batch_correct
-        self.total   += batch_total
+        self.total += batch_total
 
     def compute(self) -> torch.Tensor:
         """
@@ -151,8 +146,8 @@ class ChordCrossEntropyLoss(nn.Module):
     def __init__(self, time_dim_mismatch_tol: int = 0):
         """
         Args:
-            time_dim_mismatch_tol (int): 
-                The maximum allowed difference between the time dimensions 
+            time_dim_mismatch_tol (int):
+                The maximum allowed difference between the time dimensions
                 (T) of logits and targets. Defaults to 0 (must match exactly).
         """
         super().__init__()
@@ -162,9 +157,9 @@ class ChordCrossEntropyLoss(nn.Module):
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            logits: Tensor of shape (B, T_logits, C) with raw scores, 
+            logits: Tensor of shape (B, T_logits, C) with raw scores,
                     where C is the number of classes.
-            targets: Tensor of shape (B, T_targets) with integer labels 
+            targets: Tensor of shape (B, T_targets) with integer labels
                      in {0..C-1} or -1 for ignored frames.
 
         Returns:
@@ -176,9 +171,7 @@ class ChordCrossEntropyLoss(nn.Module):
         B, T_logits, C = logits.shape
         B_t, T_targets = targets.shape
         if B_t != B:
-            raise ValueError(
-                f"Batch size mismatch: logits batch={B}, targets batch={B_t}"
-            )
+            raise ValueError(f"Batch size mismatch: logits batch={B}, targets batch={B_t}")
 
         # 1) Check the absolute difference in time dimensions
         diff = abs(T_logits - T_targets)
@@ -197,17 +190,24 @@ class ChordCrossEntropyLoss(nn.Module):
 
         # 3) Proceed with flatten + mask + CrossEntropy
         #    logits is now (B, T_min, C), targets is (B, T_min)
-        flat_logits = logits.reshape(-1, C)       # (B * T_min, C)
-        flat_targets = targets.reshape(-1)        # (B * T_min,)
+        flat_logits = logits.reshape(-1, C)  # (B * T_min, C)
+        flat_targets = targets.reshape(-1)  # (B * T_min,)
 
         # Only keep positions where target >= 0
-        valid_mask = flat_targets >= 0            
+        valid_mask = flat_targets >= 0
         if valid_mask.sum() == 0:
-            # If there are no valid frames, return zero loss
-            return torch.tensor(0.0, device=logits.device)
+            # All frames in the batch have target < 0 (no chord labelled).
+            # ``torch.tensor(0.0, device=logits.device)`` would be detached
+            # from the autograd graph, crashing loss.backward() with
+            # "element 0 of tensors does not require grad". Multiply by
+            # logits.sum() * 0 instead — same numerical value (0) but the
+            # graph stays alive so backward succeeds with zero gradient.
+            # (See HookTheoryMelody's MelodyCrossEntropyLoss for the same
+            # fix; symptom surfaced there first when an all-silent clip
+            # landed in batch 2.)
+            return logits.sum() * 0.0
 
-        valid_logits = flat_logits[valid_mask]    # (N, C)
+        valid_logits = flat_logits[valid_mask]  # (N, C)
         valid_targets = flat_targets[valid_mask]  # (N,)
 
         return self.ce(valid_logits, valid_targets)
-    
