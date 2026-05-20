@@ -106,10 +106,16 @@ log = logging.getLogger(__name__)
 # ── Label inventory ──────────────────────────────────────────────────────────
 
 # Raw 2-letter Function code in the JSON → canonical lowercase label.
+# The 6 codes here match the annotation prompt at
+# supermario-structure-annotation/scripts/prompts/prompt_v1.2.md
+# (NOT the upstream README, which incorrectly lists "Tr" for
+# Transition — the actual annotations contain ZERO Tr entries and
+# 107 Ln entries; Ln = "Linear Body", a through-composed main
+# section that doesn't loop).
 RAW_TO_CANONICAL: dict[str, str] = {
     "In": "intro",
     "Lp": "loop",
-    "Tr": "transition",
+    "Ln": "linear",
     "Br": "bridge",
     "Ou": "outro",
     "St": "stinger",
@@ -119,10 +125,10 @@ RAW_TO_CANONICAL: dict[str, str] = {
 CANONICAL_LABELS: list[str] = [
     "bridge",
     "intro",
+    "linear",
     "loop",
     "outro",
     "stinger",
-    "transition",
 ]
 assert len(CANONICAL_LABELS) == 6
 assert set(CANONICAL_LABELS) == set(RAW_TO_CANONICAL.values())

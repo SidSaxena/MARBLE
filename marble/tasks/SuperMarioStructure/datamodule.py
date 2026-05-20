@@ -56,12 +56,12 @@ class _SuperMarioStructureAudioBase(Dataset):
     # Labels derived from the upstream JSON's 2-letter codes via
     # RAW_TO_CANONICAL in the build script.
     LABEL2IDX = {
-        "bridge": 0,  # raw "Br" — contrasting middle section
-        "intro": 1,  # raw "In" — opening, not part of main loop
-        "loop": 2,  # raw "Lp" — main repeating section (VGM-native)
-        "outro": 3,  # raw "Ou" — closing
-        "stinger": 4,  # raw "St" — short punctuation cue (VGM-native)
-        "transition": 5,  # raw "Tr" — connecting passage
+        "bridge": 0,  # raw "Br" — distinct transition section between Lp/Ln
+        "intro": 1,  # raw "In" — opening section
+        "linear": 2,  # raw "Ln" — main through-composed body (NOT looped)
+        "loop": 3,  # raw "Lp" — main repeating section (VGM-native)
+        "outro": 4,  # raw "Ou" — closing section
+        "stinger": 5,  # raw "St" — short event-triggered cue (VGM-native)
     }
 
     IDX2LABEL = {v: k for k, v in LABEL2IDX.items()}

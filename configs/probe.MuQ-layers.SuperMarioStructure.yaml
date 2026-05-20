@@ -67,7 +67,7 @@ model:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
           in_dim: 1024    # MERT-v1-95M hidden size
-          out_dim: 6    # 6 SuperMario functional classes (intro/loop/transition/bridge/outro/stinger)
+          out_dim: 6    # 6 SuperMario functional classes (bridge/intro/linear/loop/outro/stinger)
           hidden_layers: [256]
           activation_fn:
             class_path: torch.nn.ReLU
