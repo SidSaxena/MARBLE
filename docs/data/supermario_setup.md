@@ -44,12 +44,19 @@ for per-segment FLACs (your source audio is read-only).
 
 | Class | Raw code | Description |
 |---|---|---|
-| `intro` | `In` | Opening segment, distinct from main loop |
-| `loop` | `Lp` | Main repeating section (dominant in most VGM) |
-| `transition` | `Tr` | Connecting passage between sections |
-| `bridge` | `Br` | Contrasting middle section |
+| `bridge` | `Br` | Distinct transition section between Lp/Ln |
+| `intro` | `In` | Opening segment |
+| `linear` | `Ln` | Main through-composed body (non-looped piece) |
+| `loop` | `Lp` | Main repeating section (loop-marked) |
 | `outro` | `Ou` | Closing segment |
-| `stinger` | `St` | Short punctuation cue (often <2 s) |
+| `stinger` | `St` | Short event-triggered cue (often <2 s) |
+
+> The upstream README lists `Tr` (Transition) instead of `Ln`. The
+> README is wrong — the annotations were generated from the prompt
+> at `scripts/prompts/prompt_v1.2.md`, which defines `Ln (Linear
+> Body)` and has no `Tr` tag. Grepping all 554 annotations confirms
+> 0 `Tr` entries, 107 `Ln` entries. Always trust the prompt + data
+> over the README.
 
 ### Per-record JSONL fields
 
@@ -334,7 +341,7 @@ uv run python scripts/data/build_supermario_dataset.py \
 | `MIDI download failed for ... HTTP Error 403: Forbidden` | NinSheetMusic blocks all scrapers — see Prerequisites § Sourcing the MIDIs | Populate `--midi-source-dir` via manual download or `ohsheet`; re-run the build. The 403 is expected, not a bug |
 | `pretty_midi could not load X.mid` | Malformed source MIDI | Piece is dropped automatically; counted as `dropped_no_midi` |
 | `BarRange out of range for MIDI` | Annotation references bar number beyond MIDI's downbeat count | Likely a MIDI/annotation version mismatch; piece's affected segments dropped, counted as `dropped_oor` |
-| `Unknown Function code` | Annotation has a Function code outside {In, Lp, Tr, Br, Ou, St} | Add a defensive alias to `RAW_TO_CANONICAL` in the build script |
+| `Unknown Function code` | Annotation has a Function code outside {In, Lp, Ln, Br, Ou, St} | Add a defensive alias to `RAW_TO_CANONICAL` in the build script |
 | `pretty_midi write failed for X.mid` | Disk full / permission issue | Check disk + permissions on `midi-segments-dir` |
 | MIDI segments very short (<2 s) dropped | Stinger label hit `--min-segment-sec` | Lower `--min-segment-sec 1.0` if you want to keep them |
 | Datamodule `Unknown label: …` at train start | Stale JSONL from before LABEL2IDX change | Re-run build with `--skip-midi-slice --skip-slice` to rewrite JSONL only |

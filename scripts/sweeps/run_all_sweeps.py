@@ -303,7 +303,10 @@ SWEEPS: list[SweepDef] = [
     ),
     # ── SuperMarioStructure — Super Mario VGM functional segments ────────────
     # 554 pieces from NinSheetMusic transcriptions. 6 VGM-native classes
-    # (intro/loop/transition/bridge/outro/stinger).
+    # (bridge/intro/linear/loop/outro/stinger). Note: 'linear' is the
+    # main body of non-looped pieces (raw 'Ln'); the upstream README
+    # incorrectly lists 'Tr (Transition)' but the annotation prompt
+    # and data both use 'Ln (Linear)' — see build_supermario_dataset.py.
     #
     # PRIMARY representation: SYMBOLIC. The annotations are bar-based,
     # derived from the source MUS/MXL scores — MIDI is the exact-match
