@@ -54,6 +54,47 @@ Politeness
 Default 1.0 s delay between downloads. Default 1 worker. NinSheetMusic
 is a free fan site — don't hammer it. The full 554-file MIDI download
 takes ~15–30 min single-threaded.
+
+Cloudflare workflow
+-------------------
+Recommended invocation when Cloudflare is being aggressive:
+    uv run python scripts/data/download_ninsheetmusic.py \\
+        --csv .../pieces.csv --out-dir ./out --kind mid \\
+        --channel chrome     # system Chrome is much harder to detect
+
+This script ships with `patchright` (a Chromium fork that hides
+automation fingerprints). When patchright is loaded, the script
+deliberately:
+  - SKIPS playwright-stealth (the two patch the same hooks and conflict
+    — patchright README explicitly warns against this combination)
+  - Drops custom user-agent / viewport / --disable-blink-features flags
+    that would re-introduce fingerprints
+  - Uses a persistent profile (default <out-dir>/.playwright_profile)
+    so cf_clearance survives between runs
+
+Manual cookie capture fallback
+------------------------------
+If patchright still can't pass Cloudflare (very-aggressive Turnstile
+sites), the surest fix is to solve the challenge once in your real
+browser, then export the cookie. In a fresh Chrome window:
+
+    1. Open https://www.ninsheetmusic.org/ — solve the challenge.
+    2. DevTools → Application → Cookies → ninsheetmusic.org.
+    3. Copy the value of `cf_clearance` and your user-agent string
+       (from Network → request headers).
+
+Then use them with curl directly (skips Playwright entirely):
+
+    UA='Mozilla/5.0 ...'  # paste your UA here
+    CF='abc123...'         # paste cf_clearance value
+    while IFS=, read -r pid _ _ _ url_mid _; do
+      [ -z "$url_mid" ] && continue
+      curl -s -o "out/${pid}.mid" -A "$UA" \\
+        -b "cf_clearance=$CF" "$url_mid"
+    done < <(tail -n +2 .../pieces.csv)
+
+cf_clearance lasts ~30 days. Re-export when downloads start returning
+HTML.
 """
 
 from __future__ import annotations
@@ -235,11 +276,20 @@ def main() -> None:
     ap.add_argument(
         "--persistent-context-dir",
         default=None,
-        help="Path to a persistent Chromium user-data-dir. Cookies + "
-        "Cloudflare clearance survive across runs. First run: omit this "
-        "(or use --no-headless) — Cloudflare may challenge. Subsequent "
-        "runs: pass the same dir to reuse the cached session and avoid "
-        "re-challenges. Recommended: '<data-dir>/.playwright_profile'.",
+        help="Path to a persistent browser user-data-dir. Cookies + "
+        "Cloudflare clearance survive across runs. Default: auto-created "
+        "at '<out-dir>/.playwright_profile' (REQUIRED for Cloudflare-"
+        "protected sites — without it the JS challenge re-fires every "
+        "run and patchright's stealth can't help if the bot score is "
+        "rebuilt from scratch each time). Pass --no-persistent-context "
+        "to force an ephemeral session.",
+    )
+    ap.add_argument(
+        "--no-persistent-context",
+        action="store_true",
+        help="Force an ephemeral context (no cookie persistence). Almost "
+        "always wrong for Cloudflare-protected sites — only use for "
+        "debugging.",
     )
     ap.add_argument(
         "--channel",
@@ -294,12 +344,14 @@ def main() -> None:
     # if the user passed --firefox we MUST use stock playwright.
     sync_playwright = None
     _backend = None
+    use_patchright = False
     if not args.firefox:
         try:
             from patchright.sync_api import sync_playwright as _sp
 
             sync_playwright = _sp
             _backend = "patchright"
+            use_patchright = True
         except ImportError:
             pass
     if sync_playwright is None:
@@ -397,88 +449,99 @@ def main() -> None:
     n_fail = 0
     n_skipped = 0
 
-    # Stealth: patch navigator.webdriver and a handful of other bot tells.
-    # Defensive import — if playwright-stealth isn't installed we still
-    # work, just with worse anti-detection.
-    try:
-        from playwright_stealth import Stealth
+    # Stealth: ONLY apply when running on stock playwright. patchright
+    # already patches the same JS hooks (navigator.webdriver, CDP runtime,
+    # etc.) and applying both creates new fingerprints that Cloudflare
+    # specifically detects. The patchright README is explicit about this:
+    # "do not use playwright-stealth with patchright".
+    stealth = None
+    has_stealth = False
+    if not use_patchright:
+        try:
+            from playwright_stealth import Stealth
 
-        stealth = Stealth()
-        has_stealth = True
-    except ImportError:
-        stealth = None
-        has_stealth = False
-        log.warning(
-            "playwright-stealth not installed — running without anti-detection "
-            "patches. If downloads keep failing with HTML responses, install via "
-            "`uv sync --extra ninsheetmusic` and retry."
-        )
+            stealth = Stealth()
+            has_stealth = True
+        except ImportError:
+            log.warning(
+                "playwright-stealth not installed — running stock playwright "
+                "without anti-detection patches. Install with "
+                "`uv sync --extra ninsheetmusic` or switch to patchright."
+            )
+    else:
+        log.info("  stealth: patchright handles it natively (skipping playwright-stealth)")
 
     with sync_playwright() as p:
-        # Chromium launch flags that reduce automation fingerprint.
-        launch_args = [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-        ]
-        ua = (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-        )
-        ctx_kwargs = {
-            "accept_downloads": True,
-            "user_agent": ua,
-            "viewport": {"width": 1280, "height": 800},
-            "locale": "en-US",
-            "timezone_id": "America/New_York",
-            "extra_http_headers": {
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept": (
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-                ),
-            },
-        }
-
         # Pick the engine: firefox (when --firefox) or chromium (default).
-        # Firefox uses the system network stack out-of-the-box, so it's
-        # the safe fallback when bundled Chromium can't resolve DNS.
         engine = p.firefox if args.firefox else p.chromium
+
+        # ── Context config ─────────────────────────────────────────────
+        # patchright: keep config MINIMAL. Custom user-agent / viewport /
+        #   launch args all re-introduce fingerprints patchright works
+        #   hard to hide. Let it pick OS-matching defaults.
+        # stock playwright: needs the custom UA + viewport + launch args
+        #   to look less obviously-automated.
+        if use_patchright:
+            ctx_kwargs: dict = {
+                "accept_downloads": True,
+                "no_viewport": True,  # use the OS window size, not a fingerprintable 1280x800
+            }
+            launch_args: list[str] = []
+        else:
+            ua = (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            )
+            ctx_kwargs = {
+                "accept_downloads": True,
+                "user_agent": ua,
+                "viewport": {"width": 1280, "height": 800},
+                "locale": "en-US",
+                "timezone_id": "America/New_York",
+                "extra_http_headers": {
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept": (
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+                    ),
+                },
+            }
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ]
 
         # Extra kwargs forwarded to launch / launch_persistent_context.
         # `channel=` selects a system-installed Chromium variant (chrome,
-        # msedge, ...). Only valid for the chromium engine — Firefox
-        # rejects unknown kwargs.
+        # msedge, ...). Only valid for the chromium engine.
         launch_extra: dict = {}
         if not args.firefox and args.channel:
             launch_extra["channel"] = args.channel
-        # Proxy override: 'direct://' = bypass any system proxy. This is
-        # the fix for ERR_TUNNEL_CONNECTION_FAILED on Windows machines
-        # where the system proxy (WinHTTP / Internet Options / VPN /
-        # corporate PAC) is misconfigured or unreachable but Firefox
-        # works because it ignores the system proxy.
+        # Proxy override (see --no-proxy / --proxy-server docstrings).
         if args.no_proxy:
             launch_extra["proxy"] = {"server": "direct://"}
             log.info("  proxy: bypassed (--no-proxy → direct connection)")
         elif args.proxy_server:
             launch_extra["proxy"] = {"server": args.proxy_server}
             log.info(f"  proxy: {args.proxy_server}")
-        # Firefox doesn't accept Chromium-style --disable-blink-features
-        # args; pass them only for chromium.
+        # Firefox doesn't accept Chromium-style flags.
         engine_args = launch_args if not args.firefox else []
 
-        if args.persistent_context_dir:
-            # Persistent context: cookies (cf_clearance especially) survive
-            # across runs. Single-step launch returns a Context directly,
-            # no separate browser handle. Use this after a successful
-            # bootstrap run so Cloudflare's challenge doesn't re-fire each
-            # invocation.
-            from pathlib import Path as _P
-
-            profile = _P(args.persistent_context_dir)
-            profile.mkdir(parents=True, exist_ok=True)
-            log.info(f"Using persistent context: {profile}")
+        # ── Persistent context (default ON) ────────────────────────────
+        # Default the profile dir to <out-dir>/.playwright_profile so
+        # cf_clearance survives across runs. Cloudflare's bot score is
+        # session-based — a fresh context each run starts from zero.
+        use_persistent = not args.no_persistent_context
+        if use_persistent:
+            profile_path = (
+                Path(args.persistent_context_dir)
+                if args.persistent_context_dir
+                else out_dir / ".playwright_profile"
+            )
+            profile_path.mkdir(parents=True, exist_ok=True)
+            log.info(f"  persistent profile: {profile_path}")
             context = engine.launch_persistent_context(
-                user_data_dir=str(profile),
+                user_data_dir=str(profile_path),
                 headless=args.headless,
                 args=engine_args,
                 **launch_extra,
@@ -486,6 +549,7 @@ def main() -> None:
             )
             browser = None
         else:
+            log.warning("  persistent context disabled — cf_clearance won't survive")
             browser = engine.launch(
                 headless=args.headless,
                 args=engine_args,
@@ -503,18 +567,49 @@ def main() -> None:
         # Pre-warm: visit the homepage so Cloudflare's JS challenge fires
         # and stores cf_clearance in the context's cookie jar. All
         # subsequent context.request.get() calls inherit that cookie.
+        # Active-poll for challenge completion rather than fixed sleep —
+        # Cloudflare can take 3-30 s depending on bot score.
         try:
             log.info("Pre-warming browser session (visiting NSM homepage) …")
             page.goto("https://www.ninsheetmusic.org/", timeout=args.timeout_ms)
             page.wait_for_load_state("domcontentloaded", timeout=15_000)
-            time.sleep(5.0)  # let Cloudflare's JS challenge finish
-            # Try to read the title to confirm we actually got the homepage,
-            # not the challenge page
-            title = page.title()
-            log.info(f"  page title: {title!r}")
-            if "Just a moment" in title or "Attention" in title:
-                log.warning("  Cloudflare challenge page still showing — extending wait …")
-                time.sleep(10.0)
+
+            # Poll up to 60 s for the challenge to clear. We detect "cleared"
+            # by either (a) page title no longer matching the challenge
+            # pattern, or (b) cf_clearance cookie appearing in the jar.
+            challenge_re = ("Just a moment", "Attention", "Checking")
+            cleared = False
+            for _ in range(30):
+                title = page.title()
+                cookies = context.cookies("https://www.ninsheetmusic.org/")
+                has_cf = any(c.get("name") == "cf_clearance" for c in cookies)
+                if has_cf and not any(p in title for p in challenge_re):
+                    cleared = True
+                    log.info(f"  cleared Cloudflare challenge: title={title!r}")
+                    break
+                time.sleep(2.0)
+            if not cleared:
+                log.warning(
+                    "  Cloudflare challenge did NOT clear after 60 s. "
+                    "Title: %r, cf_clearance present: %s. If you're in "
+                    "headed mode, try solving any visible checkbox/widget "
+                    "manually now — the script will keep polling.",
+                    page.title(),
+                    any(c.get("name") == "cf_clearance" for c in context.cookies()),
+                )
+                # Give the user another 60 s for manual interaction
+                for _ in range(30):
+                    cookies = context.cookies("https://www.ninsheetmusic.org/")
+                    if any(c.get("name") == "cf_clearance" for c in cookies):
+                        log.info("  cf_clearance appeared — proceeding")
+                        cleared = True
+                        break
+                    time.sleep(2.0)
+            if not cleared:
+                log.error(
+                    "  Cloudflare never cleared. See the docstring "
+                    "'Manual cookie capture fallback' section."
+                )
         except Exception as e:
             log.warning(f"  pre-warm warning ({type(e).__name__}: {e}); continuing")
 
