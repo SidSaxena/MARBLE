@@ -400,11 +400,25 @@ SWEEPS: list[SweepDef] = [
         note="Melody pitch   | 128 MIDI  | frame-level 75Hz | MERT 13 layers",
     ),
     SweepDef(
+        model="MERT-v1-95M-meanall",
+        task="HookTheoryMelody",
+        base_config="configs/probe.MERT-v1-95M-meanall.HookTheoryMelody.yaml",
+        num_layers=1,
+        note="Melody pitch   | 128 MIDI  | frame-level 75Hz | MERT meanall",
+    ),
+    SweepDef(
         model="OMARRQ-multifeature-25hz",
         task="HookTheoryMelody",
         base_config="configs/probe.OMARRQ-multifeature-25hz.HookTheoryMelody.yaml",
         num_layers=24,
         note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ 24 layers",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature-25hz-meanall",
+        task="HookTheoryMelody",
+        base_config="configs/probe.OMARRQ-multifeature-25hz-meanall.HookTheoryMelody.yaml",
+        num_layers=1,
+        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ meanall",
     ),
     # MuQ × HookTheoryMelody lives in the MuQ-block below alongside the other
     # 4 MuQ tasks (Covers80, SHS100K, VGMIDITVar, HookTheoryMelody)
@@ -529,6 +543,13 @@ SWEEPS: list[SweepDef] = [
         base_config="configs/probe.MuQ-layers.HookTheoryMelody.yaml",
         num_layers=13,
         note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ 13 layers",
+    ),
+    SweepDef(
+        model="MuQ-meanall",
+        task="HookTheoryMelody",
+        base_config="configs/probe.MuQ-meanall.HookTheoryMelody.yaml",
+        num_layers=1,
+        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ meanall",
     ),
     SweepDef(
         model="MuQ",
