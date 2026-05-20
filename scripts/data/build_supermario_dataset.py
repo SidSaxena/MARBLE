@@ -308,22 +308,27 @@ def _bar_range_to_time(
     """Convert 1-indexed (bar_start, bar_end) → (start_sec, end_sec).
 
     Returns None if the bar numbers are out of range for this MIDI.
-    Annotation BarRange is inclusive on start, exclusive on end.
 
-    Convention: bar N's start time = bar_times[N-1]. End time of a
-    BarRange [a, b] = bar_times[b-1] (start of bar b, since b is exclusive
-    in the annotator's convention... or is it inclusive? We treat it as
-    exclusive, meaning the segment covers bars [a, b-1], which matches
-    common music-analysis conventions for span notation).
+    Annotation BarRange is **INCLUSIVE on both ends**. Verified against
+    upstream supermario-structure-annotation/annotations/00001.json:
+    intro [1, 10] is followed by loop [11, 39] — contiguous, so bar 10
+    is the last bar of intro and bar 11 is the first bar of loop. If
+    bar_end were exclusive, bars 10 and 39 would belong to no segment.
+
+    bar_times has N+1 entries: bar_times[i] = start time of bar (i+1),
+    with bar_times[N] = end-of-MIDI sentinel appended in
+    _midi_bar_times(). Thus the END of bar b is bar_times[b]
+    (= start of bar b+1, or the EOF sentinel when b == N).
     """
     # Defensive: bar 0 is not used in the annotations (1-indexed)
     if bar_start < 1 or bar_end < 1:
         return None
-    # bar_times has N+1 entries (N bars + end-of-file sentinel)
-    if bar_start - 1 >= len(bar_times) or bar_end - 1 >= len(bar_times):
+    # bar_times has N+1 entries (N bars + end-of-file sentinel). Index
+    # bar_end (= end of bar bar_end) must be valid.
+    if bar_start - 1 >= len(bar_times) or bar_end >= len(bar_times):
         return None
     start_sec = float(bar_times[bar_start - 1])
-    end_sec = float(bar_times[bar_end - 1])
+    end_sec = float(bar_times[bar_end])
     if end_sec <= start_sec:
         return None
     return start_sec, end_sec
@@ -375,19 +380,36 @@ def _download_midi(url: str, dst: Path, timeout: int = 30) -> bool:
 
 
 def _import_user_midi(piece_id: str, source_dir: Path, dst: Path) -> bool:
-    """Copy/symlink a user-supplied MIDI into the cache dir.
+    """Copy a user-supplied MIDI into the cache dir.
 
     Returns True if a matching file was found and successfully placed
-    at ``dst``. Tries common MIDI extensions (.mid, .midi, .smf).
+    at ``dst``. Tries common MIDI extensions (.mid, .midi, .smf) in
+    two naming conventions:
+
+      1. ``<piece_id>.<ext>`` (legacy plain naming)
+      2. ``<piece_id>_<title-slug>.<ext>`` (download_ninsheetmusic.py
+         default since the title-naming change — see that script's
+         docstring for the slug format)
+
+    The slug fallback handles files saved by the canonical NSM
+    downloader without requiring a separate rename step.
     """
     if dst.exists() and dst.stat().st_size > 100:
         return True
+    # 1. Plain <piece_id>.<ext>
     for ext in (".mid", ".midi", ".smf"):
         candidate = source_dir / f"{piece_id}{ext}"
         if candidate.exists() and candidate.stat().st_size > 100:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            # Use copy (not symlink) for cross-platform reliability
             shutil.copy(candidate, dst)
+            return True
+    # 2. <piece_id>_<slug>.<ext> — sorted() pins to deterministic match
+    #    if more than one slug exists for the same piece_id.
+    for ext in (".mid", ".midi", ".smf"):
+        matches = sorted(source_dir.glob(f"{piece_id}_*{ext}"))
+        if matches and matches[0].stat().st_size > 100:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(matches[0], dst)
             return True
     return False
 
@@ -683,8 +705,12 @@ def main() -> None:
     ap.add_argument(
         "--min-segment-sec",
         type=float,
-        default=2.0,
-        help="Drop segments shorter than this (default: 2.0 s).",
+        default=1.0,
+        help="Drop segments shorter than this (default: 1.0 s). VGM "
+        "stingers (`St` class) can be 1-2 s at fast tempos; the previous "
+        "2.0 s default systematically dropped them. Lower further at "
+        "your own risk — sub-second segments yield very few samples "
+        "for an SSL encoder to embed.",
     )
     args = ap.parse_args()
 
