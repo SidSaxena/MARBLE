@@ -351,6 +351,11 @@ In rough priority order:
 
 ## See also
 
+- [`docs/vgm_encoder_selection.md`](vgm_encoder_selection.md) —
+  deployment guide: which encoder + layer to pick for VGM structure
+  / melody analysis depending on whether you have audio, symbolic,
+  or both. Distills the results in this doc + the leitmotif work
+  into actionable per-modality recipes.
 - [`docs/leitmotif_findings.md`](leitmotif_findings.md) — sister
   retrieval analysis; same encoder, different invariance dimension.
 - [`docs/layer_analysis.md`](layer_analysis.md) — cross-encoder

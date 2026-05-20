@@ -721,6 +721,12 @@ along with the new
 ["When to use L12"](layer_analysis.md#when-to-use-l12--the-contrastive-output-layer)
 recommendations for multimodal / cross-domain use cases.
 
+For the **deployment-decision guide** — which encoder + layer to
+pick when you have audio only / MIDI only / both, plus workarounds
+(basic-pitch transcription, MIDI rendering) and the tests still
+needed to firm up open recommendations — see
+[`vgm_encoder_selection.md`](vgm_encoder_selection.md).
+
 ---
 
 ## Open questions / future work
