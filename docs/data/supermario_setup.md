@@ -124,9 +124,10 @@ via the browser's HTTP API (with the now-valid `cf_clearance`
 cookie). `--persistent-context-dir` saves the session so re-runs
 don't need to re-clear Cloudflare.
 
-The downloader saves files as `<piece_id>.mid` ready to feed straight
-into `build_supermario_dataset.py --midi-source-dir`. Pilot first
-with `--max-pieces 5` to verify your browser session works.
+The downloader saves files as `<piece_id>_<title-slug>.mid` (since
+commit `db8f376`). The build script handles both this naming and the
+legacy `<piece_id>.mid` automatically — no rename step needed. Pilot
+first with `--max-pieces 5` to verify your browser session works.
 
 #### Option B — `ohsheet` Rust CLI
 
@@ -145,9 +146,10 @@ pilot.
 
 #### Option D — any other scraper
 
-The build script just consumes a directory of `<piece_id>.<ext>`
-files (5-digit zero-padded). Supported extensions: `.mid`, `.midi`,
-`.smf`. Whatever fills that dir works.
+The build script consumes a directory of `<piece_id>.<ext>` OR
+`<piece_id>_<slug>.<ext>` files (5-digit zero-padded `piece_id`).
+Supported extensions: `.mid`, `.midi`, `.smf`. Whatever fills that
+dir works.
 
 Without any sourced MIDIs, the build script attempts the urllib
 fallback download and gracefully fails (logging the 403 count).
@@ -270,6 +272,15 @@ uv run python scripts/sweeps/run_all_sweeps.py \
 ```
 
 ### Full cross-encoder comparison (requires audio build)
+
+> **Important:** the 4 audio configs (`probe.{CLaMP3,MERT-v1-95M,MuQ,
+> OMARRQ-multifeature-25hz}-*.SuperMarioStructure.yaml`) require the
+> JSONL to have an `audio_path` field on every record. This only
+> happens when the build was run **with `--audio-dir`**. If you ran
+> a symbolic-only build (no `--audio-dir`), the audio datamodule will
+> raise `KeyError: 'audio_path'` on the first batch. Either rebuild
+> with `--audio-dir <wav-dir>` first, OR restrict the sweep to
+> `--models CLaMP3-symbolic`.
 
 ```bash
 # Meanall first — baseline in <30 min × 5 encoders
