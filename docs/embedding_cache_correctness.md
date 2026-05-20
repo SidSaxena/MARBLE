@@ -268,12 +268,31 @@ the cache for 5 MTG* tasks.
 
 | Scenario | Reason |
 |---|---|
+| **Frame-level prediction tasks** (`MLPDecoderKeepTime`, no `TimeAvgPool`) | Cache stores `(L, H)` time-mean-pooled. Probe needs `(L, T, H)`. On cache hit, `stacked_to_layer_tuple` re-expands to `(B, 1, H)` — a 1-frame sequence. Frame-level metrics then compute against frame 0 only, **silent degradation**. Affects `HookTheoryMelody`, `GTZANBeatTracking`, `Chords1217`, `LibriSpeechASR`. All four correctly leave `cache_embeddings` unset; the audit script catches accidental enables. |
 | `freeze_encoder: false` (encoder is fine-tuned) | Encoder weights change every step; cache becomes stale immediately. |
 | Non-mean time pooling (any AttnPool / MaxPool / AutoPool variant) | See section 2 — silently wrong. |
 | Random window sampling per epoch | Cache freezes the first window per clip_id. |
 | Train-time encoder dropout (encoder in `.train()` mode) | Cache freezes the first epoch's dropout mask. |
 | Tiny dataset where one full encoder forward fits in DataLoader cache anyway | Cache doesn't help, adds disk footprint. |
 | Debugging a new encoder | Disable while iterating on encoder code; re-enable when stable. |
+
+### Cross-task audit (2026-05-20)
+
+A full sweep of `marble/tasks/*` against the configs confirms the
+current state is clean — no clip-level task is missing
+`cache_embeddings: true` where it should have it, no frame-level task
+has the flag set where it shouldn't.
+
+| Category | Tasks | Cache state |
+|---|---|---|
+| **Clip-level, cache-enabled (correct)** | Covers80, EMO, GS, GTZANGenre, HXMSA, HookTheoryKey, HookTheoryStructure, MTG{Genre,Instrument,Mood,Top50}, MTT, NSynth, SHS100K, SuperMarioStructure, VGMIDITVar | `TimeAvgPool` in probe → mean-of-mean = mean → cache value identical to non-cached path |
+| **Frame-level, cache deliberately bypassed (correct)** | Chords1217, GTZANBeatTracking, HookTheoryMelody, LibriSpeechASR | `MLPDecoderKeepTime` in probe; 3-tuple emit; no `cache_check_fn` plumbing; no `cache_embeddings: true` in any config |
+| **Orphan / no configs** | LeitmotifDetection, HookTheoryChord | Not currently swept — not on the audit critical path |
+
+If you add a new probe and configure a non-`TimeAvgPool` aggregation
+(or a `MLPDecoderKeepTime` decoder), **do not enable
+`cache_embeddings: true`** until the time-preserving cache (section
+10) lands.
 
 ---
 
