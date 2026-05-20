@@ -68,21 +68,42 @@ class _HookTheoryMelodyDataset(Dataset):
         # mixin and the cached (L, T, H) is used instead.
         self.cache_check_fn = None
 
-        # Load metadata
+        # Load metadata. Some upstream records have ``alignment: null`` or
+        # ``alignment.refined: null`` (m-a-p's pipeline failed to align them
+        # to YouTube audio for whatever reason). The build script ideally
+        # filters these out, but be defensive here too in case a stale
+        # JSONL is passed in.
         with open(jsonl) as f:
-            self.meta: list[dict] = [json.loads(line) for line in f]
+            raw_meta: list[dict] = [json.loads(line) for line in f]
 
-        # Prepare alignment & melody annotations
         self.alignments = []
         self.melodies = []
         self.yt_ids = []
-        for info in self.meta:
-            ytid = info["youtube"]["id"]
+        self.meta: list[dict] = []
+        skipped_no_alignment = 0
+        for info in raw_meta:
+            align = info.get("alignment") or {}
+            refined = align.get("refined") or {}
+            beats_raw = refined.get("beats")
+            times_raw = refined.get("times")
+            if not beats_raw or not times_raw:
+                skipped_no_alignment += 1
+                continue
+            ytid = info.get("youtube", {}).get("id")
+            if not ytid:
+                continue
+            self.meta.append(info)
             self.yt_ids.append(ytid)
-            beats = np.array(info["alignment"]["refined"]["beats"], dtype=np.float32)
-            times = np.array(info["alignment"]["refined"]["times"], dtype=np.float32)
-            self.alignments.append((beats, times))
+            self.alignments.append(
+                (np.array(beats_raw, dtype=np.float32), np.array(times_raw, dtype=np.float32))
+            )
             self.melodies.append(info["annotations"]["melody"])
+        if skipped_no_alignment:
+            print(
+                f"  HookTheoryMelody: {skipped_no_alignment:,} records skipped "
+                f"(no refined alignment in metadata); kept {len(self.meta):,}",
+                file=__import__("sys").stderr,
+            )
 
         # Pre-create resamplers and build index_map
         self.resamplers = {}

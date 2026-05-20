@@ -128,6 +128,7 @@ def main():
     skipped_no_melody = 0
     skipped_no_audio = 0
     skipped_no_youtube = 0
+    skipped_no_alignment = 0
 
     SPLIT_MAP = {"TRAIN": "train", "VALID": "val", "TEST": "test"}
 
@@ -146,6 +147,17 @@ def main():
             skipped_no_youtube += 1
             continue
 
+        # The datamodule maps annotation beats → seconds via
+        # alignment.refined.{beats,times}. Records where m-a-p's
+        # alignment pipeline failed for that song have
+        # alignment == null OR alignment.refined == null OR an empty
+        # beats list. Drop them — the datamodule cannot use them.
+        align = song.get("alignment") or {}
+        refined = align.get("refined") or {}
+        if not refined.get("beats") or not refined.get("times"):
+            skipped_no_alignment += 1
+            continue
+
         if args.filter_by_audio:
             audio_path = args.audio_dir / f"{ytid}.mp3"
             if not audio_path.exists():
@@ -159,11 +171,12 @@ def main():
     print("=" * 64, file=sys.stderr)
     print(" HookTheoryMelody JSONL build summary", file=sys.stderr)
     print("=" * 64, file=sys.stderr)
-    print(f"  Total source songs:    {len(songs):>6,}", file=sys.stderr)
-    print(f"  Skipped (no melody):   {skipped_no_melody:>6,}", file=sys.stderr)
-    print(f"  Skipped (no ytid):     {skipped_no_youtube:>6,}", file=sys.stderr)
+    print(f"  Total source songs:      {len(songs):>6,}", file=sys.stderr)
+    print(f"  Skipped (no melody):     {skipped_no_melody:>6,}", file=sys.stderr)
+    print(f"  Skipped (no ytid):       {skipped_no_youtube:>6,}", file=sys.stderr)
+    print(f"  Skipped (no alignment):  {skipped_no_alignment:>6,}", file=sys.stderr)
     if args.filter_by_audio:
-        print(f"  Skipped (no audio):    {skipped_no_audio:>6,}", file=sys.stderr)
+        print(f"  Skipped (no audio):      {skipped_no_audio:>6,}", file=sys.stderr)
     print(file=sys.stderr)
     print("  Output records:", file=sys.stderr)
     for split, recs in by_split.items():
