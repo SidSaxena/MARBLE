@@ -20,13 +20,18 @@ sweeps locally and on Modal. Code lives in
 | [data/shs100k.md](data/shs100k.md) | SHS100K cover-retrieval (.m4a → .flac conversion path) |
 | [data/hooktheory.md](data/hooktheory.md) | HookTheory clips (Key/Structure) + full audio (Melody) |
 | [data/vgmiditvar_setup.md](data/vgmiditvar_setup.md) | VGMIDI-TVar render-from-MIDI pipeline |
+| [data/supermario_setup.md](data/supermario_setup.md) | Super Mario VGM structure dataset (554 NSM MIDIs + 6-class annotations) |
 
 ## Research / design notes
 
 | Doc | What it covers |
 |---|---|
+| [layer_analysis.md](layer_analysis.md) | **Cross-encoder, cross-task layer-selection guide** — the canonical reference for which layer of which encoder to use for which task |
+| [leitmotif_findings.md](leitmotif_findings.md) | VGMIDITVar-leitmotif cross-instrument retrieval results — primary motif-analysis study |
+| [supermario_findings.md](supermario_findings.md) | SuperMarioStructure CLaMP3-symbolic sweep — first symbolic-classification result, two-peak L4/L11, L12 cross-modality discussion |
 | [leitmotif_clamp3.md](leitmotif_clamp3.md) | CLaMP3-based leitmotif detection — design, datasets, metrics, sweep wiring |
 | [leitmotif_swtc.md](leitmotif_swtc.md) | SWTC standalone evaluation pipeline |
+| [structure_datasets_survey.md](structure_datasets_survey.md) | Survey of music structure datasets MARBLE supports / could add |
 
 ## Quick reference — common commands
 

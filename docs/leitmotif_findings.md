@@ -708,6 +708,21 @@ recipe. Re-classified as "speculative — pilot before deploying." The
 expected gain (~3–5%) is plausible but unmeasured. Not a default
 recommendation.
 
+## Related work in this repo
+
+For the symbolic-classification sibling of this retrieval study, see
+[`supermario_findings.md`](supermario_findings.md) — CLaMP3-symbolic
+on Super Mario VGM functional-segment classification, where the same
+L11 dominance holds (joint with L4) and the same L12 deficit (−3.3
+pp) shows up. The cross-task picture for CLaMP3-symbolic across
+retrieval (this doc) + classification (SuperMarioStructure) is in
+[`layer_analysis.md` § "Cross-task pattern for CLaMP3-symbolic"](layer_analysis.md#cross-task-pattern-for-clamp3-symbolic-3-tasks)
+along with the new
+["When to use L12"](layer_analysis.md#when-to-use-l12--the-contrastive-output-layer)
+recommendations for multimodal / cross-domain use cases.
+
+---
+
 ## Open questions / future work
 
 1. **Symbolic per-pair extraction.** Write the one-off script to

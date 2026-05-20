@@ -5,10 +5,15 @@ layer to extract from each frozen encoder. Used to drive the
 leitmotifs project's per-track embedding strategy and any
 downstream MARBLE probe work.
 
-Last updated: 2026-05-18 (after HookTheoryStructure full-encoder sweep —
-4-encoder structural classification data lands the L10 + L11 mixed-task
-ensemble recommendation; see § Supervised classification / structure
-and § Two-layer ensemble).
+Last updated: 2026-05-20 (after SuperMarioStructure CLaMP3-symbolic
+sweep — first classification result for the symbolic encoder, lands
+a two-peak L4 ≈ L11 finding and a new "When to use L12" section for
+multidomain / cross-modal use cases; see
+[`supermario_findings.md`](supermario_findings.md) for the full
+per-layer table and cross-task analysis. Previous update: 2026-05-18,
+after HookTheoryStructure full-encoder sweep — 4-encoder structural
+classification data lands the L10 + L11 mixed-task ensemble
+recommendation).
 For implementation details on caching / extracting, see
 [`embedding_cache.md`](embedding_cache.md).
 
@@ -29,7 +34,7 @@ selection reference covering all tasks.
 | **OMARRQ-multifeature-25hz** (alternative) | 24 | **L15** (broad-peak winner) | L15 | L14 | L20 | **L17** | Use for multi-task deployments — broad peak (L8–L17 plateau on structure, L11–L21 on cross-instr) |
 | MERT-v1-95M | 13 | L12 (agg) / L8 (cross) / L4 (struct) | L8 | L3 | L7 | L4 | Consistently 4th audio encoder; mid-block peak across tasks |
 | CLaMP3 (audio path) | 13 | not for single-pool | L5 | L5 | L11 | L3 | Aggregate broken at every retrieval layer; OK for hybrid retrieval AND classification (0.568 on HookTheoryStructure, 3rd) |
-| **CLaMP3-symbolic** (when MIDI available) | 13 | **meanall ≈ L11** | (≈ aggregate) | (uniform) | (uniform) | (not tested — HookTheory has no MIDI) | ~5× aggregate MAP of any audio encoder on retrieval. Structure-classification ranking TBD via SuperMario sweep |
+| **CLaMP3-symbolic** (when MIDI available) | 13 | **L11** (retrieval) / **L4 or L11** (classification, tied) | (≈ aggregate) | (uniform) | L11 | **L4 ≈ L11 / 0.599 on SuperMarioStructure** | ~5× aggregate MAP of any audio encoder on retrieval. L11 wins on all 3 symbolic tasks; L12 (contrastive output) trails by 1.8–3.3 pp — see [Section "When to use L12"](#when-to-use-l12--the-contrastive-output-layer) |
 | MERT-v1-330M | 25 | DECOMMISSIONED — lost 4/4 vs 95M | — | — | — | — | Configs commented out in run_all_sweeps.py |
 
 - **MuQ L11 is Pareto-optimal as a single layer:** strictly dominates OMARRQ L15 on retrieval (+5% cross-instrument MAP / +85% aggregate MAP at same 1024-dim). On classification (HookTheoryStructure) MuQ L10 (0.591) wins narrowly over MuQ L11 (0.589) and OMARRQ L17 (0.589) — all three essentially tied. Within MuQ's own L7/L10/L11/L12 set, L11 is the joint-optimal single layer for retrieval; L10 is the joint-optimal single layer for classification; they're within 0.002 acc of each other.
@@ -88,13 +93,13 @@ script for the up-to-date version.
 
 ### Supervised classification / structure
 
-| Encoder | GS (key, 24-cls) | HookTheoryKey | HookTheoryStructure | GTZANBeatTracking |
-|---|---|---|---|---|
-| CLaMP3 (audio) | L0 / 0.642 | L0 / 0.717 | L3 / 0.568 (3rd) | n/a |
-| MERT-v1-95M | L9 / 0.651 | (not run) | L4 / 0.558 (4th, last) | (not run) |
-| OMARRQ-25hz | L17 / 0.175 (fsq) | (not run) | **L17 / 0.589** (2nd, tied) | L3 / 0.361 (fsq) |
-| **MuQ** | (not run) | (queued) | **L10 / 0.591** (1st) | n/a |
-| CLaMP3-symbolic | n/a (audio task) | n/a | (no MIDI in dataset) | n/a |
+| Encoder | GS (key, 24-cls) | HookTheoryKey | HookTheoryStructure | SuperMarioStructure | GTZANBeatTracking |
+|---|---|---|---|---|---|
+| CLaMP3 (audio) | L0 / 0.642 | L0 / 0.717 | L3 / 0.568 (3rd) | (audio sweep queued) | n/a |
+| MERT-v1-95M | L9 / 0.651 | (not run) | L4 / 0.558 (4th, last) | (audio sweep queued) | (not run) |
+| OMARRQ-25hz | L17 / 0.175 (fsq) | (not run) | **L17 / 0.589** (2nd, tied) | (audio sweep queued) | L3 / 0.361 (fsq) |
+| **MuQ** | (not run) | (queued) | **L10 / 0.591** (1st) | (audio sweep queued) | n/a |
+| CLaMP3-symbolic | n/a (audio task) | n/a | (no MIDI in dataset) | **L4 ≈ L11 / 0.599** | n/a |
 
 **HookTheoryStructure full-encoder update (2026-05-18):** sweep
 completed for all 4 audio encoders. Key findings:
@@ -167,6 +172,87 @@ Patterns that hold across the matrix:
 
 MERT-v1-330M only has Covers80 data so far. Don't draw firm
 conclusions on this encoder until the full sweep finishes (planned).
+
+### SuperMarioStructure CLaMP3-symbolic update (2026-05-20)
+
+Symbolic-only sweep landed for SuperMarioStructure — first
+classification task CLaMP3-symbolic has been evaluated on. Key
+numbers (see [`supermario_findings.md`](supermario_findings.md) for
+the full per-layer table + analysis):
+
+- **L4 and L11 tie at 0.5989 test/acc** (chance = 0.167; macro_f1
+  0.252 and 0.251 respectively). True two-peak structure.
+- **L12 = 0.566** — the contrastive-output layer trails by 3.3 pp.
+- **meanall = 0.571** — between L12 and the L4/L11 peak.
+- **val→test gap is tightest at L4 (−5.6 pp) and L11 (−4.2 pp)**;
+  other layers lose 7–11 pp val→test. Strong signal that L4/L11
+  generalize best, not test-set noise.
+
+This is the first task where CLaMP3-symbolic has a **legitimate
+two-peak profile** — every other symbolic task has a monotonic
+rise L0→L11 with a sharp L12 drop. Hypothesis: L4 captures local
+syntax (intro/stinger surface rhythms); L11 captures section-level
+discourse (loop vs linear). They hit the same target via
+complementary routes, which is why a future **L4 + L11 ensemble** is
+the recommended next experiment for structure classification with
+CLaMP3-symbolic.
+
+### Cross-task pattern for CLaMP3-symbolic (3 tasks)
+
+| Task | Type | Metric | Best layer | Best value | L12 | meanall |
+|---|---|---|---:|---:|---:|---:|
+| VGMIDITVar | retrieval | test/MAP | **L11** | 0.198 | 0.180 (−1.8 pp) | — |
+| VGMIDITVar-leitmotif | retrieval | test/MAP | **L11** | 0.195 | 0.176 (−1.8 pp) | 0.195 |
+| SuperMarioStructure | classification | test/acc | **L4 ≈ L11** | 0.599 | 0.566 (−3.3 pp) | 0.571 |
+
+**Robust pattern (all 3 tasks):** L11 is the best single layer; L12
+trails by 1.8–3.3 pp; meanall ≈ L11 on retrieval, meanall ~1 pp
+below the peak on classification.
+
+---
+
+## When to use L12 — the contrastive output layer
+
+L12 is the final encoder layer of CLaMP3, the output of the
+multimodal contrastive training objective. It lives in the same
+embedding space as **CLaMP3-audio L12** and (in the upstream
+checkpoint) the text encoder, by construction. Use it when **shared
+embedding space matters more than peak single-modality
+performance**.
+
+| When you SHOULD use L12 | Cost vs L11 |
+|---|---|
+| Cross-modal retrieval (audio↔symbolic queries) | −1.8 to −3.3 pp on within-modality tasks |
+| Cross-domain transfer (train on domain A, eval on domain B) | Same range |
+| Multimodal fusion (concat audio + symbolic into one MLP) | Same range, but you also get coherent embeddings to fuse |
+| Zero-shot / few-shot via text prompts | Same range, only L12 has text alignment |
+| Mixed-modality clustering / similarity search | Same range, only L12 lives in a shared metric space |
+
+| When you should NOT use L12 (use L11 instead) | Why |
+|---|---|
+| Pure single-modality task | L11 wins by 1.8–3.3 pp, free performance |
+| Frozen-encoder feature extraction for fine-tuning | L11 carries more information; the head learns the projection |
+| Classification where minority classes matter | L4 (local features) > L12 for short/distinctive classes |
+
+**Hybrid recipe** (best of both worlds, 2× embedding dim):
+```python
+import torch.nn.functional as F
+emb = torch.cat([
+    F.normalize(enc(midi, layer=11)),  # task-rich
+    F.normalize(enc(midi, layer=12)),  # cross-modal anchor
+], dim=-1)  # 1536-dim
+```
+The L2-normalize on each half prevents the contrastive layer's
+naturally-larger magnitudes from dominating downstream cosine
+similarity.
+
+L12 on the audio side has the same pattern (Covers80 is the one
+exception where L12 = the best layer, because Covers80 is exactly
+the cross-version retrieval task CLaMP3 was contrastively trained
+for). For audio retrieval other than covers, L11 wins by ~0.3–6 pp;
+for classification, L0–L5 win — see the
+[Audio retrieval table](#audio-retrieval--theme-variation-invariance)
+above.
 
 ---
 
