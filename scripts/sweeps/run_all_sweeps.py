@@ -392,6 +392,24 @@ SWEEPS: list[SweepDef] = [
     ),
     # ── HookTheory melody pitch transcription (frame-level) ──────────────────
     # 128 MIDI classes; -1 sentinel for silent frames; metrics: RPA + RCA.
+    # Run order: MuQ → MERT → OMARRQ (priority encoder set). MuQ first
+    # because it consistently dominates on retrieval + classification across
+    # other audio tasks; running it first surfaces the most informative
+    # signal earliest if you abort the sweep partway.
+    SweepDef(
+        model="MuQ",
+        task="HookTheoryMelody",
+        base_config="configs/probe.MuQ-layers.HookTheoryMelody.yaml",
+        num_layers=13,
+        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ 13 layers",
+    ),
+    SweepDef(
+        model="MuQ-meanall",
+        task="HookTheoryMelody",
+        base_config="configs/probe.MuQ-meanall.HookTheoryMelody.yaml",
+        num_layers=1,
+        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ meanall",
+    ),
     SweepDef(
         model="MERT-v1-95M",
         task="HookTheoryMelody",
@@ -420,8 +438,6 @@ SWEEPS: list[SweepDef] = [
         num_layers=1,
         note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ meanall",
     ),
-    # MuQ × HookTheoryMelody lives in the MuQ-block below alongside the other
-    # 4 MuQ tasks (Covers80, SHS100K, VGMIDITVar, HookTheoryMelody)
     # ══════════════════════════════════════════════════════════════════════════
     # LONG — NSynth pitch classification (50K train cap, still multi-hour/layer)
     # ══════════════════════════════════════════════════════════════════════════
@@ -536,20 +552,6 @@ SWEEPS: list[SweepDef] = [
         base_config="configs/probe.MuQ-layers.VGMIDITVar.yaml",
         num_layers=13,
         note="Theme→variation | MAP | zero-shot | MIDI-rendered | MuQ 13 layers",
-    ),
-    SweepDef(
-        model="MuQ",
-        task="HookTheoryMelody",
-        base_config="configs/probe.MuQ-layers.HookTheoryMelody.yaml",
-        num_layers=13,
-        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ 13 layers",
-    ),
-    SweepDef(
-        model="MuQ-meanall",
-        task="HookTheoryMelody",
-        base_config="configs/probe.MuQ-meanall.HookTheoryMelody.yaml",
-        num_layers=1,
-        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ meanall",
     ),
     SweepDef(
         model="MuQ",
