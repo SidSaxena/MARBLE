@@ -21,6 +21,7 @@ sweeps locally and on Modal. Code lives in
 | [data/hooktheory.md](data/hooktheory.md) | HookTheory clips (Key/Structure) + full audio (Melody) |
 | [data/vgmiditvar_setup.md](data/vgmiditvar_setup.md) | VGMIDI-TVar render-from-MIDI pipeline |
 | [data/supermario_setup.md](data/supermario_setup.md) | Super Mario VGM structure dataset (554 NSM MIDIs + 6-class annotations) |
+| [data/hooktheory_melody_setup.md](data/hooktheory_melody_setup.md) | HookTheoryMelody full-song audio (HF download + optional yt-dlp recovery of missing ytids + Modal upload + sweep) |
 
 ## Research / design notes
 
