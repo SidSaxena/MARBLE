@@ -99,6 +99,15 @@ Then use them with curl directly (skips Playwright entirely):
 
 cf_clearance lasts ~30 days. Re-export when downloads start returning
 HTML.
+
+Sibling script
+--------------
+For bulk-downloading from a NinSheetMusic browse URL (series / console /
+arranger page) instead of a pieces.csv, see
+``scripts/data/download_ninsheetmusic_url.py``. _slugify, _target_path,
+_find_existing, _download_one, and the browser-launch block are
+duplicated between the two scripts — update both when changing any of
+those.
 """
 
 from __future__ import annotations
