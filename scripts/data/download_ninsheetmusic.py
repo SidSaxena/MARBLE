@@ -13,9 +13,13 @@ the site's challenge response expects, so downloads go through.
 Reads a pieces.csv with columns ``piece_id, ..., url_pdf, url_mid,
 url_mus`` (the format from the
 ``ShxLuo-Saxon/supermario-structure-annotation`` repo, but works for
-any CSV with those columns). Saves files as ``<piece_id>.<ext>`` in
-``--out-dir``, ready to feed straight into
+any CSV with those columns). Saves files as
+``<piece_id>_<title-slug>.<ext>`` in ``--out-dir`` (or just
+``<piece_id>.<ext>`` when the CSV has no title column), ready to
+feed straight into
 ``scripts/data/build_supermario_dataset.py --midi-source-dir``.
+Existing legacy ``<piece_id>.<ext>`` files are recognised on re-run
+and not re-downloaded.
 
 Prerequisites
 -------------
@@ -102,15 +106,63 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import re
 import signal
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 _KIND_TO_EXT = {"mid": "mid", "pdf": "pdf", "mus": "mus"}
 _KIND_TO_URL_COL = {"mid": "url_mid", "pdf": "url_pdf", "mus": "url_mus"}
+
+# Cap slug length so filenames stay well under the 255-byte limit even with
+# piece_id prefix and extension. NSM titles can be very long ("Super Mario
+# Galaxy - Comet Observatory (Bowser's Galaxy Reactor Reprise)").
+_SLUG_MAX = 80
+
+
+def _slugify(title: str) -> str:
+    """Filesystem-safe slug from a NSM title.
+
+    Strategy: NFKD-normalize → strip non-ASCII → collapse anything that
+    isn't [a-zA-Z0-9] into single dashes → trim → cap length. Keeps
+    capitalisation because titles like "Super Mario 64" read better
+    than "super-mario-64", and the filesystem doesn't care.
+    """
+    if not title:
+        return ""
+    ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", ascii_title).strip("-")
+    return slug[:_SLUG_MAX].rstrip("-")
+
+
+def _target_path(out_dir: Path, pid: str, slug: str, ext: str) -> Path:
+    """Compute the canonical (new-style) destination path.
+
+    Format: ``<pid>_<slug>.<ext>``. If slug is empty (missing title),
+    falls back to legacy ``<pid>.<ext>``.
+    """
+    stem = f"{pid}_{slug}" if slug else pid
+    return out_dir / f"{stem}.{ext}"
+
+
+def _find_existing(out_dir: Path, pid: str, slug: str, ext: str) -> Path | None:
+    """Return an existing destination file for this piece+kind, or None.
+
+    Checks the new-style ``<pid>_<slug>.<ext>`` first, then the legacy
+    ``<pid>.<ext>`` so pre-rename downloads still count as 'present'
+    and aren't re-fetched.
+    """
+    new_style = _target_path(out_dir, pid, slug, ext)
+    if new_style.exists() and new_style.stat().st_size > 100:
+        return new_style
+    legacy = out_dir / f"{pid}.{ext}"
+    if legacy != new_style and legacy.exists() and legacy.stat().st_size > 100:
+        return legacy
+    return None
 
 
 # ── Pieces CSV parsing ────────────────────────────────────────────────────────
@@ -143,19 +195,21 @@ def _resolve_csv_path(raw: Path) -> Path:
     return raw
 
 
-def _parse_pieces_csv(csv_path: Path, kinds: list[str]) -> list[tuple[str, dict[str, str]]]:
-    """Parse pieces.csv → [(piece_id, {kind: url})].
+def _parse_pieces_csv(csv_path: Path, kinds: list[str]) -> list[tuple[str, str, dict[str, str]]]:
+    """Parse pieces.csv → [(piece_id, title_slug, {kind: url})].
 
     Skips rows missing piece_id or where all selected kind URLs are blank.
+    title_slug is empty for rows where the 'title' column is missing/empty.
     """
     csv_path = _resolve_csv_path(csv_path)
-    out: list[tuple[str, dict[str, str]]] = []
+    out: list[tuple[str, str, dict[str, str]]] = []
     with csv_path.open(newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             pid = (row.get("piece_id") or "").strip()
             if not pid:
                 continue
+            slug = _slugify((row.get("title") or "").strip())
             urls: dict[str, str] = {}
             for kind in kinds:
                 col = _KIND_TO_URL_COL[kind]
@@ -163,7 +217,7 @@ def _parse_pieces_csv(csv_path: Path, kinds: list[str]) -> list[tuple[str, dict[
                 if url:
                     urls[kind] = url
             if urls:
-                out.append((pid, urls))
+                out.append((pid, slug, urls))
     return out
 
 
@@ -230,7 +284,7 @@ def main() -> None:
     ap.add_argument(
         "--out-dir",
         required=True,
-        help="Output directory; files saved as <piece_id>.<ext>",
+        help="Output directory; files saved as <piece_id>_<title-slug>.<ext>",
     )
     ap.add_argument(
         "--kind",
@@ -402,13 +456,12 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Plan preamble — show counts BEFORE the slow loop
-    n_targets = sum(len(urls) for _, urls in pieces)
+    n_targets = sum(len(urls) for _, _, urls in pieces)
     n_already = sum(
         1
-        for pid, urls in pieces
+        for pid, slug, urls in pieces
         for kind in urls
-        if (out_dir / f"{pid}.{_KIND_TO_EXT[kind]}").exists()
-        and (out_dir / f"{pid}.{_KIND_TO_EXT[kind]}").stat().st_size > 100
+        if _find_existing(out_dir, pid, slug, _KIND_TO_EXT[kind]) is not None
     )
     n_todo = n_targets - n_already
     log.info("")
@@ -613,17 +666,18 @@ def main() -> None:
         except Exception as e:
             log.warning(f"  pre-warm warning ({type(e).__name__}: {e}); continuing")
 
-        for i, (pid, urls) in enumerate(pieces, 1):
+        for i, (pid, slug, urls) in enumerate(pieces, 1):
             if _stop["set"]:
                 break
             for kind, url in urls.items():
                 if _stop["set"]:
                     break
                 ext = _KIND_TO_EXT[kind]
-                dst = out_dir / f"{pid}.{ext}"
-                if dst.exists() and dst.stat().st_size > 100:
+                existing = _find_existing(out_dir, pid, slug, ext)
+                if existing is not None:
                     n_skipped += 1
                     continue
+                dst = _target_path(out_dir, pid, slug, ext)
 
                 ok = False
                 for attempt in range(args.retry + 1):
@@ -634,7 +688,7 @@ def main() -> None:
                         # Exponential-ish backoff
                         backoff = args.delay * (2**attempt)
                         log.debug(
-                            f"    retry {attempt + 1}/{args.retry} for {pid}.{ext} after {backoff:.1f}s"
+                            f"    retry {attempt + 1}/{args.retry} for {dst.name} after {backoff:.1f}s"
                         )
                         time.sleep(backoff)
 
@@ -642,7 +696,7 @@ def main() -> None:
                     n_ok += 1
                 else:
                     n_fail += 1
-                    log.warning(f"  [{pid}.{ext}] FAILED after {args.retry + 1} attempts: {url}")
+                    log.warning(f"  [{dst.name}] FAILED after {args.retry + 1} attempts: {url}")
 
                 time.sleep(args.delay)
 
