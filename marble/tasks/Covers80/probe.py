@@ -64,6 +64,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         encoder: dict,
         emb_transforms: list[dict],
         cache_embeddings: bool = False,
+        cache_pool_time: bool = True,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -75,7 +76,10 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
 
         # Cache plumbing inherited from EmbeddingCacheMixin — slot init
         # + lazy build on first forward + audio-I/O bypass injection.
+        # cache_pool_time=True (default) stores (L, H); False stores
+        # (L, T, H) for frame-level probes. See emb_cache.py.
         self.cache_embeddings = bool(cache_embeddings)
+        self.cache_pool_time = bool(cache_pool_time)
         self._init_cache_state()
 
     def setup(self, stage: str | None = None) -> None:

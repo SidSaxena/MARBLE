@@ -50,6 +50,12 @@ model:
   init_args:
     sample_rate: 24000
     use_ema: false
+    # Embedding cache for frame-level probes. Default off — flip both to
+    # true on Modal/big-disk to skip the encoder forward on cached clips.
+    # cache_pool_time MUST be false here (frame-level decoder needs T axis).
+    # See docs/embedding_cache_correctness.md §9.
+    cache_embeddings: false
+    cache_pool_time: false
 
     encoder:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder

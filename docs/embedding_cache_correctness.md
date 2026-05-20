@@ -289,18 +289,37 @@ has the flag set where it shouldn't.
 | **Frame-level, cache deliberately bypassed (correct)** | Chords1217, GTZANBeatTracking, HookTheoryMelody, LibriSpeechASR | `MLPDecoderKeepTime` in probe; 3-tuple emit; no `cache_check_fn` plumbing; no `cache_embeddings: true` in any config |
 | **Orphan / no configs** | LeitmotifDetection, HookTheoryChord | Not currently swept — not on the audit critical path |
 
-If you add a new probe and configure a non-`TimeAvgPool` aggregation
-(or a `MLPDecoderKeepTime` decoder), **do not enable
-`cache_embeddings: true`** until the time-preserving cache (section
-10) lands.
+If you add a new probe with a `MLPDecoderKeepTime` decoder, set
+**both** `cache_embeddings: true` AND `cache_pool_time: false` — the
+latter switches the cache to a frame-level `(L, T, H)` layout that
+preserves the time axis (see section 10, now implemented). Leaving
+`cache_pool_time` at its default `True` with a keep-time decoder will
+silently degrade the task as described above.
+
+For probes with a non-`TimeAvgPool` aggregation (`AttnPool`, `MaxPool`,
+`AutoPool`), the cache is still incompatible — the
+pool-vs-cache mismatch is a different bug from the keep-time case,
+and the frame-level cache layout does not solve it.
 
 ---
 
-## 10. Future extensions (not implemented)
+## 10. Future extensions
 
-- **Time-preserving cache.** Store `(L, T, H)` instead of `(L, H)`.
-  Unblocks attention pooling but multiplies disk usage by T. Reasonable
-  for short clips (5s × 25Hz = 125 frames).
+- **Time-preserving cache.** ✅ **Implemented 2026-05-20** as
+  `pool_time: bool` on `EmbeddingCache` / `EmbeddingCacheMixin` / the
+  `cache_pool_time` config flag on `BaseTask` and Covers80. Set
+  `cache_pool_time: false` (with `cache_embeddings: true`) to switch
+  to the frame-level `(L, T, H)` layout required by
+  `MLPDecoderKeepTime` probes. The `pool_time` bit is included in the
+  config hash so frame-level and pooled caches use different directories
+  even for the same encoder + task. Disk cost scales with T: ~1.5 MB
+  per slice for MuQ at 25 Hz × 15 s × H=1024 vs ~50 KB for the pooled
+  variant. Round-trip tests in `tests/test_emb_cache_frames.py`.
+  Unblocks frame-level cache use; does **not** unblock non-mean pooling
+  (attention pooling still fails section 2 of this doc, but a
+  pool-time-preserving cache would let an attention pool work as
+  designed).
+
 - **GPU cache.** Pre-load the entire cache into VRAM at training start.
   Removes disk I/O from the warm-epoch path. Only feasible for small
   datasets.

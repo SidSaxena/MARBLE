@@ -89,15 +89,19 @@ def compute_config_hash(
     sample_rate: int | float,
     clip_seconds: float,
     pipeline_signature: str = "",
+    pool_time: bool = True,
 ) -> str:
     """Stable short hash that invalidates the cache when the encoder
     input pipeline changes meaningfully.
 
     Includes: HuggingFace/checkpoint id, target sample rate, clip
-    length in seconds, and an opaque pipeline signature (caller-built
+    length in seconds, an opaque pipeline signature (caller-built
     from the audio_transforms class names) so a swap from e.g.
     ``MERT_FeatureExtractor`` to ``OMARRQ_FeatureExtractor`` lands in
-    a new cache dir rather than feeding the head wrong embeddings.
+    a new cache dir rather than feeding the head wrong embeddings,
+    and ``pool_time`` (whether the cached tensor has shape ``(L, H)``
+    or ``(L, T, H)``) so frame-level and clip-level caches don't
+    collide if both ever exist for the same encoder + task.
     """
     h = hashlib.sha256()
     h.update(str(encoder_model_id).encode("utf-8"))
@@ -107,6 +111,8 @@ def compute_config_hash(
     h.update(f"{float(clip_seconds):.6f}".encode())
     h.update(b"|")
     h.update(str(pipeline_signature).encode("utf-8"))
+    h.update(b"|")
+    h.update(b"pool" if pool_time else b"frame")
     return h.hexdigest()[:8]
 
 
@@ -149,11 +155,21 @@ class EmbeddingCache:
         metadata: dict[str, Any] | None = None,
         root: Path | None = None,
         log_first_n: int = 1,
+        pool_time: bool = True,
     ):
         if root is None:
             root = DEFAULT_CACHE_ROOT
         self.dir = Path(root) / encoder_slug / f"{task_name}__{config_hash}"
         self.dir.mkdir(parents=True, exist_ok=True)
+        # When pool_time=True the cache stores ``(L, H)`` per slice (the
+        # historical contract — encoder output mean-pooled across time).
+        # When False it stores ``(L, T, H)`` per slice — required for
+        # frame-level probes (HookTheoryMelody, GTZANBeatTracking,
+        # Chords1217, LibriSpeechASR) whose decoder is
+        # ``MLPDecoderKeepTime`` and consumes the full time axis. Disk
+        # cost scales by T (~375 for 15 s × 25 Hz), so ~1.5 MB/slice
+        # instead of ~50 KB. See docs/embedding_cache_correctness.md.
+        self.pool_time = bool(pool_time)
 
         # Write/refresh _meta.json. Atomic to survive concurrent writers.
         meta_path = self.dir / "_meta.json"
@@ -161,6 +177,7 @@ class EmbeddingCache:
             "encoder_slug": encoder_slug,
             "task_name": task_name,
             "config_hash": config_hash,
+            "pool_time": self.pool_time,
             **(metadata or {}),
         }
         self._atomic_write_text(meta_path, json.dumps(meta_body, indent=2))
@@ -201,21 +218,34 @@ class EmbeddingCache:
         return self.path_for(clip_id).exists()
 
     def get(self, clip_id: str) -> torch.Tensor:
-        """Load one ``(L, H)`` tensor. Raises ``FileNotFoundError`` on miss."""
+        """Load one cached tensor. Raises ``FileNotFoundError`` on miss.
+
+        Shape is ``(L, H)`` for ``pool_time=True`` caches (the historical
+        default) or ``(L, T, H)`` for ``pool_time=False`` caches. The cache
+        instance carries the expected shape — callers don't disambiguate.
+        """
         p = self.path_for(clip_id)
         data = torch.load(p, map_location="cpu", weights_only=True)
         return data["embedding"] if isinstance(data, dict) else data
 
     def put(self, clip_id: str, embedding: torch.Tensor) -> None:
-        """Atomically write one ``(L, H)`` tensor to disk.
+        """Atomically write one cached tensor to disk.
+
+        Expected shape: ``(L, H)`` when ``pool_time=True`` (the historical
+        contract — encoder output mean-pooled across time) OR ``(L, T, H)``
+        when ``pool_time=False`` (frame-level cache for keep-time probes).
 
         Stored as fp32 regardless of the input dtype — the 2× disk vs fp16
-        is negligible at our scale (~96 KB/clip for OMAR-RQ) and avoids
-        any precision regression vs the un-cached baseline.
+        is negligible at our scale (~96 KB/clip pool / ~1.5 MB/clip frames
+        for MuQ-like dims) and avoids any precision regression vs the
+        un-cached baseline.
         """
-        if embedding.ndim != 2:
+        expected_ndim = 2 if self.pool_time else 3
+        if embedding.ndim != expected_ndim:
+            kind = "(L, H)" if self.pool_time else "(L, T, H)"
             raise ValueError(
-                f"EmbeddingCache.put expected (L, H) tensor; got shape {tuple(embedding.shape)}"
+                f"EmbeddingCache.put expected {kind} tensor "
+                f"(pool_time={self.pool_time}); got shape {tuple(embedding.shape)}"
             )
         emb = embedding.detach().to(torch.float32).cpu().contiguous()
         target = self.path_for(clip_id)
@@ -231,16 +261,28 @@ class EmbeddingCache:
         return all(self.has(c) for c in clip_ids)
 
     def get_batch(self, clip_ids: list[str]) -> torch.Tensor:
-        """Stack ``(L, H)`` per clip → ``(B, L, H)``."""
+        """Stack per-clip cached tensors along a new batch dim.
+
+        Returns ``(B, L, H)`` for ``pool_time=True`` caches or
+        ``(B, L, T, H)`` for ``pool_time=False`` caches. The latter
+        assumes consistent T across the batch (true once the datamodule
+        has padded / truncated to ``clip_len_target``).
+        """
         tensors = [self.get(c) for c in clip_ids]
         return torch.stack(tensors, dim=0)
 
     def put_batch(self, clip_ids: list[str], embeddings: torch.Tensor) -> None:
-        """Save ``(B, L, H)`` as one file per clip."""
-        if embeddings.ndim != 3:
+        """Save a batched tensor as one file per clip.
+
+        Expected shape: ``(B, L, H)`` for ``pool_time=True`` or
+        ``(B, L, T, H)`` for ``pool_time=False``.
+        """
+        expected_ndim = 3 if self.pool_time else 4
+        if embeddings.ndim != expected_ndim:
+            kind = "(B, L, H)" if self.pool_time else "(B, L, T, H)"
             raise ValueError(
-                f"EmbeddingCache.put_batch expected (B, L, H) tensor; got "
-                f"shape {tuple(embeddings.shape)}"
+                f"EmbeddingCache.put_batch expected {kind} tensor "
+                f"(pool_time={self.pool_time}); got shape {tuple(embeddings.shape)}"
             )
         if len(clip_ids) != embeddings.size(0):
             raise ValueError(f"clip_ids length {len(clip_ids)} != batch dim {embeddings.size(0)}")
@@ -294,6 +336,38 @@ def pipeline_signature_from_transforms(transforms: list[Any]) -> str:
         else:
             parts.append(repr(t))
     return "|".join(parts)
+
+
+def encoder_tuple_to_stacked_frames(
+    layer_outputs: tuple[torch.Tensor, ...],
+) -> torch.Tensor:
+    """Stack a tuple of ``(B, T, H_l)`` tensors → ``(B, L, T, H)``.
+
+    Frame-level analogue of :func:`encoder_tuple_to_pooled` — skips the
+    time mean-pool so the cache retains the temporal axis. Used by the
+    ``pool_time=False`` cache-miss path.
+
+    Assumes all layers share the same hidden dim ``H``. True for every
+    MARBLE encoder (MERT, MuQ, OMARRQ, CLaMP3, MusicFM, etc.), but
+    would break for a hypothetical encoder with per-layer-varying H.
+    """
+    return torch.stack(layer_outputs, dim=1)  # (B, L, T, H)
+
+
+def stacked_frames_to_layer_tuple(
+    stacked: torch.Tensor,
+) -> tuple[torch.Tensor, ...]:
+    """Split ``(B, L, T, H)`` → tuple of ``L × (B, T, H)`` per layer.
+
+    Frame-level analogue of :func:`stacked_to_layer_tuple`. Called by
+    the ``pool_time=False`` cache-hit path so downstream code receives
+    the same per-layer shape as a fresh encoder forward.
+    """
+    if stacked.ndim != 4:
+        raise ValueError(
+            f"stacked_frames_to_layer_tuple expected (B, L, T, H); got {tuple(stacked.shape)}"
+        )
+    return tuple(stacked[:, i, :, :] for i in range(stacked.shape[1]))
 
 
 def stacked_to_layer_tuple(stacked: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -356,6 +430,12 @@ class EmbeddingCacheMixin:
     _cache: EmbeddingCache | None
     _cache_init_attempted: bool
     cache_embeddings: bool
+    # When False, the cache stores per-frame (L, T, H) embeddings instead of
+    # the default time-mean-pooled (L, H). Required for any probe whose
+    # decoder consumes the time axis (MLPDecoderKeepTime). Defaults to True
+    # so existing clip-level configs are unaffected. Hosts set this in
+    # their __init__ alongside cache_embeddings.
+    cache_pool_time: bool
     sample_rate: int | float
     encoder: Any
 
@@ -375,6 +455,7 @@ class EmbeddingCacheMixin:
         self._cache_init_attempted = True
         if not getattr(self, "cache_embeddings", False):
             return
+        pool_time = bool(getattr(self, "cache_pool_time", True))
         encoder_slug, task_name = self._derive_cache_slugs()
         model_id = getattr(self.encoder, "HUGGINGFACE_MODEL_NAME", encoder_slug)
         sr = int(getattr(self.encoder, "sampling_rate", self.sample_rate))
@@ -385,16 +466,19 @@ class EmbeddingCacheMixin:
             sample_rate=sr,
             clip_seconds=clip_seconds,
             pipeline_signature=pipeline_sig,
+            pool_time=pool_time,
         )
         self._cache = EmbeddingCache(
             encoder_slug=encoder_slug,
             task_name=task_name,
             config_hash=config_hash,
+            pool_time=pool_time,
             metadata={
                 "encoder_model_id": str(model_id),
                 "sample_rate": sr,
                 "clip_seconds": float(clip_seconds),
                 "pipeline_signature": pipeline_sig,
+                "pool_time": pool_time,
             },
         )
 
@@ -454,11 +538,16 @@ class EmbeddingCacheMixin:
         """
         self._ensure_cache()
         use_cache = self._cache is not None and clip_ids is not None
+        pool_time = bool(use_cache and self._cache.pool_time)
 
         if use_cache and self._cache.has_all(clip_ids):
-            cached = self._cache.get_batch(clip_ids).to(x.device)  # (B, L, H)
+            cached = self._cache.get_batch(clip_ids).to(x.device)
             self._cache.maybe_log(hit=True, n_clips=len(clip_ids))
-            return stacked_to_layer_tuple(cached)
+            if pool_time:
+                # cached shape: (B, L, H) — historical contract
+                return stacked_to_layer_tuple(cached)
+            # cached shape: (B, L, T, H) — frame-level
+            return stacked_frames_to_layer_tuple(cached)
 
         # Miss path — run encoder, optionally persist.
         layer_outputs = self.encoder(x)
@@ -471,10 +560,16 @@ class EmbeddingCacheMixin:
         if hasattr(layer_outputs, "hidden_states"):
             layer_outputs = layer_outputs.hidden_states
         if use_cache:
-            pooled = encoder_tuple_to_pooled(layer_outputs)  # (B, L, H)
-            self._cache.put_batch(clip_ids, pooled)
+            if pool_time:
+                pooled = encoder_tuple_to_pooled(layer_outputs)  # (B, L, H)
+                self._cache.put_batch(clip_ids, pooled)
+                self._cache.maybe_log(hit=False, n_clips=len(clip_ids))
+                return stacked_to_layer_tuple(pooled)
+            # Frame-level: stack without pooling, keep all T frames.
+            stacked = encoder_tuple_to_stacked_frames(layer_outputs)  # (B, L, T, H)
+            self._cache.put_batch(clip_ids, stacked)
             self._cache.maybe_log(hit=False, n_clips=len(clip_ids))
-            return stacked_to_layer_tuple(pooled)
+            return stacked_frames_to_layer_tuple(stacked)
         return layer_outputs
 
     # ── audio-I/O bypass injection ───────────────────────────────────────

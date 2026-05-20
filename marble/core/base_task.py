@@ -46,6 +46,7 @@ class BaseTask(LightningModule, EmbeddingCacheMixin, ABC):
         sample_rate: int | None = None,
         use_ema: bool = False,
         cache_embeddings: bool = False,
+        cache_pool_time: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -77,8 +78,14 @@ class BaseTask(LightningModule, EmbeddingCacheMixin, ABC):
                     setattr(self, f"{split}_metrics", mc)
 
         # Per-clip embedding cache (lazy-built on first forward via
-        # _ensure_cache from the mixin).
+        # _ensure_cache from the mixin). cache_pool_time controls the
+        # cached tensor shape: True (default) stores time-mean-pooled
+        # (L, H) — correct for any probe with TimeAvgPool. False stores
+        # the full (L, T, H) — required for keep-time / frame-level
+        # probes (MLPDecoderKeepTime). See
+        # docs/embedding_cache_correctness.md §9 for the trade-off.
         self.cache_embeddings = bool(cache_embeddings)
+        self.cache_pool_time = bool(cache_pool_time)
         self._init_cache_state()
 
     def setup(self, stage: str | None = None) -> None:

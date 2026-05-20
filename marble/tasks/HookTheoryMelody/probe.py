@@ -42,39 +42,52 @@ from torchmetrics import Metric, MetricCollection
 
 from marble.core.base_task import BaseTask
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Task
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class ProbeAudioTask(BaseTask):
-    """Frame-level melody pitch-classification probe."""
+    """Frame-level melody pitch-classification probe.
+
+    Inherits training_step / validation_step from BaseTask (which already
+    handle the 3-tuple or 4-tuple batch shape via _unpack_batch and pass
+    clip_ids through to forward for cache lookups). Overrides test_step
+    only to skip the loss computation; the frame-level metrics use the
+    raw logits directly.
+    """
 
     def test_step(self, batch, batch_idx: int):
-        x, y, paths = batch
-        logits = self(x)
+        # Use the same unpack helper the parent class uses so this works
+        # whether the datamodule emits the legacy 3-tuple
+        # (waveform, labels, path) or the new 4-tuple
+        # (waveform, labels, path, clip_id). clip_ids are forwarded to
+        # `self(...)` so the embedding cache (when enabled with
+        # cache_pool_time=False) can short-circuit the encoder pass.
+        from marble.core.base_task import _unpack_batch
+
+        x, y, _paths, clip_ids = _unpack_batch(batch)
+        logits = self(x, clip_ids=list(clip_ids) if clip_ids is not None else None)
         mc: MetricCollection = getattr(self, "test_metrics", None)
         if mc is not None:
             metrics_out = mc(logits, y)
-            self.log_dict(metrics_out, prog_bar=True, on_step=False,
-                          on_epoch=True, sync_dist=True)
+            self.log_dict(metrics_out, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Shared helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _crop_to_min_t(logits: torch.Tensor, targets: torch.Tensor, tol: int):
     """Align logits/targets along the time axis (within ``tol`` frames)."""
     B, T_l, C = logits.shape
     B_t, T_t = targets.shape
-    if B != B_t:
+    if B_t != B:
         raise ValueError(f"Batch mismatch: logits B={B} targets B={B_t}")
     diff = abs(T_l - T_t)
     if diff > tol:
-        raise ValueError(
-            f"Time dim mismatch too large: |{T_l} - {T_t}| = {diff} > tol ({tol})"
-        )
+        raise ValueError(f"Time dim mismatch too large: |{T_l} - {T_t}| = {diff} > tol ({tol})")
     T_min = min(T_l, T_t)
     if T_l != T_min:
         logits = logits[:, :T_min, :]
@@ -86,6 +99,7 @@ def _crop_to_min_t(logits: torch.Tensor, targets: torch.Tensor, tol: int):
 # ──────────────────────────────────────────────────────────────────────────────
 # Loss
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class MelodyCrossEntropyLoss(nn.Module):
     """Masked cross-entropy for frame-level pitch labels.
@@ -103,9 +117,9 @@ class MelodyCrossEntropyLoss(nn.Module):
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         logits, targets = _crop_to_min_t(logits, targets, self.time_dim_mismatch_tol)
-        flat_logits  = logits.reshape(-1, logits.size(-1))
+        flat_logits = logits.reshape(-1, logits.size(-1))
         flat_targets = targets.reshape(-1)
-        valid_mask   = flat_targets != self.ignore_index
+        valid_mask = flat_targets != self.ignore_index
         if valid_mask.sum() == 0:
             return torch.tensor(0.0, device=logits.device)
         return self.ce(flat_logits[valid_mask], flat_targets[valid_mask])
@@ -114,6 +128,7 @@ class MelodyCrossEntropyLoss(nn.Module):
 # ──────────────────────────────────────────────────────────────────────────────
 # Metrics
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class RawPitchAccuracy(Metric):
     """Frame-level top-1 pitch accuracy on labelled frames.
@@ -134,18 +149,18 @@ class RawPitchAccuracy(Metric):
         self.time_dim_mismatch_tol = time_dim_mismatch_tol
         self.ignore_index = ignore_index
         self.add_state("correct", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
-        self.add_state("total",   default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
 
     def update(self, logits: torch.Tensor, targets: torch.Tensor):
         logits, targets = _crop_to_min_t(logits, targets, self.time_dim_mismatch_tol)
-        flat_logits  = logits.reshape(-1, logits.size(-1))
+        flat_logits = logits.reshape(-1, logits.size(-1))
         flat_targets = targets.reshape(-1)
-        valid_mask   = flat_targets != self.ignore_index
+        valid_mask = flat_targets != self.ignore_index
         if valid_mask.sum() == 0:
             return
         preds = torch.argmax(flat_logits[valid_mask], dim=-1)
         self.correct += (preds == flat_targets[valid_mask]).sum()
-        self.total   += valid_mask.sum()
+        self.total += valid_mask.sum()
 
     def compute(self) -> torch.Tensor:
         if self.total == 0:
@@ -171,19 +186,19 @@ class RawChromaAccuracy(Metric):
         self.time_dim_mismatch_tol = time_dim_mismatch_tol
         self.ignore_index = ignore_index
         self.add_state("correct", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
-        self.add_state("total",   default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
+        self.add_state("total", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
 
     def update(self, logits: torch.Tensor, targets: torch.Tensor):
         logits, targets = _crop_to_min_t(logits, targets, self.time_dim_mismatch_tol)
-        flat_logits  = logits.reshape(-1, logits.size(-1))
+        flat_logits = logits.reshape(-1, logits.size(-1))
         flat_targets = targets.reshape(-1)
-        valid_mask   = flat_targets != self.ignore_index
+        valid_mask = flat_targets != self.ignore_index
         if valid_mask.sum() == 0:
             return
         preds = torch.argmax(flat_logits[valid_mask], dim=-1)
         # Chroma equivalence: pitch class only.
         self.correct += ((preds % 12) == (flat_targets[valid_mask] % 12)).sum()
-        self.total   += valid_mask.sum()
+        self.total += valid_mask.sum()
 
     def compute(self) -> torch.Tensor:
         if self.total == 0:

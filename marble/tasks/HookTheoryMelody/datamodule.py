@@ -11,6 +11,7 @@ from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
+from marble.utils.emb_cache import make_clip_id
 
 
 class _HookTheoryMelodyDataset(Dataset):
@@ -60,6 +61,13 @@ class _HookTheoryMelodyDataset(Dataset):
                 f"that divides 1/label_freq cleanly (e.g. 15.0 @ 25 Hz = 375 frames)."
             )
 
+        # Embedding-cache audio-I/O bypass. Stays None unless the host task
+        # (with cache_embeddings=true, cache_pool_time=false) injects
+        # `cache_check_fn = cache.has` during setup. On a hit we return a
+        # dummy waveform — the encoder pass is short-circuited by the
+        # mixin and the cached (L, T, H) is used instead.
+        self.cache_check_fn = None
+
         # Load metadata
         with open(jsonl) as f:
             self.meta: list[dict] = [json.loads(line) for line in f]
@@ -103,14 +111,29 @@ class _HookTheoryMelodyDataset(Dataset):
 
     def __getitem__(self, idx: int):
         """
-        Returns:
+        Returns a 4-tuple:
             waveform: Tensor (channels, clip_len_target)
             melody_labels: Tensor(shape=(label_len,), dtype=torch.long)
             audio_path: str
+            clip_id: str  # for embedding-cache lookup; safe to ignore if
+                          # cache_embeddings is False
         """
         file_idx, slice_idx, orig_sr, orig_clip_frames = self.index_map[idx]
         ytid = self.yt_ids[file_idx]
         audio_path = os.path.join(self.audio_dir, f"{ytid}.mp3")
+        clip_id = make_clip_id(audio_path, slice_idx)
+
+        # Cache hit: skip audio decode AND label compute. The probe's
+        # forward path will load the (L, T, H) embedding from disk via
+        # the cache mixin. The waveform is unused on hits but must have
+        # the right shape so the DataLoader's default collate doesn't
+        # complain. Labels still need to be real — they go through
+        # the loss + metrics, not through the encoder.
+        cache_check = getattr(self, "cache_check_fn", None)
+        if cache_check is not None and cache_check(clip_id):
+            waveform = torch.zeros(self.channels, self.clip_len_target)
+            melody_labels = self._compute_labels(file_idx, slice_idx, orig_sr, orig_clip_frames)
+            return waveform, melody_labels, audio_path, clip_id
 
         # 1. Load waveform
         waveform = self._load_and_preprocess(
@@ -149,7 +172,34 @@ class _HookTheoryMelodyDataset(Dataset):
             melody_labels[start_idx:end_idx] = midi_pitch
 
         melody_labels = torch.from_numpy(melody_labels)
-        return waveform, melody_labels, audio_path
+        return waveform, melody_labels, audio_path, clip_id
+
+    def _compute_labels(
+        self, file_idx: int, slice_idx: int, orig_sr: int, orig_clip_frames: int
+    ) -> torch.Tensor:
+        """Build the frame-level pitch label vector for one slice.
+
+        Extracted from the main __getitem__ body so the cache-hit path
+        can reuse it without re-decoding audio.
+        """
+        beats, times = self.alignments[file_idx]
+        beat_to_time_fn = interp1d(beats, times, kind="linear", fill_value="extrapolate")
+        clip_start_time = slice_idx * (orig_clip_frames / orig_sr)
+        label_len = int(self.label_freq * self.clip_seconds)
+        labels = -1 * np.ones(label_len, dtype=np.int64)
+        for note in self.melodies[file_idx]:
+            onset_sec = float(beat_to_time_fn(float(note["onset"])))
+            offset_sec = float(beat_to_time_fn(float(note["offset"])))
+            midi_pitch = int(note["pitch_class"] + (self.MELODY_OCTAVE + int(note["octave"])) * 12)
+            midi_pitch = max(0, min(127, midi_pitch))
+            rel_onset = onset_sec - clip_start_time
+            rel_offset = offset_sec - clip_start_time
+            start_idx = max(0, int(np.floor(rel_onset * self.label_freq)))
+            end_idx = min(label_len, int(np.ceil(rel_offset * self.label_freq)))
+            if start_idx >= label_len or end_idx <= 0:
+                continue
+            labels[start_idx:end_idx] = midi_pitch
+        return torch.from_numpy(labels)
 
     def _load_and_preprocess(
         self, path: str, slice_idx: int, orig_sr: int, orig_clip_frames: int
