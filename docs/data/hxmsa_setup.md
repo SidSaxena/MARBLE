@@ -44,16 +44,22 @@ sign-in, but a small fraction of tracks (~5–10%) hit bot-check or
 age-gate walls. Exporting cookies once removes both issues:
 
 ```bash
-# One-time: export Firefox cookies to a portable file
-python -m yt_dlp --cookies-from-browser firefox \
-                 --cookies cookies.txt \
-                 --skip-download \
-                 "https://youtube.com/watch?v=iBHNgV6_znU"
+# One-time: export browser cookies to a portable file
+uv run python scripts/data/export_youtube_cookies.py --browser firefox
+# writes ./cookies.txt
 ```
 
-Then pass `--cookies-file cookies.txt` to the build script. Same as the
-SHS100K workflow — same caveats: close Firefox before exporting to
-avoid the cookie-db lock error.
+Then pass `--cookies-file cookies.txt` to the build script.
+
+> **Don't use the older `yt-dlp --cookies-from-browser firefox
+> --cookies cookies.txt --skip-download URL` recipe.** yt-dlp's
+> `--cookies FILE` flag is bidirectional: it reads the file at
+> startup AND writes at exit. If a stale `cookies.txt` from a
+> previous attempt is present, yt-dlp aborts on the read step
+> ("`cookies.txt` does not look like a Netscape format cookies
+> file") before it ever gets to writing. Our helper sidesteps the
+> chicken-and-egg by deleting any stale file first and using
+> yt-dlp's Python API directly.
 
 ---
 

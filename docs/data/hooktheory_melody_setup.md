@@ -113,6 +113,18 @@ Notes:
 - `--cookies-from-browser firefox` — boosts success rate on
   age-restricted videos. Swap to `chrome` / `edge` if Firefox isn't
   logged into YouTube, or drop the flag entirely.
+- For parallel runs (or to share cookies across machines), export
+  to a portable file first and use `--cookies cookies.txt` instead:
+  ```bash
+  uv run python scripts/data/export_youtube_cookies.py --browser firefox
+  # then in the yt-dlp command above, replace
+  #     --cookies-from-browser firefox \
+  # with
+  #     --cookies cookies.txt \
+  ```
+  Do **not** call yt-dlp with `--cookies-from-browser` + `--cookies FILE`
+  together — the file is bidirectional and aborts on stale content.
+  Use the helper above.
 - `--ignore-errors` — keeps the batch alive across per-video failures.
 - Ctrl-C + re-run is safe; the archive file is the resume marker.
 

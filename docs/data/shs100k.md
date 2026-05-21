@@ -10,9 +10,17 @@ MARBLE uses the test split (zero-shot retrieval, `max_epochs=0`).
 uv run python scripts/data/download_shs100k.py --browser firefox
 ```
 
-YouTube cookies (extracted via yt-dlp from Firefox/Chrome/Edge) are
-required because some videos are age-gated or region-locked.
-`--cookies-file cookies.txt` works if you've already exported them.
+YouTube cookies (extracted from Firefox/Chrome/Edge) are required
+because some videos are age-gated or region-locked. Export once:
+
+```bash
+uv run python scripts/data/export_youtube_cookies.py --browser firefox
+```
+
+Then pass `--cookies-file cookies.txt` to the downloader. The helper
+script handles the bug where yt-dlp's `--cookies FILE` flag aborts on
+a stale Netscape file from a previous run; do not call yt-dlp
+directly with `--cookies-from-browser` + `--cookies` together.
 
 Result:
 

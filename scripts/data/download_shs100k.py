@@ -49,9 +49,16 @@ Usage
 
   # RECOMMENDED for parallel workers: export cookies to file first, then use it.
   # (parallel --cookies-from-browser access can cause Firefox DB lock errors)
-  python -m yt_dlp --cookies-from-browser firefox --cookies cookies.txt \\
-          --skip-download "https://youtube.com/watch?v=rblt2EtFfC4"
+  python scripts/data/export_youtube_cookies.py --browser firefox  # writes ./cookies.txt
   python scripts/data/download_shs100k.py --cookies-file cookies.txt --workers 4
+
+  # WHY NOT `yt-dlp --cookies-from-browser firefox --cookies cookies.txt ...`?
+  # That looks like the canonical export command but it's broken: yt-dlp's
+  # --cookies FILE flag is bidirectional (reads-then-writes), so a stale or
+  # malformed cookies.txt from any previous run blocks the fresh write with
+  # "ERROR: 'cookies.txt' does not look like a Netscape format cookies file".
+  # export_youtube_cookies.py deletes any stale file first, uses the yt-dlp
+  # Python API, and writes a guaranteed-Netscape file.
 
   # Close Edge/Chrome before using them (Chromium locks the cookie DB)
   python scripts/data/download_shs100k.py --browser edge --workers 2
@@ -343,9 +350,7 @@ def _download(
             log.warning(
                 f"[bot-check] {ytid}: YouTube requires sign-in.\n"
                 "  Fix: export cookies once, then use --cookies-file:\n"
-                "    python -m yt_dlp --cookies-from-browser firefox "
-                "--cookies cookies.txt --skip-download "
-                '"https://youtube.com/watch?v=rblt2EtFfC4"\n'
+                "    python scripts/data/export_youtube_cookies.py --browser firefox\n"
                 "    python scripts/data/download_shs100k.py --cookies-file cookies.txt"
             )
         elif "No video formats found" in err or "Signature solving failed" in err:
@@ -600,9 +605,7 @@ def main():
             log.warning(
                 f"Using --browser with {args.workers} workers can cause Firefox "
                 "cookie DB locking.  If you see cookie errors, export once:\n"
-                "  python -m yt_dlp --cookies-from-browser firefox "
-                "--cookies cookies.txt --skip-download "
-                '"https://youtube.com/watch?v=rblt2EtFfC4"\n'
+                "  python scripts/data/export_youtube_cookies.py --browser firefox\n"
                 "  python scripts/data/download_shs100k.py --cookies-file cookies.txt "
                 f"--workers {args.workers}"
             )
@@ -693,9 +696,8 @@ def main():
                         "This almost always means one of:\n"
                         "  1. yt-dlp is outdated  →  run: python -m yt_dlp -U\n"
                         "  2. Missing / expired auth  →  export fresh cookies:\n"
-                        "       python -m yt_dlp --cookies-from-browser firefox "
-                        "--cookies cookies.txt --skip-download "
-                        '"https://youtube.com/watch?v=rblt2EtFfC4"\n'
+                        "       python scripts/data/export_youtube_cookies.py "
+                        "--browser firefox\n"
                         "       python scripts/data/download_shs100k.py "
                         "--cookies-file cookies.txt\n"
                         "  3. Add --verbose-errors to see the actual yt-dlp output.\n",

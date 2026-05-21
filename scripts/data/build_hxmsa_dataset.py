@@ -37,9 +37,14 @@ Prerequisites
   git      — for cloning the upstream annotation repo
 
   Cookies (one-time, recommended for fewer bot-checks):
-    python -m yt_dlp --cookies-from-browser firefox \\
-                     --cookies cookies.txt --skip-download \\
-                     "https://youtube.com/watch?v=iBHNgV6_znU"
+    python scripts/data/export_youtube_cookies.py --browser firefox
+
+  (NOTE: do NOT use the older `yt-dlp --cookies-from-browser firefox
+  --cookies cookies.txt --skip-download URL` pattern — yt-dlp's
+  --cookies FILE flag is bidirectional and aborts on a stale/malformed
+  file with "'cookies.txt' does not look like a Netscape format
+  cookies file". The helper above deletes any stale file first +
+  uses yt-dlp's Python API to write a guaranteed-valid Netscape file.)
 
 Usage
 -----
