@@ -132,6 +132,62 @@ def _has_test_metrics(summary_path: Path) -> bool:
     return any(k.startswith("test/") for k in data)
 
 
+def _checkpoint_dirpath_from_config(cfg_path: str | Path) -> Path | None:
+    """Parse the YAML and return the ModelCheckpoint.dirpath, or None.
+
+    Shared by :func:`_resume_args_for_config` (which looks for
+    ``last.ckpt`` here) and :func:`_delete_last_ckpt` (which deletes
+    ``last.ckpt`` from here after a successful fit). Single source of
+    truth for "where this config's checkpoints live."
+    """
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    callbacks = (cfg or {}).get("trainer", {}).get("callbacks", []) or []
+    for cb in callbacks:
+        if not isinstance(cb, dict):
+            continue
+        if "ModelCheckpoint" not in cb.get("class_path", ""):
+            continue
+        dirpath = (cb.get("init_args") or {}).get("dirpath")
+        if dirpath:
+            return Path(dirpath)
+    return None
+
+
+def _delete_last_ckpt(cfg_path: str | Path) -> None:
+    """Delete ``last.ckpt`` from this config's ModelCheckpoint dirpath,
+    if present.
+
+    Called after a successful fit (where ``last.ckpt`` was the resume
+    pointer but is now obsolete — the run completed normally, and the
+    test stage will load ``best.ckpt``, not last). Saves disk on
+    multi-layer sweeps where each layer would otherwise pile up its
+    own per-epoch checkpoint forever. Idempotent + best-effort: a
+    missing file or permission error is logged but doesn't raise.
+    """
+    dirpath = _checkpoint_dirpath_from_config(cfg_path)
+    if dirpath is None:
+        return
+    last_ckpt = dirpath / "last.ckpt"
+    if not last_ckpt.exists():
+        return
+    try:
+        size_mb = last_ckpt.stat().st_size / (1024 * 1024)
+        last_ckpt.unlink()
+        # Lightning sometimes also writes ``last-v1.ckpt``, ``last-v2.ckpt``,
+        # … if multiple ModelCheckpoint callbacks fight over the same dir.
+        # Sweep our standard configs only ever produce one, but clean up
+        # the variants too defensively.
+        for stale in dirpath.glob("last-v*.ckpt"):
+            stale.unlink(missing_ok=True)
+        print(f"  cleanup: removed {last_ckpt} ({size_mb:.0f} MB)")
+    except OSError as e:
+        print(f"  cleanup: could not remove {last_ckpt}: {e}", file=sys.stderr)
+
+
 def _resume_args_for_config(cfg_path: str | Path) -> list[str]:
     """Return ``["--ckpt_path", "<path>"]`` if a ``last.ckpt`` exists for
     this config's ModelCheckpoint dirpath, otherwise an empty list.
@@ -149,25 +205,12 @@ def _resume_args_for_config(cfg_path: str | Path) -> list[str]:
     ModelCheckpoint is wired, we return [] silently and the caller
     proceeds as a fresh run.
     """
-    try:
-        with open(cfg_path, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError):
+    dirpath = _checkpoint_dirpath_from_config(cfg_path)
+    if dirpath is None:
         return []
-    callbacks = (cfg or {}).get("trainer", {}).get("callbacks", []) or []
-    for cb in callbacks:
-        if not isinstance(cb, dict):
-            continue
-        cp = cb.get("class_path", "")
-        if "ModelCheckpoint" not in cp:
-            continue
-        dirpath = (cb.get("init_args") or {}).get("dirpath")
-        if not dirpath:
-            continue
-        last_ckpt = Path(dirpath) / "last.ckpt"
-        if last_ckpt.exists() and last_ckpt.stat().st_size > 1000:
-            return ["--ckpt_path", str(last_ckpt)]
-        break  # found the ModelCheckpoint, no resume file → no args
+    last_ckpt = dirpath / "last.ckpt"
+    if last_ckpt.exists() and last_ckpt.stat().st_size > 1000:
+        return ["--ckpt_path", str(last_ckpt)]
     return []
 
 
@@ -302,6 +345,11 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
             cmd += _resume_args_for_config(cfg)
         print(f"$ {' '.join(cmd)}", flush=True)
         rc = subprocess.run(cmd, env=_subprocess_env()).returncode
+        if rc == 0 and stage == "fit":
+            # Fit succeeded — last.ckpt is no longer needed. Drop it so
+            # disk doesn't accumulate one per (encoder × task) sweep.
+            # best.ckpt stays for the test stage to load.
+            _delete_last_ckpt(cfg)
         if rc != 0:
             if args.continue_on_meanall_failure:
                 print(
@@ -494,6 +542,10 @@ def _run_one_layer(
                 rc, _ = _stream_subprocess(fit_cmd, layer, log_file)
                 if rc != 0:
                     raise subprocess.CalledProcessError(rc, fit_cmd)
+            # Fit succeeded (either subprocess.run check=True returned cleanly,
+            # or the streaming path's rc was 0 above). last.ckpt was the
+            # resume pointer; now obsolete. best.ckpt stays for the test stage.
+            _delete_last_ckpt(cfg)
 
         # ── Test ─────────────────────────────────────────────────────────────
         test_cmd = [
