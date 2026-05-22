@@ -136,7 +136,7 @@ Every v2 encoder calls `self.model.eval()` in `__init__` when
 `train_mode='freeze'`. The intent is clear: a frozen encoder should run
 with dropout off and BatchNorm in eval mode. But this guarantee was
 silently broken by a propagation bug for the entire lifetime of v2 up
-to commit `[hash-TBD]`:
+to commit `eed4743`:
 
 - The encoder is registered as a child of the `BaseTask` LightningModule
   (`marble/core/base_task.py:59`).
@@ -154,7 +154,7 @@ to commit `[hash-TBD]`:
 - Cache writes during a `fit` run captured train-mode dropout noise into
   the cache file, frozen forever.
 
-**The fix** (commit `[hash-TBD]`): each encoder overrides `train()` to
+**The fix** (commit `eed4743`): each encoder overrides `train()` to
 re-apply `.eval()` to its frozen submodule(s) after the propagation:
 
 ```python
@@ -176,11 +176,11 @@ invariant across every encoder.
   script explicitly does `task.eval()` + `torch.no_grad()`
   (`scripts/embeddings/extract.py:283`), and works around the
   Lightning-propagation issue because it doesn't run inside a Trainer.
-- ❌ Caches written by `fit` runs BEFORE commit `[hash-TBD]` — encode
+- ❌ Caches written by `fit` runs BEFORE commit `eed4743` — encode
   train-mode dropout noise. Still usable (the probe converged against
   them) but won't match a fresh extraction byte-for-byte. The user has
   opted to keep these as-is; numbers from those runs stand.
-- ✅ Caches written by `fit` runs AFTER commit `[hash-TBD]` — clean.
+- ✅ Caches written by `fit` runs AFTER commit `eed4743` — clean.
 
 **Detection:** if you re-extract embeddings for an existing cache_hash
 and the new values differ from the cached ones, the cached values were
