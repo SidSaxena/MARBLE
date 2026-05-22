@@ -6,6 +6,103 @@ cost estimate, and (d) what would trigger us to actually do it.
 
 ---
 
+## Research scope
+
+The probing work here serves two goals, in priority order:
+
+1. **Leitmotif analysis** in video-game and film music — does a frozen
+   self-supervised encoder layer expose a representation that lets
+   you recognise a recurring motif under timbral / orchestration /
+   register variation?
+2. **Structure analysis** in video-game and film music — boundary
+   detection + functional-segment labelling (intro / loop / bridge / …)
+   on game and film soundtracks specifically.
+
+Everything else (emotion recognition, generic tagging, genre, speech,
+broad pop classification) is **out of scope** for the active sweep
+queue. We keep configs for those tasks for future reuse but don't
+allocate GPU-time on them right now.
+
+---
+
+## Sweep status by priority (2026-05-22 snapshot)
+
+WandB completion verified across all 1,292 finished runs in the
+`MARBLE` project. "Complete" below means at least one encoder has
+test/* metrics for ≥1 layer; "fully complete" means the canonical
+priority encoder set (MERT-95M, MuQ, OMAR-RQ, CLaMP3) all have
+their full per-layer + meanall runs.
+
+### Tier A — top priority, in-flight or about to start
+
+| Task | Domain | Status | Next action |
+|---|---|---|---|
+| **HookTheoryMelody** | frame-level pitch / melody on real songs (leitmotif foundation) | 🚧 in-flight on PC (MuQ ~36 h in); zero WandB completions yet | Let PC sweep finish. Then MERT-95M + OMARRQ. Per [data/hooktheory_melody_setup.md](data/hooktheory_melody_setup.md). |
+| **NSynth** | isolated-note pitch (cleanest pitch foundation; meaningful for motif identity) | 0 / 4 priority encoders complete | Configs exist for all 4. Data on Modal volume: ❌ missing. Run `modal run modal_marble.py::download_marble_datasets` (NSynth is in the m-a-p set) then sweep. |
+
+### Tier B — structure analysis (audio + symbolic + multimodal)
+
+| Task | Domain | Status | Next action |
+|---|---|---|---|
+| **HookTheoryStructure** | Western pop functional segments | ✅ all 4 audio encoders complete (CLaMP3, MERT-95M, MuQ, OMARRQ × 13–24 layers + meanall) | MERT-330M optional; analysis already written ([layer_analysis.md](layer_analysis.md)) |
+| **VGMIDITVar** | VGM theme-variation retrieval (cover-style baseline for game music) | ✅ all 7 audio + symbolic encoders complete | Done — first-author reference for the leitmotif story |
+| **VGMIDITVar-leitmotif** | VGM leitmotif (recurring-motif slice of VGMIDITVar) | ✅ CLaMP3 audio + symbolic + MERT-95M + MuQ + OMARRQ complete | Optional: MERT-330M, OMARRQ-fsq. Analysis: [leitmotif_findings.md](leitmotif_findings.md) |
+| **VGMIDITVar-multisf** | multi-soundfont VGM (timbre-invariance test for motif recognition) | ✅ CLaMP3 + MERT-95M/330M + MuQ + OMARRQ complete | Optional: OMARRQ-fsq |
+| **SuperMarioStructure** | game-music functional segments (intro/loop/bridge/stinger) — symbolic ✅, audio missing | ⚠️ CLaMP3-symbolic complete (13 layers + meanall); audio path 0/4 | Audio sweep: needs the audio_source uploaded to Modal volume + MERT-95M/MuQ/OMARRQ/CLaMP3-audio configs. See [supermario_findings.md](supermario_findings.md) |
+| **HXMSA** | Harmonix Set structure (general pop) — comparison baseline for game-music structure | 0 / 4 encoders complete | New `setup_hxmsa` on Modal — needs yt-dlp + cookies.txt on volume. Per [data/hxmsa_setup.md](data/hxmsa_setup.md). |
+
+### Tier C — supporting context (foundational signals)
+
+| Task | Why relevant | Status | Next action |
+|---|---|---|---|
+| **HookTheoryKey** | harmonic context (key/mode) helps interpret structural functions in film music | ⚠️ partial: CLaMP3 (3L), MuQ (1L) — abandoned mid-sweep | Decide: finish, or de-prioritise (HookTheoryStructure already covers this signal indirectly) |
+| **Covers80** | cover-song retrieval — generic-pop melodic-identity baseline, calibrates SHS100K + VGMIDITVar retrieval numbers | ✅ all 6 encoders complete (CLaMP3, MERT-95M/330M, MuQ, OMARRQ + OMARRQ-fsq) | Done |
+| **SHS100K** | cover-song retrieval — melodic-identity proxy at scale, dual-use for leitmotif validation | ✅ all 5 priority encoders complete (CLaMP3, MERT-95M/330M, MuQ, OMARRQ) | Done |
+| **Chords1217** | frame-level chord recognition — harmonic-progression signal for structure | 0 / any encoder | Tier C, not blocking. Frame-level cache off (correctly). Worth one MERT-95M baseline if cycles available. |
+| **GTZANBeatTracking** | downbeat detection helps structural inference | ⚠️ OMARRQ-fsq only, 4 layers (partial) | Tier C. Defer unless we want a strong downbeat baseline. |
+| **GS** (GiantSteps Key) | global key as alternate to HookTheoryKey | ✅ CLaMP3, MERT-95M, OMARRQ-fsq complete | Done for our purposes |
+
+### Out of scope (have configs, will not sweep)
+
+EMO (emotion), GTZANGenre, MTG{Genre, Instrument, Mood, Top50}, MTT
+(general tagging), LibriSpeechASR (speech). Configs stay in the tree
+for future re-use but no GPU-time is allocated.
+
+### Potential additions (not implemented yet)
+
+From [`structure_datasets_survey.md`](structure_datasets_survey.md),
+ordered by fit to the leitmotif + VGM/film scope:
+
+1. **BPS-Motif** — direct leitmotif analogue in Beethoven sonatas (263 motifs across 32 sonatas). Closest dataset to the project's research question outside of VGMIDITVar-leitmotif. ~6 h to implement.
+2. **NES-VMDB** — 474 hours of VGM (largest VGM dataset). Strongest scaling test for VGM-specific layer profiles. ~8 h.
+3. **SongFormBench** (Oct 2025) — expert-verified general-pop structure (300 tracks). SOTA benchmark for boundary detection. Worth a comparison point for HXMSA. ~3 h.
+4. **TAVERN** — classical theme + variation parallel to VGMIDITVar. Tests whether the encoder behaviour generalises from VGM to classical theme-variation. ~5 h.
+5. **BPSD** — Beethoven cover-style dataset; classical analogue to SHS100K + the VGMIDITVar retrieval task. Tests retrieval generalisation from VGM to classical. ~6 h.
+6. **JSD** (Jazz Structure Dataset) — extends genre coverage; less directly relevant but useful for triangulation. ~4 h.
+
+**Lower priority for the current scope:** Raveform, Annotated
+Mozart Sonatas, YM2413-MDB, OSSL, Mozart Texture, Isophonics, RWC,
+SALAMI (mostly general-pop / broad coverage; weak fit to VGM/film
+leitmotif goals).
+
+### Data-on-Modal status (priority datasets only)
+
+| Dataset | On `marble-data` volume? | Setup function |
+|---|---|---|
+| HookTheoryMelody | ❌ missing | `setup_hooktheory_full` |
+| NSynth | ❌ missing | `_download_marble_datasets` |
+| HookTheoryStructure | ❌ missing | `setup_hooktheory_full` (rebuilds same audio) |
+| HXMSA | ❌ missing | `setup_hxmsa` (new) |
+| SuperMarioStructure | ✅ symbolic side complete; audio_source missing | `setup_supermario_structure` (new) |
+| VGMIDITVar / -leitmotif / -multisf | ❌ missing | TODO: no Modal setup function yet — local-built data needs `modal volume put` |
+| SHS100K | ✅ | `setup_shs100k_jsonl` |
+| Chords1217 | ✅ | `_download_marble_datasets` |
+| GS, Covers80, EMO, GTZAN*, MTG*, MTT | ❌ missing (mostly out of scope) | `_download_marble_datasets` covers most |
+
+For VGMIDITVar* on Modal: needs either (a) a new `setup_vgmiditvar` function ported from the local build script, or (b) one-time `modal volume put` from the local data dir. Worth adding once we run anything on Modal that needs it.
+
+---
+
 ## Done
 
 ### ✅ Per-layer embedding cache (retrieval tasks)
@@ -99,13 +196,22 @@ the 4–5h GPU cost again.
 **Cost.** ~50 LOC wrapping the existing matrix-profile script.
 **Trigger.** Next time you iterate on the leitmotifs pipeline.
 
-### 2. Frame-level task caching (deferred indefinitely)
+### 2. Frame-level task caching
 
-`HookTheoryMelody`, `GTZANBeatTracking`, `Chords1217` need the full
-`(T, H)` time-axis tensor for per-frame predictions. A cache that
-preserves time would be ~73 MB/clip for OMARRQ-25hz on 30-sec clips,
-or 500 GB+ for SHS100K. Tabled until disk budget or a more compact
-encoding makes it worth revisiting.
+**Shipped 2026-05-20** in commit `279cf41` as the `pool_time: bool`
+flag on `EmbeddingCache` + `EmbeddingCacheMixin` + `cache_pool_time`
+on `BaseTask` configs. Off-by-default (clip-level `(L, H)` stays the
+norm); set `cache_pool_time: false` alongside `cache_embeddings: true`
+to switch to the `(L, T, H)` frame-level layout. Disk cost ~1.5 MB
+per slice for MuQ at 25 Hz × 15 s × H=1024 vs ~50 KB pooled. Currently
+opted in only on the 6 HookTheoryMelody configs. See
+[embedding_cache_correctness.md §10](embedding_cache_correctness.md).
+
+Open extension: keep the cache layout but compress with fp16 / int8
+(section 3). Currently no plans to backfill cached frame-level data
+for the rest of the frame-level tasks (`GTZANBeatTracking`,
+`Chords1217`, `LibriSpeechASR`) — those are either lower priority or
+out of scope for the current focus.
 
 ### 3. Tensor compression (fp16 / int8 quantization)
 
