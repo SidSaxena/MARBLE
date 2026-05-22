@@ -22,7 +22,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.SuperMarioStructure.CLaMP3-symbolic-layers.abc/checkpoints/"
+        dirpath: "./output/probe.SuperMarioStructure.CLaMP3-symbolic-abc-layers/checkpoints/"
         filename: "best"
         save_top_k: 1
         save_last: true
@@ -45,7 +45,7 @@ trainer:
       tags: ["CLaMP3-symbolic", "SuperMarioStructure", "layer-sweep", "probe", "symbolic", "abc-input"]
       job_type: "fit"
       name: "CLaMP3-symbolic-layers-abc"
-      save_dir: "./output/probe.SuperMarioStructure.CLaMP3-symbolic-layers.abc/"
+      save_dir: "./output/probe.SuperMarioStructure.CLaMP3-symbolic-abc-layers/"
 
 
 model:

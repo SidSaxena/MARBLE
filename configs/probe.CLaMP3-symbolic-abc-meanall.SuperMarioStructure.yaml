@@ -29,7 +29,7 @@ trainer:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         # Separate ckpt dir so ABC + MIDI variants don't collide.
-        dirpath: "./output/probe.SuperMarioStructure.CLaMP3-symbolic-meanall.abc/checkpoints/"
+        dirpath: "./output/probe.SuperMarioStructure.CLaMP3-symbolic-abc-meanall/checkpoints/"
         filename: "best"
         save_top_k: 1
         save_last: true
@@ -52,7 +52,7 @@ trainer:
       tags: ["CLaMP3-symbolic", "SuperMarioStructure", "layer-meanall", "probe", "symbolic", "abc-input"]
       job_type: "fit"
       name: "CLaMP3-symbolic-meanall-abc"
-      save_dir: "./output/probe.SuperMarioStructure.CLaMP3-symbolic-meanall.abc/"
+      save_dir: "./output/probe.SuperMarioStructure.CLaMP3-symbolic-abc-meanall/"
 
 
 model:
