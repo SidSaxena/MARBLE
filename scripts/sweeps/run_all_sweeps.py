@@ -356,6 +356,25 @@ SWEEPS: list[SweepDef] = [
         num_layers=13,
         note="Key estimation | 24 classes | weighted_score | MuQ 13 layers",
     ),
+    # ── BPS-Motif — leitmotif annotations on 32 Beethoven sonata 1st movements ─
+    # Window-level binary motif identification (MNID) + within-piece within-letter
+    # motif retrieval. Symbolic-only (v1). 5-fold CV; configs default to fold0
+    # — set --data.init_args.fold_idx=N to switch. Reportable headline is the
+    # macro-average F1 / MAP across folds. See docs/data/bps_motif_setup.md.
+    SweepDef(
+        model="CLaMP3-symbolic",
+        task="BPSMotifMNID",
+        base_config="configs/probe.CLaMP3-symbolic-layers.BPSMotifMNID.yaml",
+        num_layers=13,
+        note="Motif id (bin) | 2 classes  | acc+macro_f1 | CLaMP3-symbolic 13 layers | Beethoven",
+    ),
+    SweepDef(
+        model="CLaMP3-symbolic",
+        task="BPSMotifRetrieval",
+        base_config="configs/probe.CLaMP3-symbolic-layers.BPSMotifRetrieval.yaml",
+        num_layers=13,
+        note="Motif retr.    | zero-shot  | MAP/MRR      | CLaMP3-symbolic 13 layers | Beethoven",
+    ),
     # ══════════════════════════════════════════════════════════════════════════
     # MEDIUM — frame-level tasks (many predictions per clip → slower backprop)
     # CLaMP3 excluded: variable token rate incompatible with frame-level labels
@@ -765,6 +784,13 @@ def _data_present(task: str) -> bool:
         # and slices user audio into per-segment FLACs. See
         # docs/data/supermario_setup.md.
         "SuperMarioStructure": "data/SuperMarioStructure/SuperMarioStructure.train.jsonl",
+        # BPS-Motif: build via
+        # `uv run python scripts/data/build_bps_motif_dataset.py`
+        # which clones the upstream Beethoven_motif annotations and slices
+        # per-occurrence MIDIs. 5-fold CV — we check fold0.train as the
+        # data-presence marker (all 5 folds are built in one shot).
+        "BPSMotifMNID": "data/BPS-Motif/BPSMotif.MNID.fold0.train.jsonl",
+        "BPSMotifRetrieval": "data/BPS-Motif/BPSMotif.Retrieval.fold0.test.jsonl",
     }
     path = jsonl_map.get(task)
     return path is not None and Path(path).exists()

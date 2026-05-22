@@ -758,6 +758,41 @@ def setup_supermario_structure(
 
 
 # ──────────────────────────────────────────────
+# BPS-Motif setup (Beethoven sonata leitmotif — symbolic)
+# ──────────────────────────────────────────────
+
+
+@app.function(
+    image=image,
+    volumes=VOL,
+    timeout=15 * 60,  # symbolic-only build is fast (~30 s for 32 movements)
+)
+def setup_bps_motif(max_movements: int | None = None):
+    """Build the BPS-Motif dataset on the marble-data volume.
+
+    Pipeline (mirrors scripts/data/build_bps_motif_dataset.py):
+      1. Clone Wiilly07/Beethoven_motif into data/BPS-Motif/_upstream/.
+      2. Synthesise full-movement MIDIs at 60 QPM from csv_notes/.
+      3. Slice per-occurrence + sampled-negative window MIDIs.
+      4. Emit 5-fold CV JSONLs (BPSMotif.{MNID,Retrieval}.fold{0..4}.{train,val,test}.jsonl).
+
+    Symbolic-only — no audio rendering. ~52 MB on disk after build. The
+    audio variant (probing MERT/MuQ/OMARRQ on real Beethoven recordings)
+    is a separate, deferred follow-up.
+    """
+    _chdir()
+    data_vol.reload()
+
+    out_dir = f"{WORK_DIR}/data/BPS-Motif"
+    cmd = ["python", "scripts/data/build_bps_motif_dataset.py", "--out-dir", out_dir]
+    if max_movements is not None:
+        cmd += ["--max-movements", str(max_movements)]
+    _run(cmd)
+    data_vol.commit()
+    print("BPS-Motif ready on marble-data:/BPS-Motif/")
+
+
+# ──────────────────────────────────────────────
 # Core probe runner
 # ──────────────────────────────────────────────
 

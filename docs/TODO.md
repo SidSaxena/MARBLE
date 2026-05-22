@@ -73,7 +73,7 @@ for future re-use but no GPU-time is allocated.
 From [`structure_datasets_survey.md`](structure_datasets_survey.md),
 ordered by fit to the leitmotif + VGM/film scope:
 
-1. **BPS-Motif** — direct leitmotif analogue in Beethoven sonatas (263 motifs across 32 sonatas). Closest dataset to the project's research question outside of VGMIDITVar-leitmotif. ~6 h to implement.
+1. ~~**BPS-Motif**~~ — **shipped 2026-05-22 (symbolic v1).** See [data/bps_motif_setup.md](data/bps_motif_setup.md). MNID + Retrieval probes against CLaMP3-symbolic, 5-fold CV. Audio variant deferred until user sources original Beethoven recordings.
 2. **NES-VMDB** — 474 hours of VGM (largest VGM dataset). Strongest scaling test for VGM-specific layer profiles. ~8 h.
 3. **SongFormBench** (Oct 2025) — expert-verified general-pop structure (300 tracks). SOTA benchmark for boundary detection. Worth a comparison point for HXMSA. ~3 h.
 4. **TAVERN** — classical theme + variation parallel to VGMIDITVar. Tests whether the encoder behaviour generalises from VGM to classical theme-variation. ~5 h.

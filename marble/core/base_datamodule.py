@@ -1,6 +1,7 @@
 # marble/core/base_datamodule.py
 
 import json
+import logging
 import os
 from abc import ABC, ABCMeta, abstractmethod
 
@@ -13,6 +14,8 @@ from torch.utils.data import DataLoader, Dataset
 from marble.core.utils import instantiate_from_config
 from marble.modules.transforms import AudioTransformDataset
 from marble.utils.emb_cache import make_clip_id
+
+logger = logging.getLogger(__name__)
 
 
 class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
@@ -41,7 +44,11 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
         transforms = [instantiate_from_config(cfg) for cfg in self.audio_transforms.get(stage, [])]
         if transforms:
             return AudioTransformDataset(dataset, transforms)
-        print(f"No transforms for stage '{stage}', using original dataset.")
+        # Expected for symbolic encoders (CLaMP3-symbolic, etc.) whose
+        # configs ship empty audio_transforms — they consume tokenised
+        # MIDI patches directly. Keep at debug so it doesn't clutter
+        # production logs while still being available with LOG_LEVEL=DEBUG.
+        logger.debug("No transforms for stage '%s', using original dataset.", stage)
         return dataset
 
     def setup(self, stage: str | None = None):
