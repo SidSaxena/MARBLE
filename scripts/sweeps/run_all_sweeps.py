@@ -426,47 +426,29 @@ SWEEPS: list[SweepDef] = [
     # because it consistently dominates on retrieval + classification across
     # other audio tasks; running it first surfaces the most informative
     # signal earliest if you abort the sweep partway.
+    # The sweep runner auto-discovers each per-layer config's `-meanall`
+    # sibling (see _meanall_config_for in run_sweep_local.py) and runs it
+    # first as a baseline — no need to declare meanall as a separate SweepDef.
     SweepDef(
         model="MuQ",
         task="HookTheoryMelody",
         base_config="configs/probe.MuQ-layers.HookTheoryMelody.yaml",
         num_layers=13,
-        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ 13 layers",
-    ),
-    SweepDef(
-        model="MuQ-meanall",
-        task="HookTheoryMelody",
-        base_config="configs/probe.MuQ-meanall.HookTheoryMelody.yaml",
-        num_layers=1,
-        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ meanall",
+        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | MuQ 13 layers + meanall",
     ),
     SweepDef(
         model="MERT-v1-95M",
         task="HookTheoryMelody",
         base_config="configs/probe.MERT-v1-95M-layers.HookTheoryMelody.yaml",
         num_layers=13,
-        note="Melody pitch   | 128 MIDI  | frame-level 75Hz | MERT 13 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-95M-meanall",
-        task="HookTheoryMelody",
-        base_config="configs/probe.MERT-v1-95M-meanall.HookTheoryMelody.yaml",
-        num_layers=1,
-        note="Melody pitch   | 128 MIDI  | frame-level 75Hz | MERT meanall",
+        note="Melody pitch   | 128 MIDI  | frame-level 75Hz | MERT 13 layers + meanall",
     ),
     SweepDef(
         model="OMARRQ-multifeature-25hz",
         task="HookTheoryMelody",
-        base_config="configs/probe.OMARRQ-multifeature-25hz.HookTheoryMelody.yaml",
+        base_config="configs/probe.OMARRQ-multifeature-25hz-layers.HookTheoryMelody.yaml",
         num_layers=24,
-        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ 24 layers",
-    ),
-    SweepDef(
-        model="OMARRQ-multifeature-25hz-meanall",
-        task="HookTheoryMelody",
-        base_config="configs/probe.OMARRQ-multifeature-25hz-meanall.HookTheoryMelody.yaml",
-        num_layers=1,
-        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ meanall",
+        note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ 24 layers + meanall",
     ),
     # ══════════════════════════════════════════════════════════════════════════
     # LONG — NSynth pitch classification (50K train cap, still multi-hour/layer)
@@ -739,12 +721,20 @@ SWEEPS: list[SweepDef] = [
 
 
 def _completed_layers(model: str, task: str, num_layers: int) -> list[int]:
-    """Return indices of layers that already have a best.ckpt."""
+    """Return indices of layers that already have a best.ckpt.
+
+    Patterns bind task and model with `.` separators (same convention as
+    _layer_done in run_sweep_local.py) so cross-encoder false positives
+    don't fire — e.g. model=CLaMP3-symbolic must not match dirs from
+    CLaMP3-symbolic-abc. Two patterns cover both naming conventions:
+        - probe.<task>.<model>-layers.layer<N>  (SMS-style)
+        - probe.<task>.<model>.layer<N>         (HookTheoryMelody-style)
+    """
     done = []
     for layer in range(num_layers):
         candidates = list(
-            Path("output").glob(f"*{model}*{task}*layer{layer}*/checkpoints/best.ckpt")
-        ) + list(Path("output").glob(f"*{task}*{model}*layer{layer}*/checkpoints/best.ckpt"))
+            Path("output").glob(f"*{task}.{model}-layers.layer{layer}/checkpoints/best.ckpt")
+        ) + list(Path("output").glob(f"*{task}.{model}.layer{layer}/checkpoints/best.ckpt"))
         if candidates:
             done.append(layer)
     return done

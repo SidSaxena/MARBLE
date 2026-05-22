@@ -129,7 +129,7 @@ TIER3_OMARRQ: list[dict] = [
     {
         "tag": "OMARRQ-HookTheoryMelody",
         "tier": 3,
-        "base_config": "configs/probe.OMARRQ-multifeature-25hz.HookTheoryMelody.yaml",
+        "base_config": "configs/probe.OMARRQ-multifeature-25hz-layers.HookTheoryMelody.yaml",
         "num_layers": 24,
         "model_tag": "OMARRQ-multifeature-25hz",
         "task_tag": "HookTheoryMelody",

@@ -232,25 +232,25 @@ def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
     * The previous "wandb/run-*/ directory exists" heuristic was wrong:
       WandB creates that directory at run startup, before test runs.
     """
-    # Bind model_tag with the standard `-layers.layerN` suffix and task_tag
-    # with `.` separators so a sibling sweep with a related model name doesn't
-    # match — e.g. when running model_tag=CLaMP3-symbolic, dirs from a prior
-    # CLaMP3-symbolic-abc sweep must NOT count as completion. The substring
-    # form `*model_tag*` was permissive enough to false-positive across
-    # related encoder variants.
+    # Bind task_tag and model_tag with `.` separators so a sibling sweep with
+    # a related model name doesn't false-positive — e.g. when running
+    # model_tag=CLaMP3-symbolic, dirs from a prior CLaMP3-symbolic-abc sweep
+    # must NOT count as completion. The substring form `*model_tag*` was
+    # permissive enough to false-positive across related encoder variants.
+    #
+    # Two patterns cover both naming conventions in the repo:
+    #   - SMS-style: probe.<task>.<model>-layers.layer<N>
+    #   - HookTheoryMelody-style: probe.<task>.<model>.layer<N>
+    # Both end with `.layer{N}` and bind the model segment with `.` on the
+    # leading side, so cross-encoder collisions are still prevented.
     patterns = [
         f"*{task_tag}.{model_tag}-layers.layer{layer}",
-        f"*{model_tag}-layers.layer{layer}",
+        f"*{task_tag}.{model_tag}.layer{layer}",
     ]
     for pat in patterns:
         for d in Path("output").glob(pat):
             if not d.is_dir():
                 continue
-            # Reject dirs whose model segment is a prefix of a longer encoder
-            # name (e.g. `CLaMP3-symbolic-layers.layerN` matching when looking
-            # for `CLaMP3-symbolic` — fine — but `CLaMP3-symbolic-abc-layers`
-            # must not match `*CLaMP3-symbolic-layers*` either; the glob above
-            # already enforces a literal `-layers.layer{N}` boundary).
             for summary in d.glob("wandb/run-*/files/wandb-summary.json"):
                 if _has_test_metrics(summary):
                     return True
@@ -338,6 +338,9 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
     )
 
     # Supervised tasks: fit then test.  Zero-shot (max_epochs=0): test only.
+    # The wandb run name embeds the model tag so meanall runs across multiple
+    # encoders are distinguishable in WandB's run list (vs the previous
+    # hard-coded `layer-meanall-{kind}` which collided across encoders).
     for stage, kind in (("fit", "fit"), ("test", "test")):
         cmd = [
             PYTHON,
@@ -345,7 +348,7 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
             stage,
             "-c",
             str(cfg),
-            f"--trainer.logger.init_args.name=layer-meanall-{kind}",
+            f"--trainer.logger.init_args.name={args.model_tag}-meanall-{kind}",
             f"--trainer.logger.init_args.job_type={kind}",
         ] + common_overrides
         # Resume from last.ckpt on the fit stage if one exists (e.g.

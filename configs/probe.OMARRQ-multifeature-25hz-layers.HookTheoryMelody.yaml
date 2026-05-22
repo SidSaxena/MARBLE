@@ -20,7 +20,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.HookTheoryMelody.OMARRQ-multifeature-25hz/checkpoints/"
+        dirpath: "./output/probe.HookTheoryMelody.OMARRQ-multifeature-25hz-layers/checkpoints/"
         filename: "best"
         save_top_k: 1
         save_last: true   # always write last.ckpt so a killed run resumes
@@ -42,8 +42,8 @@ trainer:
       group: "OMARRQ-multifeature-25hz / HookTheoryMelody"
       tags: ["OMARRQ-multifeature-25hz", "HookTheoryMelody", "layer-sweep", "probe", "OMARRQ"]
       job_type: "probe"
-      name: "OMARRQ-multifeature-25hz"
-      save_dir: "./output/probe.HookTheoryMelody.OMARRQ-multifeature-25hz/"
+      name: "OMARRQ-multifeature-25hz-layers"
+      save_dir: "./output/probe.HookTheoryMelody.OMARRQ-multifeature-25hz-layers/"
 
 
 model:

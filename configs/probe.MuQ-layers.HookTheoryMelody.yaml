@@ -26,7 +26,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.HookTheoryMelody.MuQ/checkpoints/"
+        dirpath: "./output/probe.HookTheoryMelody.MuQ-layers/checkpoints/"
         filename: "best"
         save_top_k: 1
         save_last: true   # always write last.ckpt so a killed run resumes
@@ -48,8 +48,8 @@ trainer:
       group: "MuQ / HookTheoryMelody"
       tags: ["MuQ", "HookTheoryMelody", "layer-sweep", "probe"]
       job_type: "probe"
-      name: "MuQ"
-      save_dir: "./output/probe.HookTheoryMelody.MuQ/"
+      name: "MuQ-layers"
+      save_dir: "./output/probe.HookTheoryMelody.MuQ-layers/"
 
 
 model:
