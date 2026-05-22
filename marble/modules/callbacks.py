@@ -1,42 +1,76 @@
 # marble/modules/callbacks.py
-import os
 import glob
+import os
+
 import torch
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 
+
 class LoadLatestCheckpointCallback(Callback):
+    """At test start, load the BEST checkpoint into pl_module.
+
+    Picks ``best.ckpt`` when present in the ModelCheckpoint dirpath
+    (that's the val-metric-tracked checkpoint written by
+    ``ModelCheckpoint(monitor=..., save_top_k=1, filename="best")``).
+    Falls back to "newest by mtime" only if ``best.ckpt`` isn't there
+    (e.g. user used a non-"best" filename pattern).
+
+    History — why this is non-trivial: the original implementation
+    just picked the newest .ckpt by mtime. That was correct as long
+    as ``save_last`` was off, because then the only file ever written
+    was best.ckpt. Once ``save_last: true`` was added to the configs
+    (so a killed run can resume from last.ckpt), the "newest by mtime"
+    pick became wrong: ``last.ckpt`` is updated every epoch, so it's
+    always newer than ``best.ckpt`` (which only updates on val-metric
+    improvement). Testing would then load last.ckpt = whatever-was-last,
+    not the validated best — a silent quality regression.
     """
-    在 test 开始时，自动从 ModelCheckpoint 的 dirpath 目录里
-    找到最新的 .ckpt 文件并 load 到 pl_module 中。
-    """
+
     def on_test_start(self, trainer, pl_module):
-        # 1) 从 trainer.callbacks 中找到你的 ModelCheckpoint 实例
         ckpt_cb: ModelCheckpoint | None = next(
             (cb for cb in trainer.callbacks if isinstance(cb, ModelCheckpoint)),
-            None
+            None,
         )
         if ckpt_cb is None:
-            raise RuntimeError("没找到 ModelCheckpoint 回调，无法定位 ckpt 目录。")
+            raise RuntimeError(
+                "LoadLatestCheckpointCallback: no ModelCheckpoint callback found; "
+                "cannot locate the checkpoint directory."
+            )
 
         ckpt_dir = ckpt_cb.dirpath
         if not os.path.isdir(ckpt_dir):
-            raise RuntimeError(f"Checkpoint 目录不存在：{ckpt_dir}")
+            raise RuntimeError(f"LoadLatestCheckpointCallback: ckpt dir not found: {ckpt_dir}")
 
-        # 2) 列出所有 .ckpt，按文件修改时间选最新的那一个
-        paths = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
-        if not paths:
-            raise RuntimeError(f"{ckpt_dir} 里没有任何 .ckpt 文件。")
-        latest_ckpt = max(paths, key=os.path.getmtime)
+        # Prefer best.ckpt over last.ckpt and any per-epoch named checkpoints.
+        # If the ModelCheckpoint config uses a non-"best" filename, fall back
+        # to "newest .ckpt that is not last.ckpt".
+        candidates = sorted(glob.glob(os.path.join(ckpt_dir, "*.ckpt")))
+        if not candidates:
+            raise RuntimeError(f"LoadLatestCheckpointCallback: no .ckpt found in {ckpt_dir}")
 
-        # 3) load 到模型上
-        #    map_location 选 pl_module 当前所在设备
+        best_path = os.path.join(ckpt_dir, "best.ckpt")
+        if os.path.exists(best_path):
+            chosen = best_path
+            why = "best.ckpt (validated checkpoint)"
+        else:
+            non_last = [p for p in candidates if os.path.basename(p) != "last.ckpt"]
+            if non_last:
+                chosen = max(non_last, key=os.path.getmtime)
+                why = "newest non-last .ckpt"
+            else:
+                # Only last.ckpt exists — best wasn't written (maybe val never
+                # improved enough to trigger save). Use last.ckpt as a last
+                # resort and warn.
+                chosen = candidates[0]
+                why = "last.ckpt fallback (no best.ckpt found — val metric may not have improved)"
+
         map_loc = {"cpu": "cpu"}
         if pl_module.device.type == "cuda":
             map_loc = {"cuda:0": f"cuda:{pl_module.device.index or 0}"}
-        checkpoint = torch.load(latest_ckpt, map_location=map_loc)
+        checkpoint = torch.load(chosen, map_location=map_loc)
         state_dict = checkpoint.get("state_dict", checkpoint)
         pl_module.load_state_dict(state_dict)
 
-        # 4) 日志告知
-        trainer.logger.log_metrics({"loaded_ckpt": os.path.basename(latest_ckpt)})
-        print(f"[LoadLatestCheckpoint] loaded {latest_ckpt}")
+        if trainer.logger is not None:
+            trainer.logger.log_metrics({"loaded_ckpt": os.path.basename(chosen)})
+        print(f"[LoadLatestCheckpoint] loaded {chosen}  ({why})")

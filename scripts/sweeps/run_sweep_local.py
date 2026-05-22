@@ -56,6 +56,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import yaml
+
 # Serializes prefixed-line writes from multiple concurrent _run_one_layer
 # threads so one layer's output doesn't tear another's.
 _CONSOLE_LOCK = threading.Lock()
@@ -128,6 +130,45 @@ def _has_test_metrics(summary_path: Path) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return any(k.startswith("test/") for k in data)
+
+
+def _resume_args_for_config(cfg_path: str | Path) -> list[str]:
+    """Return ``["--ckpt_path", "<path>"]`` if a ``last.ckpt`` exists for
+    this config's ModelCheckpoint dirpath, otherwise an empty list.
+
+    Lightning's ``ModelCheckpoint(save_last=True)`` writes ``last.ckpt``
+    (an alias to the most recent checkpoint) after every epoch. Passing
+    ``--ckpt_path <last.ckpt>`` to ``cli.py fit`` resumes the trainer's
+    full state (epoch number, optimizer + LR-scheduler state, RNG seed,
+    callback states) — equivalent to starting where the previous run
+    was killed.
+
+    The dirpath is parsed out of the config YAML rather than hard-coded,
+    so per-layer-generated configs (with their own per-layer dirpath)
+    resume independently. If the YAML can't be parsed or no
+    ModelCheckpoint is wired, we return [] silently and the caller
+    proceeds as a fresh run.
+    """
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return []
+    callbacks = (cfg or {}).get("trainer", {}).get("callbacks", []) or []
+    for cb in callbacks:
+        if not isinstance(cb, dict):
+            continue
+        cp = cb.get("class_path", "")
+        if "ModelCheckpoint" not in cp:
+            continue
+        dirpath = (cb.get("init_args") or {}).get("dirpath")
+        if not dirpath:
+            continue
+        last_ckpt = Path(dirpath) / "last.ckpt"
+        if last_ckpt.exists() and last_ckpt.stat().st_size > 1000:
+            return ["--ckpt_path", str(last_ckpt)]
+        break  # found the ModelCheckpoint, no resume file → no args
+    return []
 
 
 def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
@@ -253,6 +294,12 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
             f"--trainer.logger.init_args.name=layer-meanall-{kind}",
             f"--trainer.logger.init_args.job_type={kind}",
         ] + common_overrides
+        # Resume from last.ckpt on the fit stage if one exists (e.g.
+        # the previous attempt was killed mid-training). Lightning's
+        # --ckpt_path restores epoch + optimizer + RNG state for an
+        # exact continuation. No effect on the test stage.
+        if stage == "fit":
+            cmd += _resume_args_for_config(cfg)
         print(f"$ {' '.join(cmd)}", flush=True)
         rc = subprocess.run(cmd, env=_subprocess_env()).returncode
         if rc != 0:
@@ -437,6 +484,9 @@ def _run_one_layer(
                 f"--trainer.logger.init_args.name=layer-{layer}-fit",
                 "--trainer.logger.init_args.job_type=fit",
             ] + common_overrides
+            # Resume from last.ckpt if a prior run was killed mid-training.
+            # See _resume_args_for_config for details.
+            fit_cmd += _resume_args_for_config(cfg)
             if stream_fit:
                 print(f"$ {' '.join(fit_cmd)}", flush=True)
                 subprocess.run(fit_cmd, check=True, env=_subprocess_env())

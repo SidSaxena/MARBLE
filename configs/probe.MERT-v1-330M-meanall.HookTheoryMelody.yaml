@@ -23,6 +23,7 @@ trainer:
         dirpath: "./output/probe.HookTheoryMelody.MERT-v1-330M-meanall/checkpoints/"
         filename: "best"
         save_top_k: 1
+        save_last: true   # always write last.ckpt so a killed run resumes
         monitor: "val/acc_rpa"
         mode: "max"
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback

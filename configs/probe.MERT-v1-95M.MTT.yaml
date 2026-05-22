@@ -20,6 +20,7 @@ trainer:
         dirpath: "./output/probe.MTT.MERT-v1-95M/checkpoints/" # Please specify your own path
         filename: "best"
         save_top_k: 1 # -1 to save all checkpoints
+        save_last: true   # always write last.ckpt so a killed run resumes
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback # for testing
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:

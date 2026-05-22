@@ -19,6 +19,7 @@ trainer:
         dirpath: "./output/probe.HookTheoryStructure.OMARRQ-multifeature-25hz/checkpoints/"
         filename: "best"
         save_top_k: 1
+        save_last: true   # always write last.ckpt so a killed run resumes
         monitor: "val/acc"
         mode: "max"
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
