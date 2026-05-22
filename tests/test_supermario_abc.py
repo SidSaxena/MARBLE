@@ -62,34 +62,57 @@ def _skip_if_no_build():
 
 
 def test_abc_files_have_canonical_abc_headers():
-    """Every emitted .abc segment must start with an ABC header line
-    (`X:`, `T:`, `K:`, etc.) — not `ticks_per_beat` (which would route the
-    patchiliser into MTF mode and silently invalidate the experiment)."""
+    """Every emitted .abc segment must contain the musically-required ABC
+    headers (M: meter, L: default length, K: key) and must NOT look like
+    MTF (``ticks_per_beat ...`` first line would route the patchiliser
+    into MTF mode and silently invalidate the experiment).
+
+    The first-line check was relaxed once the interleaved-ABC pipeline
+    landed: ``_abc_to_interleaved`` strips ``X:``, ``T:``, ``C:`` and
+    related metadata fields (matching CLaMP3 training preprocessing),
+    so the file may start with ``%%score`` or ``L:`` instead of ``X:``.
+    """
     _skip_if_no_build()
     abc_paths = list(_ABC_DIR.rglob("*.abc"))
     assert len(abc_paths) > 100, (
         f"Too few .abc segments found ({len(abc_paths)}); is the build complete?"
     )
+    # Recognised ABC header line prefixes (the patchiliser's ABC-mode
+    # branch accepts these; anything else is a body line).
+    ABC_HEADER_PREFIXES = (
+        "X:",
+        "T:",
+        "C:",
+        "Z:",
+        "%%",
+        "L:",
+        "M:",
+        "K:",
+        "Q:",
+        "V:",
+        "I:",
+        "W:",
+        "w:",
+    )
     n_checked = 0
-    n_bad_first_line = 0
     n_missing_required = 0
     for p in abc_paths[:200]:  # sample, not all 1k+ — speed
         with open(p, encoding="utf-8") as f:
             head = f.read(2048)
         first_line = head.split("\n", 1)[0]
-        # First line should be `X:<n>` (ABC tune number header).
-        if not first_line.startswith("X:"):
-            n_bad_first_line += 1
         # MUST not look like MTF (`ticks_per_beat ...`).
         assert not first_line.startswith("ticks_per_beat"), (
             f"{p} would route patchiliser into MTF mode (first line: {first_line!r})"
+        )
+        # First non-empty line should be a recognised ABC header.
+        assert any(first_line.startswith(h) for h in ABC_HEADER_PREFIXES), (
+            f"{p}: first line is {first_line!r}, expected one of {ABC_HEADER_PREFIXES}"
         )
         # Required ABC fields: at least one of M:, L:, K:.
         has_required = any(f"\n{h}:" in head or head.startswith(f"{h}:") for h in ("M", "L", "K"))
         if not has_required:
             n_missing_required += 1
         n_checked += 1
-    assert n_bad_first_line == 0, f"{n_bad_first_line} files have non-ABC first lines"
     assert n_missing_required == 0, f"{n_missing_required} files are missing M:/L:/K: ABC headers"
     print(f"  checked {n_checked} ABC files; all canonical")
 
@@ -108,17 +131,35 @@ def test_patchiliser_uses_abc_mode():
 
     abc_paths = list(_ABC_DIR.rglob("*.abc"))[:5]
     p = M3Patchilizer()
+    # Any recognised ABC header line prefix (interleaved output strips
+    # X:/T:/C:, so the first real patch may start at %%score, L:, M:, K:,
+    # V:, etc. — anything from the recognised header set is fine).
+    ABC_HEADER_PREFIXES = (
+        "X:",
+        "T:",
+        "C:",
+        "Z:",
+        "%%",
+        "L:",
+        "M:",
+        "K:",
+        "Q:",
+        "V:",
+        "I:",
+        "W:",
+        "w:",
+    )
     for abc_path in abc_paths:
         with open(abc_path, encoding="utf-8") as f:
             abc_text = f.read()
         patches = p.encode(abc_text, add_special_patches=True)
         # patches[0] = BOS, patches[1] should be the first real patch.
-        # In ABC mode, that's the X: header line.
+        # In ABC mode, that's an ABC header line.
         assert len(patches) > 2, f"{abc_path}: too few patches ({len(patches)})"
         first_real = bytes(b for b in patches[1] if b > 3).decode("ascii", errors="replace")
-        assert first_real.startswith("X:"), (
-            f"{abc_path}: first real patch is {first_real!r}, expected 'X:...' "
-            f"(suggests MTF mode kicked in, not ABC mode)"
+        assert any(first_real.startswith(h) for h in ABC_HEADER_PREFIXES), (
+            f"{abc_path}: first real patch is {first_real!r}, expected an ABC header "
+            f"({ABC_HEADER_PREFIXES}). MTF mode would emit 'ticks_per_beat ...' here."
         )
         # Sample a mid-piece patch and check it contains barline delimiters
         # OR ABC header chars. (Pure event packing would have e.g. 'note_on ...')
@@ -153,10 +194,28 @@ def test_datamodule_input_format_abc_loads_and_tokenises():
         assert 0 <= label < 6  # 6 SuperMario functional classes
         assert isinstance(ori_uid, str) and "_" in ori_uid
         assert isinstance(clip_id, str)
-        # Verify the patches encode ABC headers (look at patch[1] decode)
+        # Verify the patches encode ABC headers (interleaved output may
+        # start at %%score / L: / M: / K: rather than X: — any recognised
+        # ABC header prefix is acceptable).
         first_real = bytes(int(b) for b in patches[1] if b > 3).decode("ascii", errors="replace")
-        assert first_real.startswith("X:"), (
-            f"item {idx} patches[1] is {first_real!r} — expected ABC 'X:' header"
+        ABC_HEADER_PREFIXES = (
+            "X:",
+            "T:",
+            "C:",
+            "Z:",
+            "%%",
+            "L:",
+            "M:",
+            "K:",
+            "Q:",
+            "V:",
+            "I:",
+            "W:",
+            "w:",
+        )
+        assert any(first_real.startswith(h) for h in ABC_HEADER_PREFIXES), (
+            f"item {idx} patches[1] is {first_real!r} — expected an ABC header "
+            f"({ABC_HEADER_PREFIXES})"
         )
     print(f"  loaded {len(ds)} ABC records; sampled 3 with correct shape + ABC headers")
 
@@ -360,6 +419,117 @@ def test_input_format_abc_filters_records_without_abc_path():
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def test_abc_files_are_interleaved():
+    """Verify .abc files have voices INTERLEAVED by bar, not raw multi-voice.
+
+    Raw xml2abc output looks like:
+        V:1 [bar1]|[bar2]|[bar3]|
+        V:2 [bar1]|[bar2]|[bar3]|
+
+    Interleaved (CLaMP3 training-faithful) output looks like:
+        V:1 treble
+        V:2 bass
+        [V:1]bar1|[V:2]bar1|
+        [V:1]bar2|[V:2]bar2|
+
+    Detection heuristic: interleaved bodies contain ``[V:1]`` and
+    ``[V:2]`` markers IN-LINE (one per bar of each voice); raw bodies
+    have voice content split into top-level ``V:1`` / ``V:2`` blocks
+    with no inline ``[V:N]`` per-bar markers.
+    """
+    _skip_if_no_build()
+    abc_paths = list(_ABC_DIR.rglob("*.abc"))[:30]
+    n_interleaved = 0
+    n_single_voice = 0
+    n_raw_multivoice = 0
+    for p in abc_paths:
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+        has_inline_v1 = "[V:1]" in text
+        has_inline_v2 = "[V:2]" in text
+        # Count top-level voice declarations (V:N at start of line, before any [V:N] markers)
+        top_v_decls = sum(
+            1 for line in text.split("\n") if line.startswith("V:") and "[V:" not in line
+        )
+        if has_inline_v1 and has_inline_v2:
+            n_interleaved += 1
+        elif top_v_decls <= 1:
+            # Single-voice piece — no interleaving possible. Counts as OK.
+            n_single_voice += 1
+        else:
+            n_raw_multivoice += 1
+    assert n_raw_multivoice == 0, (
+        f"{n_raw_multivoice}/{len(abc_paths)} sampled .abc files are still in "
+        f"raw multi-voice layout (no inline [V:N] markers but multiple V: "
+        f"declarations) — _abc_to_interleaved didn't run. Check abctoolkit "
+        f"is installed via `uv sync --extra symbolic-abc`."
+    )
+    print(
+        f"  {n_interleaved} interleaved + {n_single_voice} single-voice "
+        f"out of {len(abc_paths)} sampled (0 raw multi-voice)"
+    )
+
+
+def test_no_metadata_fields_in_abc():
+    """Verify the CLaMP3-training-faithful preprocessing stripped the
+    non-musical metadata fields (X:, T:, C:, Z:, W:, w:, %%MIDI). These
+    are training-corpus annotations that shouldn't leak into the model's
+    input at inference time. The musically-load-bearing fields
+    (K:, M:, L:, Q:, V:) MUST remain."""
+    _skip_if_no_build()
+    abc_paths = list(_ABC_DIR.rglob("*.abc"))[:30]
+    forbidden_prefixes = ("X:", "T:", "C:", "Z:", "W:", "w:", "%%MIDI")
+    required_at_least_one = ("K:", "M:", "L:")  # one of these must appear
+    n_with_forbidden = 0
+    n_missing_required = 0
+    for p in abc_paths:
+        with open(p, encoding="utf-8") as f:
+            lines = f.read().split("\n")
+        if any(any(line.startswith(prefix) for prefix in forbidden_prefixes) for line in lines):
+            n_with_forbidden += 1
+        if not any(any(line.startswith(req) for req in required_at_least_one) for line in lines):
+            n_missing_required += 1
+    assert n_with_forbidden == 0, (
+        f"{n_with_forbidden}/{len(abc_paths)} files still contain forbidden "
+        f"metadata fields ({forbidden_prefixes}). The interleave step should "
+        f"have stripped these."
+    )
+    assert n_missing_required == 0, (
+        f"{n_missing_required}/{len(abc_paths)} files are missing required "
+        f"musical headers ({required_at_least_one})."
+    )
+    print(f"  {len(abc_paths)} files have no forbidden metadata + all required headers")
+
+
+def test_no_bar_number_comments_in_abc():
+    """xml2abc emits ``%N`` bar-number comments at the end of each line
+    by default. CLaMP3 training preprocessing strips these via
+    ``remove_bar_no_annotations`` — verify ours does too."""
+    _skip_if_no_build()
+    import re
+
+    abc_paths = list(_ABC_DIR.rglob("*.abc"))[:30]
+    # The marker pattern: whitespace + % + digits + end-of-line. Match
+    # only when % is preceded by whitespace so we don't false-positive
+    # on `%%score` / `%%MIDI` header directives (those start the line).
+    pattern = re.compile(r"\s%\d+\s*$", re.MULTILINE)
+    n_with_bar_no = 0
+    samples = []
+    for p in abc_paths:
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+        if pattern.search(text):
+            n_with_bar_no += 1
+            if len(samples) < 3:
+                samples.append(p.name)
+    assert n_with_bar_no == 0, (
+        f"{n_with_bar_no}/{len(abc_paths)} .abc files still contain `%N` "
+        f"bar-number comments. Sample files: {samples}. "
+        f"remove_bar_no_annotations didn't run — check abctoolkit install."
+    )
+    print(f"  {len(abc_paths)} files have no `%N` bar-number comments")
+
+
 def test_no_leaked_temp_files_in_abc_segments():
     """The build's temp-file cleanup must remove any `tmpXXX.abc` /
     `tmpXXX.musicxml` xml2abc may have partially written before
@@ -428,6 +598,9 @@ def test_convert_mxl_to_abc_one_file_via_subprocess():
         # Verify the content
         with open(produced[0], encoding="utf-8") as f:
             head = f.read(512)
+        # convert_mxl_to_abc.py is the FULL-PIECE converter and does NOT
+        # apply the interleave/strip step — so its output still has X:
+        # at the top, unlike the build script's per-segment .abc files.
         assert head.startswith("X:"), f"produced ABC doesn't start with X: — got {head[:80]!r}"
         print(f"  converter produced {produced[0].name} with canonical ABC header")
 
@@ -441,6 +614,9 @@ if __name__ == "__main__":
         test_abc_slice_note_count_within_reasonable_range_of_midi,
         test_cache_config_hash_shared_but_safe,
         test_input_format_abc_filters_records_without_abc_path,
+        test_abc_files_are_interleaved,
+        test_no_metadata_fields_in_abc,
+        test_no_bar_number_comments_in_abc,
         test_no_leaked_temp_files_in_abc_segments,
         test_convert_mxl_to_abc_one_file_via_subprocess,
     ]

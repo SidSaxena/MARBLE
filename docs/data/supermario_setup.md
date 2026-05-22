@@ -204,6 +204,36 @@ What this produces:
   matching .mxl skip the field; `input_format: abc` configs filter
   those out at load time with a warning).
 
+##### Interleaved ABC (training-faithful preprocessing)
+
+Marble's `--build-abc` now applies the same post-xml2abc cleanup
+CLaMP3 used during its symbolic-branch training:
+
+1. `xml2abc -d 8 -x` (eighth-note default unit, stdout output — matches
+   `vendor/clamp3/preprocessing/abc/batch_xml2abc.py` in upstream CLaMP3).
+2. Strip metadata fields (`X:`, `T:`, `C:`, `Z:`, `W:`, `w:`, `%%MIDI`)
+   that don't carry musical content.
+3. Strip `%N` bar-number annotations xml2abc leaves at line ends.
+4. Strip embedded barline characters inside ABC quote annotations
+   (rare but breaks `rotate_abc`).
+5. `strip_empty_bars` — drop bars with no notes.
+6. `rotate_abc` — interleave voices bar-by-bar so the body becomes
+   `[V:1]bar1|[V:2]bar1|[V:1]bar2|[V:2]bar2|...` (instead of raw
+   `V:1 [all bars]\nV:2 [all bars]`).
+
+The interleaved form is what CLaMP3 was actually trained on. The
+implementation lives in
+[`scripts/data/build_supermario_dataset.py::_abc_to_interleaved`](../../scripts/data/build_supermario_dataset.py)
+and was ported from the leitmotifs project's symbolic adapter
+(commit `a9d0ce0` of `feat/clamp3`), which mirrors CLaMP3's own
+`preprocessing/abc/batch_interleaved_abc.py` via the
+[`abctoolkit`](https://pypi.org/project/abctoolkit/) PyPI package
+(`uv sync --extra symbolic-abc` installs it).
+
+If `abctoolkit` isn't installed, `_abc_to_interleaved` falls back
+to raw ABC with a one-shot warning — non-symbolic-abc workflows are
+not broken.
+
 Use the ABC variant configs:
 
 - [`configs/probe.CLaMP3-symbolic-meanall.SuperMarioStructure.abc.yaml`](../../configs/probe.CLaMP3-symbolic-meanall.SuperMarioStructure.abc.yaml)

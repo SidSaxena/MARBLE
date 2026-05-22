@@ -67,9 +67,12 @@ ninsheetmusic = [
 # task that wants CLaMP3-symbolic's bar-level ABC tokenisation
 # instead of the secondary MIDI/MTF mode). music21 handles
 # .mxl → musicxml + bar-range slicing; the vendored xml2abc handles
-# musicxml → ABC. See docs/data/supermario_setup.md § Option E.
+# musicxml → ABC; abctoolkit handles the post-xml2abc cleanup +
+# voice-rotation that CLaMP3 used during training. See
+# docs/data/supermario_setup.md § Option E.
 symbolic-abc = [
     "music21>=9.0",
+    "abctoolkit>=0.0.4",   # interleaved-ABC preprocessing (matches CLaMP3 training)
 ]
 
 [dependency-groups]

@@ -601,6 +601,77 @@ _VENDORED_XML2ABC = Path(__file__).resolve().parent / "_vendor" / "xml2abc.py"
 # Per-piece music21 score cache so we don't re-parse the same .mxl for every
 # segment of the same piece (parse is ~10x more expensive than slice + write).
 _MXL_SCORE_CACHE: dict[str, object] = {}
+# One-shot warning gate so we don't spam the log if abctoolkit isn't
+# installed and every segment falls back to the raw-ABC path.
+_INTERLEAVE_WARNED = False
+
+
+def _abc_to_interleaved(abc_text: str) -> str:
+    """Convert raw multi-voice ABC into INTERLEAVED ABC.
+
+    This is the post-xml2abc cleanup + voice-rotation that CLaMP3's
+    own symbolic-branch training preprocessing applied. Without it,
+    multi-voice scores end up as ``V:1 [all bars]\\nV:2 [all bars]``,
+    which is out-of-distribution for the M3 patchiliser. With it,
+    bodies become ``V:1 [bar1] | V:2 [bar1] | V:1 [bar2] | V:2 [bar2]
+    | ...`` — voices interleaved by bar.
+
+    Ported from leitmotifs (commit ``a9d0ce0``,
+    ``scripts/utils/clamp3_adapter.py:181-223``) which in turn mirrors
+    CLaMP3's ``preprocessing/abc/batch_interleaved_abc.py``. The
+    underlying primitives (``remove_information_field``,
+    ``remove_bar_no_annotations``, ``strip_empty_bars``, ``rotate_abc``)
+    live in the ``abctoolkit`` package on PyPI — install via
+    ``uv sync --extra symbolic-abc``.
+
+    If ``abctoolkit`` isn't installed we log one warning and return
+    the raw ABC unchanged, so non-symbolic-abc users aren't broken.
+    """
+    global _INTERLEAVE_WARNED
+    try:
+        import re
+
+        from abctoolkit.rotate import rotate_abc
+        from abctoolkit.utils import (
+            Barlines,
+            Quote_re,
+            remove_bar_no_annotations,
+            remove_information_field,
+            strip_empty_bars,
+        )
+    except ImportError:
+        if not _INTERLEAVE_WARNED:
+            log.warning(
+                "  abctoolkit not installed — emitting RAW multi-voice ABC "
+                "(out-of-distribution for CLaMP3 symbolic branch). Install with "
+                "`uv sync --extra symbolic-abc` for the training-faithful path."
+            )
+            _INTERLEAVE_WARNED = True
+        return abc_text
+
+    abc_lines = [line + "\n" for line in abc_text.splitlines() if line.strip()]
+    abc_lines = remove_information_field(
+        abc_lines=abc_lines,
+        info_fields=["X:", "T:", "C:", "W:", "w:", "Z:", "%%MIDI"],
+    )
+    abc_lines = remove_bar_no_annotations(abc_lines)
+    # Strip annotation-text-with-barline-chars (rare but breaks rotate_abc).
+    for i, line in enumerate(abc_lines):
+        if not (re.search(r"^[A-Za-z]:", line) or line.startswith("%")):
+            abc_lines[i] = line.replace(r"\"", "")
+            for quote_content in re.findall(Quote_re, line):
+                for barline in Barlines:
+                    if barline in quote_content:
+                        abc_lines[i] = abc_lines[i].replace(quote_content, "")
+    stripped, _bar_counts = strip_empty_bars(abc_lines)
+    if stripped is None:
+        # strip_empty_bars returns None on degenerate inputs (e.g. zero bars).
+        # Fall through to the raw text rather than failing the slice.
+        return abc_text
+    rotated = rotate_abc(stripped)
+    if rotated is None:
+        return abc_text
+    return "".join(rotated)
 
 
 def _load_mxl_score(mxl_path: Path):
@@ -729,10 +800,18 @@ def _slice_abc(
             return False
 
         try:
+            # `-d 8` sets xml2abc's default note unit to eighth notes —
+            # matches CLaMP3's training preprocessing
+            # (vendor/clamp3/preprocessing/abc/batch_xml2abc.py uses the
+            # same flag). Without it, xml2abc picks a default that
+            # depends on the piece's note durations, which then changes
+            # how the patchiliser tokenises bars.
             result = subprocess.run(
                 [
                     sys.executable,
                     str(_VENDORED_XML2ABC),
+                    "-d",
+                    "8",
                     "-o",
                     str(dst_path.parent),
                     str(tmp_path),
@@ -746,13 +825,20 @@ def _slice_abc(
         if result.returncode != 0:
             return False
 
-        # xml2abc names the .abc after the temp file's stem; rename.
+        # xml2abc names the .abc after the temp file's stem; we now also
+        # apply CLaMP3's training-preprocessing cleanup + voice-rotation
+        # before writing the final .abc so the patchiliser sees
+        # in-distribution input.
         tmp_abc = tmp_path.with_suffix(".abc")
         if not tmp_abc.exists() or tmp_abc.stat().st_size == 0:
             return False
+        with open(tmp_abc, encoding="utf-8") as f:
+            raw_abc = f.read()
+        interleaved = _abc_to_interleaved(raw_abc)
         if dst_path.exists():
             dst_path.unlink()
-        tmp_abc.rename(dst_path)
+        with open(dst_path, "w", encoding="utf-8") as f:
+            f.write(interleaved)
         return True
     finally:
         tmp_path.unlink(missing_ok=True)
