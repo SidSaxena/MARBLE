@@ -15,7 +15,7 @@ trainer:
   fast_dev_run: false
   accelerator: gpu
   devices: [0]
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 2
   num_nodes: 1
   precision: bf16-mixed
   max_epochs: 40
@@ -121,7 +121,7 @@ model:
 data:
   class_path: marble.tasks.HookTheoryMelody.datamodule.HookTheoryMelodyDataModule
   init_args:
-    batch_size: 16
+    batch_size: 32
     num_workers: 8
 
     audio_transforms:
