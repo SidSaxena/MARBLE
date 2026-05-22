@@ -236,8 +236,8 @@ not broken.
 
 Use the ABC variant configs:
 
-- [`configs/probe.CLaMP3-symbolic-meanall.SuperMarioStructure.abc.yaml`](../../configs/probe.CLaMP3-symbolic-meanall.SuperMarioStructure.abc.yaml)
-- [`configs/probe.CLaMP3-symbolic-layers.SuperMarioStructure.abc.yaml`](../../configs/probe.CLaMP3-symbolic-layers.SuperMarioStructure.abc.yaml)
+- [`configs/probe.CLaMP3-symbolic-abc-meanall.SuperMarioStructure.yaml`](../../configs/probe.CLaMP3-symbolic-abc-meanall.SuperMarioStructure.yaml)
+- [`configs/probe.CLaMP3-symbolic-abc-layers.SuperMarioStructure.yaml`](../../configs/probe.CLaMP3-symbolic-abc-layers.SuperMarioStructure.yaml)
 
 Pipeline internals: `music21.converter.parse(.mxl)` →
 `score.measures(bar_start, bar_end)` slices the requested bar range →
@@ -359,7 +359,7 @@ uv run python scripts/data/build_supermario_dataset.py \
 
 Adds: `data/SuperMarioStructure/abc_segments/<piece>/<seg>.abc` per
 segment + an `abc_path` field on every JSONL record that successfully
-sliced. Use `configs/probe.CLaMP3-symbolic-*.SuperMarioStructure.abc.yaml`
+sliced. Use `configs/probe.CLaMP3-symbolic-abc-*.SuperMarioStructure.yaml`
 to run sweeps against the ABC path (the MIDI configs continue to use
 the MIDI/MTF path — both coexist).
 
