@@ -163,51 +163,103 @@ fallback download and gracefully fails (logging the 403 count).
 Pieces without MIDIs get dropped — no symbolic record, no audio
 record.
 
-#### Option E — convert from .mxl / .musicxml (recommended if you have score files)
+#### Option E — convert from .mxl / .musicxml (RECOMMENDED for CLaMP3-symbolic)
 
 If you've sourced the SuperMarioAnnotation scores in MusicXML (.mxl /
 .musicxml) — for example by opening the upstream .mus files in
-MuseScore/Finale and exporting — the easiest path is to bulk-convert
-to MIDI once and feed the resulting directory to the build script:
+MuseScore/Finale and exporting — the .mxl path unlocks two things the
+.mid path can't:
+
+1. **A clean offline pipeline.** No NSM Cloudflare-bot block, no
+   Playwright session, no `ohsheet` — your local .mxl files become the
+   source of truth.
+2. **ABC input to CLaMP3-symbolic (the bar-level path).** CLaMP3's M3
+   patchiliser is bimodal: MTF mode packs MIDI events into 64-byte
+   patches; ABC mode emits one patch per bar using ABC barline
+   delimiters. ABC is the format CLaMP3 was primarily trained on, so
+   bar-level patches sit closer to the model's training distribution.
+   Expect meaningfully better numbers than the secondary MTF-mode
+   MIDI path on retrieval + classification probes.
+
+Two pipelines, depending on how far you want to go:
+
+##### (E1) .mxl → ABC → CLaMP3-symbolic (bar-level patches, primary)
 
 ```bash
-# One-time: install music21 (not a core MARBLE dep — only needed for this conversion)
+# One-time: install the optional dep
+uv sync --extra symbolic-abc
+
+# Build with --build-abc: emits per-segment .abc files alongside the
+# MIDI segments, and adds an `abc_path` field to every JSONL record
+# where ABC slicing succeeded.
+uv run python scripts/data/build_supermario_dataset.py \
+    --build-abc \
+    --mxl-source-dir data/SuperMarioStructure/mxl
+```
+
+What this produces:
+
+- `data/SuperMarioStructure/abc_segments/<piece_id>/<seg_idx>_<label>.abc` per segment.
+- Each JSONL record gains an `abc_path` field (records without a
+  matching .mxl skip the field; `input_format: abc` configs filter
+  those out at load time with a warning).
+
+Use the ABC variant configs:
+
+- [`configs/probe.CLaMP3-symbolic-meanall.SuperMarioStructure.abc.yaml`](../../configs/probe.CLaMP3-symbolic-meanall.SuperMarioStructure.abc.yaml)
+- [`configs/probe.CLaMP3-symbolic-layers.SuperMarioStructure.abc.yaml`](../../configs/probe.CLaMP3-symbolic-layers.SuperMarioStructure.abc.yaml)
+
+Pipeline internals: `music21.converter.parse(.mxl)` →
+`score.measures(bar_start, bar_end)` slices the requested bar range →
+write temp .musicxml → vendored
+[`scripts/data/_vendor/xml2abc.py`](../../scripts/data/_vendor/xml2abc.py)
+emits the final ABC. The datamodule reads the .abc text and feeds it
+straight to the patchiliser's ABC mode (no `midi_to_mtf` step).
+
+##### (E2) .mxl → .mid (use existing MIDI pipeline, no ABC)
+
+If you don't want to switch input formats but still want to bypass
+NSM's bot block:
+
+```bash
+# One-time: install music21 (the symbolic-abc extra includes it; or
+# `uv pip install music21` for the bare minimum)
 uv pip install music21
 
-# Bulk convert .mxl → .mid alongside, preserving the stem so piece_id parsing still works.
+# Bulk convert .mxl → .mid alongside, preserving the stem so the
+# build script's `<piece_id>(_<slug>)?.mid` matcher still works.
 uv run python scripts/data/convert_mxl_to_midi.py \
     --in-dir  /path/to/your/mxl_files \
     --out-dir data/SuperMarioStructure/midi_user
 
-# Then run the regular build (no changes to its CLI)
+# Then run the regular build (no --build-abc, no changes to its CLI)
 uv run python scripts/data/build_supermario_dataset.py \
     --midi-source-dir data/SuperMarioStructure/midi_user
 ```
 
-Why this path is preferred over .mid scraped directly from NSM:
+This still benefits from music21's higher-fidelity MIDI export
+(strictly cleaner than scraped .mid from NSM), but stays on the
+MTF-mode patchiliser path that everything ran on before.
 
-- music21's MusicXML → MIDI is *strictly higher-fidelity* than whatever
-  pre-rendered MIDI Finale exports. Tempo, time signature, key
-  signature, voicing, ties, and `volta`/repeat structure all survive
-  cleanly into the MIDI; the CLaMP3 M3 patchiliser then sees exactly
-  what the original score described.
-- Bypasses NSM's Cloudflare anti-bot entirely — no Playwright session,
-  no `ohsheet`, no manual click-through. The .mxl files are your local
-  property; the conversion is offline.
-- Sets up a future-proof input. When we add an ABC-tokenised encoder
-  (e.g. NotaGen — see [`../symbolic_encoder_landscape.md`](../symbolic_encoder_landscape.md)),
-  the same .mxl files convert to ABC even more losslessly than MIDI
-  does, so the score-level information (dynamics, articulation, slurs,
-  beaming) becomes available without re-sourcing.
+##### When to prefer (E1) over (E2)
 
-What this path does NOT unlock for the current pipeline:
+- (E1) is the path for CLaMP3-symbolic specifically — bar-level
+  patches match its training distribution.
+- (E2) is fine for any downstream consumer that needs MIDI bytes
+  (rendering audio, feeding a MIDI-only encoder like Aria or
+  MidiBERT-Piano if/when added — see [`../symbolic_encoder_landscape.md`](../symbolic_encoder_landscape.md)).
+- You can do both: `--build-abc --mxl-source-dir <dir>` PLUS supplying
+  the converted MIDIs via the standard `--midi-source-dir` flag.
+  The build script will emit both segment trees + both fields per
+  record, and the datamodule picks `input_format: abc` or `midi`.
 
-- CLaMP3-symbolic (today's only symbolic encoder) tokenises via M3
-  patches over MIDI/MTF. It consumes the same MIDI byte-stream
-  whether you got there from .mxl or scraped .mid directly. Articulation /
-  dynamics / slur info from MusicXML doesn't survive that pipeline.
-- BPS-Motif is unaffected — it uses csv_notes from its own upstream
-  repo, not score files.
+What .mxl does NOT unlock:
+
+- The audio path. .mxl is symbolic; the audio encoders (MERT / MuQ /
+  OMARRQ) still need real recordings (or rendered audio, which we
+  don't ship).
+- BPS-Motif. That dataset's symbolic source is `csv_notes/` CSVs from
+  its own upstream — not MusicXML, not affected by this change.
 
 ### User audio (optional)
 
@@ -257,6 +309,29 @@ uv run python scripts/data/build_supermario_dataset.py \
     --midi-source-dir /path/to/your/midis \
     --audio-dir /path/to/your/mario/audio
 ```
+
+### Symbolic build with ABC (recommended for CLaMP3-symbolic)
+
+If you have .mxl files (e.g. from converting the upstream .mus via
+Finale/MuseScore), add `--build-abc` to also emit per-segment ABC
+alongside the MIDI segments. The ABC variant feeds CLaMP3-symbolic in
+its bar-level patch mode — the primary mode the model was trained on.
+See § Option E for the full rationale.
+
+```bash
+uv sync --extra symbolic-abc    # one-time: installs music21
+
+uv run python scripts/data/build_supermario_dataset.py \
+    --midi-source-dir /path/to/your/midis \
+    --build-abc \
+    --mxl-source-dir /path/to/your/mxl_files
+```
+
+Adds: `data/SuperMarioStructure/abc_segments/<piece>/<seg>.abc` per
+segment + an `abc_path` field on every JSONL record that successfully
+sliced. Use `configs/probe.CLaMP3-symbolic-*.SuperMarioStructure.abc.yaml`
+to run sweeps against the ABC path (the MIDI configs continue to use
+the MIDI/MTF path — both coexist).
 
 What happens (in order):
 

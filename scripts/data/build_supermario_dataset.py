@@ -435,6 +435,28 @@ def _find_user_audio(piece_id: str, audio_dir: Path) -> Path | None:
     return None
 
 
+_MXL_EXTS = (".mxl", ".musicxml", ".xml")
+
+
+def _find_mxl(piece_id: str, mxl_dir: Path) -> Path | None:
+    """Look up user-supplied .mxl / .musicxml for a piece.
+
+    Tries `<piece_id>.<ext>` first, then `<piece_id>_*.<ext>` (the typical
+    NSM-derived naming with a title slug). Returns the first match, or None.
+    """
+    for ext in _MXL_EXTS:
+        p = mxl_dir / f"{piece_id}{ext}"
+        if p.exists() and p.stat().st_size > 200:
+            return p
+    # Glob for piece_id_*.<ext>
+    for ext in _MXL_EXTS:
+        matches = sorted(mxl_dir.glob(f"{piece_id}_*{ext}"))
+        for m in matches:
+            if m.stat().st_size > 200:
+                return m
+    return None
+
+
 # ── ffmpeg segment slicing ────────────────────────────────────────────────────
 
 
@@ -570,6 +592,113 @@ def _slice_midi(
         log.warning(f"  pretty_midi write failed for {dst_path}: {e}")
         return False
     return dst_path.exists() and dst_path.stat().st_size > 100
+
+
+# ── ABC segment slicing (.mxl → per-segment .abc via music21 + xml2abc) ──────
+
+
+_VENDORED_XML2ABC = Path(__file__).resolve().parent / "_vendor" / "xml2abc.py"
+# Per-piece music21 score cache so we don't re-parse the same .mxl for every
+# segment of the same piece (parse is ~10x more expensive than slice + write).
+_MXL_SCORE_CACHE: dict[str, object] = {}
+
+
+def _load_mxl_score(mxl_path: Path):
+    """Lazily parse + cache the music21 score for a .mxl file."""
+    key = str(mxl_path)
+    if key in _MXL_SCORE_CACHE:
+        return _MXL_SCORE_CACHE[key]
+    try:
+        import music21
+    except ImportError:
+        log.error("music21 not installed; required for --build-abc. Run: uv pip install music21")
+        sys.exit(1)
+    try:
+        score = music21.converter.parse(str(mxl_path))
+    except Exception as e:
+        log.warning(f"  music21 parse failed for {mxl_path.name}: {e}")
+        _MXL_SCORE_CACHE[key] = None
+        return None
+    _MXL_SCORE_CACHE[key] = score
+    return score
+
+
+def _slice_abc(
+    mxl_path: Path,
+    dst_path: Path,
+    bar_start: int,
+    bar_end: int,
+) -> bool:
+    """Slice the .mxl source to bars [bar_start, bar_end] (1-indexed,
+    inclusive) and write ABC to ``dst_path``.
+
+    Pipeline: music21 ``score.measures(start, end)`` produces a sub-score
+    → write to a temp .musicxml → run vendored xml2abc on the temp file.
+    music21 handles the bar slicing (well-tested, multi-voice-aware) and
+    xml2abc handles the MusicXML → ABC conversion. Idempotent: skips if
+    dst exists with size > 50 bytes.
+    """
+    if dst_path.exists() and dst_path.stat().st_size > 50:
+        return True
+    score = _load_mxl_score(mxl_path)
+    if score is None:
+        return False
+
+    import tempfile
+
+    try:
+        sub_score = score.measures(bar_start, bar_end)
+    except Exception as e:
+        log.debug(f"  music21 measures({bar_start},{bar_end}) failed for {mxl_path.name}: {e}")
+        return False
+    if sub_score is None:
+        return False
+
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    # delete=False + manual cleanup in finally; the context-manager form
+    # would unlink the file before xml2abc can read it.
+    tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
+        suffix=".musicxml",
+        delete=False,
+        dir=str(dst_path.parent),
+    )
+    tmp.close()
+    tmp_path = Path(tmp.name)
+    try:
+        try:
+            sub_score.write("musicxml", fp=str(tmp_path))
+        except Exception as e:
+            log.debug(f"  music21 write failed for {mxl_path.name} bars {bar_start}-{bar_end}: {e}")
+            return False
+
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(_VENDORED_XML2ABC),
+                    "-o",
+                    str(dst_path.parent),
+                    str(tmp_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        if result.returncode != 0:
+            return False
+
+        # xml2abc names the .abc after the temp file's stem; rename.
+        tmp_abc = tmp_path.with_suffix(".abc")
+        if not tmp_abc.exists() or tmp_abc.stat().st_size == 0:
+            return False
+        if dst_path.exists():
+            dst_path.unlink()
+        tmp_abc.rename(dst_path)
+        return True
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 # ── Split assignment ──────────────────────────────────────────────────────────
@@ -718,6 +847,36 @@ def main() -> None:
         "your own risk — sub-second segments yield very few samples "
         "for an SSL encoder to embed.",
     )
+    ap.add_argument(
+        "--build-abc",
+        action="store_true",
+        help="Also produce per-segment ABC notation files alongside the MIDI "
+        "segments. Requires --mxl-source-dir + music21 + the vendored xml2abc. "
+        "ABC is CLaMP3's primary symbolic format (bar-level patches) — "
+        "expect meaningfully better CLaMP3-symbolic numbers than MTF-mode MIDI "
+        "(see docs/data/supermario_setup.md § Option E). Each JSONL record "
+        "gains an `abc_path` field when ABC slicing succeeded.",
+    )
+    ap.add_argument(
+        "--mxl-source-dir",
+        default=None,
+        help="Directory containing user-supplied source .mxl/.musicxml files "
+        "matched by piece_id stem (e.g. 00001.mxl, 00001_<title-slug>.mxl). "
+        "Required if --build-abc is set. .mxl is the standard MusicXML "
+        "compressed format and is what MuseScore/Finale export. See "
+        "docs/data/supermario_setup.md § Option E for the .mus → .mxl path.",
+    )
+    ap.add_argument(
+        "--abc-segments-dir",
+        default=None,
+        help="Where per-segment ABC files go when --build-abc is set. "
+        "Default: <data-dir>/abc_segments.",
+    )
+    ap.add_argument(
+        "--skip-abc-slice",
+        action="store_true",
+        help="Skip ABC segment slicing; assume segment ABC files are already present.",
+    )
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -727,12 +886,26 @@ def main() -> None:
     )
     midi_dir = Path(args.midi_dir) if args.midi_dir else data_dir / "midi"
     audio_dir = Path(args.audio_dir) if args.audio_dir else None
+    abc_segments_dir = (
+        Path(args.abc_segments_dir) if args.abc_segments_dir else data_dir / "abc_segments"
+    )
+    mxl_source_dir = Path(args.mxl_source_dir) if args.mxl_source_dir else None
     for d in (data_dir, segments_dir, midi_segments_dir, midi_dir):
         d.mkdir(parents=True, exist_ok=True)
     if audio_dir is not None and not audio_dir.exists():
         log.error(f"--audio-dir does not exist: {audio_dir}")
         sys.exit(1)
+    if args.build_abc:
+        if mxl_source_dir is None or not mxl_source_dir.is_dir():
+            log.error(
+                "--build-abc requires --mxl-source-dir pointing at a directory of "
+                ".mxl/.musicxml files (one per piece, matched by piece_id stem). "
+                "See docs/data/supermario_setup.md § Option E."
+            )
+            sys.exit(1)
+        abc_segments_dir.mkdir(parents=True, exist_ok=True)
     audio_enabled = audio_dir is not None
+    abc_enabled = bool(args.build_abc)
 
     # ── Validate dependencies ──────────────────────────────────────────────
     needed_tools = [
@@ -915,6 +1088,8 @@ def main() -> None:
     failed_audio_slice = 0
     audio_segments_written = 0
     midi_segments_written = 0
+    abc_segments_written = 0
+    abc_pieces_missing_mxl = set()
 
     for pid in candidates:
         midi_path = midi_dir / f"{pid}.mid"
@@ -935,8 +1110,10 @@ def main() -> None:
 
         meta = pieces_meta[pid]
         audio_path = _find_user_audio(pid, audio_dir) if audio_enabled else None
+        mxl_path = _find_mxl(pid, mxl_source_dir) if abc_enabled else None
         out_midi_dir = midi_segments_dir / pid
         out_audio_dir = segments_dir / pid
+        out_abc_dir = abc_segments_dir / pid
 
         for seg_idx, (bar_start, bar_end, label) in enumerate(segments):
             time_range = _bar_range_to_time(bar_start, bar_end, bar_times)
@@ -961,6 +1138,20 @@ def main() -> None:
                 midi_segments_written += 1
             elif not midi_seg_path.exists():
                 continue
+
+            # ── ABC segment (only if --build-abc set + .mxl found) ─────
+            abc_record_fields: dict = {}
+            if abc_enabled:
+                if mxl_path is None:
+                    abc_pieces_missing_mxl.add(pid)
+                else:
+                    abc_seg_path = out_abc_dir / f"{seg_idx:03d}_{label}.abc"
+                    if not args.skip_abc_slice:
+                        if _slice_abc(mxl_path, abc_seg_path, bar_start, bar_end):
+                            abc_record_fields = {"abc_path": str(abc_seg_path.as_posix())}
+                            abc_segments_written += 1
+                    elif abc_seg_path.exists():
+                        abc_record_fields = {"abc_path": str(abc_seg_path.as_posix())}
 
             # ── Audio segment (only if --audio-dir given) ──────────────
             audio_record_fields: dict = {}
@@ -1000,6 +1191,11 @@ def main() -> None:
                     "bar_end": bar_end,
                     "seg_start": round(start_sec, 3),
                     "seg_end": round(end_sec, 3),
+                    # ── ABC field (only when --build-abc + slicing succeeded) ──────
+                    # Absent on records where ABC slicing wasn't requested or
+                    # failed. The symbolic datamodule's `input_format: abc` mode
+                    # filters records to those that have `abc_path`.
+                    **abc_record_fields,
                     # ── audio-derived fields (subset, only when slicing succeeded) ──
                     # The audio_path / audio_* fields are absent on
                     # symbolic-only records. The audio datamodule reads
@@ -1028,7 +1224,8 @@ def main() -> None:
     log.info(
         f"  built {len(records):,} segment records "
         f"(MIDI segments written: {midi_segments_written:,}, "
-        f"audio segments written: {audio_segments_written:,})"
+        f"audio segments written: {audio_segments_written:,}, "
+        f"ABC segments written: {abc_segments_written:,})"
     )
     log.info(
         f"  dropped: {dropped_short} short, {dropped_oor} bar-out-of-range, "
@@ -1036,6 +1233,13 @@ def main() -> None:
         f"{failed_midi_slice} MIDI-slice failures, "
         f"{failed_audio_slice} audio-slice failures"
     )
+    if abc_enabled and abc_pieces_missing_mxl:
+        log.warning(
+            f"  ! {len(abc_pieces_missing_mxl)} pieces had no .mxl/.musicxml in "
+            f"--mxl-source-dir; their records have no `abc_path` field. ABC-mode "
+            f"sweeps will skip those records. Examples: "
+            f"{sorted(abc_pieces_missing_mxl)[:5]}..."
+        )
     if not records:
         log.error("No segment records — aborting.")
         sys.exit(2)

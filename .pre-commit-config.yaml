@@ -29,8 +29,10 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        # Vendored third-party code under LGPL — keep byte-identical.
+        exclude: '^scripts/data/_vendor/'
       - id: end-of-file-fixer
-        exclude: '\.ipynb$'
+        exclude: '\.ipynb$|^scripts/data/_vendor/'
       - id: check-yaml
         # Lightning configs use `!omegaconf` etc. — skip those.
         args: [--unsafe]

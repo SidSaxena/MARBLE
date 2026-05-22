@@ -319,7 +319,18 @@ SWEEPS: list[SweepDef] = [
         task="SuperMarioStructure",
         base_config="configs/probe.CLaMP3-symbolic-layers.SuperMarioStructure.yaml",
         num_layers=13,
-        note="Structure class| 6 classes  | acc+macro_f1 | CLaMP3-symbolic 13 layers | VGM | PRIMARY (symbolic)",
+        note="Structure class| 6 classes  | acc+macro_f1 | CLaMP3-symbolic 13 layers | VGM | PRIMARY (symbolic) | MIDI/MTF input",
+    ),
+    # CLaMP3-symbolic ABC-input variant — bar-level patchiliser mode. Requires
+    # `--build-abc --mxl-source-dir <dir>` at build time so each JSONL record
+    # has an `abc_path`. See configs/probe.CLaMP3-symbolic-{layers,meanall}.SuperMarioStructure.abc.yaml
+    # and docs/data/supermario_setup.md § Option E.
+    SweepDef(
+        model="CLaMP3-symbolic-abc",
+        task="SuperMarioStructure",
+        base_config="configs/probe.CLaMP3-symbolic-layers.SuperMarioStructure.abc.yaml",
+        num_layers=13,
+        note="Structure class| 6 classes  | acc+macro_f1 | CLaMP3-symbolic 13 layers | VGM | ABC input (bar-level)",
     ),
     SweepDef(
         model="CLaMP3",

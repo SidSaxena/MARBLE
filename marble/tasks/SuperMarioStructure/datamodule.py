@@ -300,7 +300,20 @@ class _SuperMarioStructureSymbolicBase(Dataset):
         self,
         jsonl: str,
         max_patches: int | None = None,
+        input_format: str = "midi",
     ):
+        """
+        Parameters
+        ----------
+        jsonl         : per-split JSONL produced by build_supermario_dataset.py.
+        max_patches   : sequence-length cap (default = CLaMP3Config.PATCH_LENGTH).
+        input_format  : "midi" (default, MTF mode through `midi_to_mtf`) or
+                        "abc" (bar-level mode, requires `--build-abc` at build
+                        time so every record has an `abc_path`). ABC is what
+                        CLaMP3 was primarily trained on and gives bar-aligned
+                        patches; MIDI/MTF still works but is the secondary
+                        mode. See docs/data/supermario_setup.md § Option E.
+        """
         # Intentional lazy import — matches the VGMIDITVar symbolic pattern.
         # Eagerly importing CLaMP3 at module top level would force the heavy
         # CLaMP3 weight download on machines that never run the symbolic
@@ -315,16 +328,47 @@ class _SuperMarioStructureSymbolicBase(Dataset):
         self.patch_size = CLaMP3Config.PATCH_SIZE
         self.pad_token_id = self.patchilizer.pad_token_id
 
+        if input_format not in ("midi", "abc"):
+            raise ValueError(f"input_format must be 'midi' or 'abc', got {input_format!r}")
+        self.input_format = input_format
+
         with open(jsonl, encoding="utf-8") as f:
             self.meta: list[dict] = [json.loads(line) for line in f]
 
-        # Fail-loud label validation (same as audio path).
-        for info in self.meta:
-            if "midi_path" not in info:
-                raise ValueError(
-                    f"JSONL record missing `midi_path`: {info.get('ori_uid', '?')} — "
-                    f"re-run scripts/data/build_supermario_dataset.py to regenerate"
+        # Fail-loud validation. For MIDI: every record needs `midi_path`. For
+        # ABC: filter to records that have `abc_path` (those without are
+        # silently skipped — the build script doesn't guarantee ABC for
+        # every record if --mxl-source-dir was missing some pieces).
+        if input_format == "midi":
+            for info in self.meta:
+                if "midi_path" not in info:
+                    raise ValueError(
+                        f"JSONL record missing `midi_path`: {info.get('ori_uid', '?')} — "
+                        f"re-run scripts/data/build_supermario_dataset.py to regenerate"
+                    )
+        else:  # abc
+            n_before = len(self.meta)
+            self.meta = [m for m in self.meta if m.get("abc_path")]
+            n_dropped = n_before - len(self.meta)
+            if n_dropped:
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "  dropped %d/%d records lacking `abc_path` (input_format='abc'); "
+                    "re-run build_supermario_dataset.py with --build-abc + "
+                    "--mxl-source-dir to populate.",
+                    n_dropped,
+                    n_before,
                 )
+            if not self.meta:
+                raise ValueError(
+                    f"input_format='abc' but no records in {jsonl} have abc_path. "
+                    f"Re-build with: scripts/data/build_supermario_dataset.py "
+                    f"--build-abc --mxl-source-dir <dir>"
+                )
+
+        # Common label validation.
+        for info in self.meta:
             lbl = info["label"]
             if isinstance(lbl, list):
                 lbl = lbl[0] if lbl else None
@@ -345,24 +389,36 @@ class _SuperMarioStructureSymbolicBase(Dataset):
     def __getitem__(self, idx: int):
         """Return ``(patches, label, ori_uid, clip_id)`` 4-tuple."""
         info = self.meta[idx]
-        midi_path = info["midi_path"]
+        # input_format='abc': use abc_path; the patchilizer's ABC mode kicks
+        # in automatically because the input string doesn't start with
+        # 'ticks_per_beat'. Otherwise route through midi_to_mtf.
+        if self.input_format == "abc":
+            symbolic_path = info["abc_path"]
+        else:
+            symbolic_path = info["midi_path"]
         label = self.LABEL2IDX[info["label"]]
         ori_uid = info["ori_uid"]
-        # One "slice" per MIDI segment (the patchilizer is deterministic
-        # and processes the whole MIDI as a single sequence).
-        clip_id = make_clip_id(midi_path, 0)
+        # One "slice" per segment. Cache key encodes the source path so
+        # ABC and MIDI variants of the same segment get separate cache
+        # entries (different post-encoder embeddings).
+        clip_id = make_clip_id(symbolic_path, 0)
 
-        # Cache hit — skip patchilization entirely. Defensive getattr against
-        # the Windows-spawn pickle/state-mismatch (commit 23f8e36 pattern).
+        # Cache hit — skip patchilization entirely.
         cache_check = getattr(self, "cache_check_fn", None)
         if cache_check is not None and cache_check(clip_id):
             patches = torch.zeros((self.max_patches, self.patch_size), dtype=torch.long)
             return patches, label, ori_uid, clip_id
 
-        # M3 tokenize → list of patches; each patch is a list of int tokens.
-        mtf = self._midi_to_mtf(midi_path)
+        if self.input_format == "abc":
+            # Read ABC text directly — the patchilizer's bar-mode handles it.
+            with open(symbolic_path, encoding="utf-8") as f:
+                tokenizer_input = f.read()
+        else:
+            # MIDI → MTF (event-level packing).
+            tokenizer_input = self._midi_to_mtf(symbolic_path)
+
         patches_list = self.patchilizer.encode(
-            mtf, patch_size=self.patch_size, add_special_patches=True
+            tokenizer_input, patch_size=self.patch_size, add_special_patches=True
         )
         patches_list = patches_list[: self.max_patches]
         patches = torch.tensor(patches_list, dtype=torch.long)  # (P, patch_size)

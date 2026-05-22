@@ -45,6 +45,7 @@ dependencies = [
     "numba",         # GTZANBeatTracking HMM (replaces the old Cython extension)
     "omar-rq @ git+https://github.com/MTG/omar-rq.git",  # OMARRQ encoder
     "hf-xet>=1.5.0",
+    "patchright>=1.59.1",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +61,15 @@ xcodec = [
 ninsheetmusic = [
     "playwright>=1.40",
     "playwright-stealth>=2.0",   # patches navigator.webdriver + other bot tells
+]
+# uv sync --extra symbolic-abc
+# Required for the ABC path on SuperMarioStructure (and any future
+# task that wants CLaMP3-symbolic's bar-level ABC tokenisation
+# instead of the secondary MIDI/MTF mode). music21 handles
+# .mxl → musicxml + bar-range slicing; the vendored xml2abc handles
+# musicxml → ABC. See docs/data/supermario_setup.md § Option E.
+symbolic-abc = [
+    "music21>=9.0",
 ]
 
 [dependency-groups]
@@ -89,6 +99,8 @@ extend-exclude = [
     "marble/encoders/MusicFM",
     "marble/encoders/Xcodec",
     "marble/encoders/Dasheng",
+    # Third-party tool vendored verbatim under LGPL — must stay byte-identical.
+    "scripts/data/_vendor",
     # Generated per-layer sweep configs — auto-emitted YAML, not Python anyway.
     "configs/sweeps",
     "output",
