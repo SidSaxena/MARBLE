@@ -22,86 +22,108 @@ modal run modal_marble.py::run_probe --config configs/probe.MuQ.Chords1217.yaml
 modal volume ls marble-output
 """
 
-import http
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import modal
-import os
-import sys
-import subprocess
-from pathlib import Path
 
 # ──────────────────────────────────────────────
 # App + image
 # ──────────────────────────────────────────────
 
-APP_NAME    = "marble-leitmotif"
-WORK_DIR    = "/root/marble"
-HF_CACHE    = f"{WORK_DIR}/data/.hf_cache"
+APP_NAME = "marble-leitmotif"
+WORK_DIR = "/root/marble"
+HF_CACHE = f"{WORK_DIR}/data/.hf_cache"
 
 app = modal.App(APP_NAME)
 
 image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install(["ffmpeg", "libsndfile1", "git", "curl", "wget"])
-    .pip_install([
-        # Core ML stack — pinned to match pyproject.toml
-        "torch==2.6.0",
-        "torchaudio==2.6.0",
-        "transformers==4.52.3",
-        "lightning==2.5.1",
-        # MARBLE deps
-        "jsonargparse[signatures]>=4.27.7",
-        "albumentations==1.4.4",
-        "datasets==3.6.0",
-        "peft==0.15.2",
-        "einops",
-        "requests",
-        "librosa",
-        "omegaconf",
-        "wandb",
-        "mir_eval",
-        "pretty_midi",
-        "torchmetrics",
-        "soundfile",
-        "huggingface_hub>=0.24.0",
-        "accelerate",
-        # OMAR-RQ
-        "git+https://github.com/MTG/omar-rq.git",
-    ])
+    .pip_install(
+        [
+            # Core ML stack — pinned to match pyproject.toml. Torch 2.7 needed for
+            # the cu128 wheels used locally (RTX 5060 Ti = sm_120 / Blackwell);
+            # Modal still pulls CUDA 12.x at runtime and 2.7 wheels work cleanly.
+            "torch==2.7.0",
+            "torchaudio==2.7.0",
+            "transformers==4.52.3",
+            "lightning==2.5.1",
+            # MARBLE deps
+            "jsonargparse[signatures]>=4.27.7",
+            "albumentations==1.4.4",
+            "datasets==3.6.0",
+            "peft==0.15.2",
+            "einops",
+            "requests",
+            "librosa",
+            "omegaconf",
+            "wandb",
+            "mir_eval",
+            "pretty_midi",
+            "torchmetrics",
+            "soundfile",
+            "huggingface_hub>=0.24.0",
+            "hf-xet>=1.5.0",  # HF filesystem helpers
+            "accelerate",
+            # MARBLE deps added since the last Modal-touching commit (5c2ee41):
+            "mido",  # CLaMP3 MIDI→MTF tokenisation (SuperMarioStructure path)
+            "yt-dlp",  # HookTheoryMelody + HXMSA audio recovery
+            "numpy>=1.19",
+            "scipy>=1.5",
+            "matplotlib",  # scripts/analysis/*
+            "seaborn",  # scripts/analysis/*
+            "numba",  # GTZANBeatTracking HMM
+            "patchright>=1.59.1",  # NinSheetMusic MIDI scrape fallback (SuperMario)
+            # OMAR-RQ
+            "git+https://github.com/MTG/omar-rq.git",
+        ]
+    )
     .add_local_dir(
         local_path=".",
         remote_path=WORK_DIR,
-        copy=True,          # bake into image layer (not runtime mount)
+        copy=True,  # bake into image layer (not runtime mount)
         ignore=[
-            "data/**", "output/**", ".git/**", "**/__pycache__",
-            "**/*.pyc", "**/*.pth", "memory/**", ".venv/**",
+            "data/**",
+            "output/**",
+            ".git/**",
+            "**/__pycache__",
+            "**/*.pyc",
+            "**/*.pth",
+            "memory/**",
+            ".venv/**",
         ],
     )
     .run_commands([f"pip install -e {WORK_DIR} --no-deps --quiet"])
-    .env({
-        "PYTHONPATH": WORK_DIR,
-        "HF_HOME": HF_CACHE,
-        "HF_DATASETS_CACHE": HF_CACHE,
-        "WANDB_MODE": "offline",       # logs saved locally; sync with: wandb sync output/
-        "TOKENIZERS_PARALLELISM": "false",
-    })
+    .env(
+        {
+            "PYTHONPATH": WORK_DIR,
+            "HF_HOME": HF_CACHE,
+            "HF_DATASETS_CACHE": HF_CACHE,
+            "WANDB_MODE": "offline",  # logs saved locally; sync with: wandb sync output/
+            "TOKENIZERS_PARALLELISM": "false",
+        }
+    )
 )
 
 # ──────────────────────────────────────────────
 # Persistent storage
 # ──────────────────────────────────────────────
 
-data_vol   = modal.Volume.from_name("marble-data",   create_if_missing=True)
+data_vol = modal.Volume.from_name("marble-data", create_if_missing=True)
 output_vol = modal.Volume.from_name("marble-output", create_if_missing=True)
 
 VOL = {
-    f"{WORK_DIR}/data":   data_vol,
+    f"{WORK_DIR}/data": data_vol,
     f"{WORK_DIR}/output": output_vol,
 }
 
 # ──────────────────────────────────────────────
 # Helpers shared across functions
 # ──────────────────────────────────────────────
+
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     """Run a subprocess, stream stdout/stderr, raise on error."""
@@ -114,18 +136,25 @@ def _chdir():
     sys.path.insert(0, WORK_DIR)
 
 
-def _gen_sweep_configs(base_config: str, num_layers: int,
-                       model_tag: str, task_tag: str) -> str:
+def _gen_sweep_configs(base_config: str, num_layers: int, model_tag: str, task_tag: str) -> str:
     """Generate per-layer YAML configs and return the sweep dir path."""
     sweep_dir = f"configs/sweeps/{model_tag}.{task_tag}"
-    _run([
-        "python", "scripts/sweeps/gen_sweep_configs.py",
-        "--base-config", base_config,
-        "--num-layers",  str(num_layers),
-        "--model-tag",   model_tag,
-        "--task-tag",    task_tag,
-        "--out-dir",     sweep_dir,
-    ])
+    _run(
+        [
+            "python",
+            "scripts/sweeps/gen_sweep_configs.py",
+            "--base-config",
+            base_config,
+            "--num-layers",
+            str(num_layers),
+            "--model-tag",
+            model_tag,
+            "--task-tag",
+            task_tag,
+            "--out-dir",
+            sweep_dir,
+        ]
+    )
     return sweep_dir
 
 
@@ -134,11 +163,12 @@ def _has_test_metrics(summary_path: Path) -> bool:
     Mirrors scripts/sweeps/run_sweep_local.py:80 — the only reliable completion
     signal for both supervised and zero-shot sweeps."""
     import json
+
     try:
         data = json.loads(summary_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return any(k.startswith("test/") for k in data.keys())
+    return any(k.startswith("test/") for k in data)
 
 
 def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
@@ -160,18 +190,198 @@ def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
 
 
 # ──────────────────────────────────────────────
+# Checkpoint resume + cleanup (ports of run_sweep_local.py helpers)
+# ──────────────────────────────────────────────
+
+
+def _checkpoint_dirpath_from_config(cfg_path: str | Path) -> Path | None:
+    """Parse the YAML and return the ModelCheckpoint.dirpath, or None.
+
+    Shared by ``_resume_args_for_config`` (looks for ``last.ckpt`` here)
+    and ``_delete_last_ckpt`` (deletes ``last.ckpt`` from here after a
+    successful fit). Single source of truth for "where this config's
+    checkpoints live."
+    """
+    import yaml
+
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    callbacks = (cfg or {}).get("trainer", {}).get("callbacks", []) or []
+    for cb in callbacks:
+        if not isinstance(cb, dict):
+            continue
+        if "ModelCheckpoint" not in cb.get("class_path", ""):
+            continue
+        dirpath = (cb.get("init_args") or {}).get("dirpath")
+        if dirpath:
+            return Path(dirpath)
+    return None
+
+
+def _resume_args_for_config(cfg_path: str | Path) -> list[str]:
+    """Return ``["--ckpt_path", "<path>"]`` if a non-empty ``last.ckpt`` exists
+    for this config's ModelCheckpoint dirpath, otherwise an empty list.
+
+    Lightning's ``ModelCheckpoint(save_last=True)`` writes ``last.ckpt``
+    after every epoch. Passing ``--ckpt_path <last.ckpt>`` to ``cli.py fit``
+    restores epoch + optimizer + LR scheduler + RNG state — equivalent to
+    resuming where the previous run was killed (e.g. by a Modal job
+    timeout). Critical for sweeps on time-bounded containers.
+    """
+    dirpath = _checkpoint_dirpath_from_config(cfg_path)
+    if dirpath is None:
+        return []
+    last_ckpt = dirpath / "last.ckpt"
+    if last_ckpt.exists() and last_ckpt.stat().st_size > 1000:
+        return ["--ckpt_path", str(last_ckpt)]
+    return []
+
+
+def _delete_last_ckpt(cfg_path: str | Path) -> None:
+    """Delete ``last.ckpt`` from this config's ModelCheckpoint dirpath.
+
+    Called after a successful fit: ``last.ckpt`` was the resume pointer
+    but is now obsolete (the run completed normally; test loads
+    ``best.ckpt``). On Modal sweeps each layer's ``last.ckpt`` lives on
+    the marble-output volume — without cleanup a 24-layer OMAR-RQ sweep
+    leaves ~24 GB of dead weight per run. Idempotent + best-effort.
+    """
+    dirpath = _checkpoint_dirpath_from_config(cfg_path)
+    if dirpath is None:
+        return
+    last_ckpt = dirpath / "last.ckpt"
+    if not last_ckpt.exists():
+        return
+    try:
+        size_mb = last_ckpt.stat().st_size / (1024 * 1024)
+        last_ckpt.unlink()
+        # Defensive: Lightning may write last-v1.ckpt, last-v2.ckpt if
+        # multiple ModelCheckpoint callbacks contend for the same dir.
+        for stale in dirpath.glob("last-v*.ckpt"):
+            stale.unlink(missing_ok=True)
+        print(f"  cleanup: removed {last_ckpt} ({size_mb:.0f} MB)")
+    except OSError as e:
+        print(f"  cleanup: could not remove {last_ckpt}: {e}", file=sys.stderr)
+
+
+# ──────────────────────────────────────────────
+# Meanall (mean-of-all-layers) baseline (port of run_sweep_local.py helpers)
+# ──────────────────────────────────────────────
+
+
+def _meanall_config_for(base_config: str) -> Path | None:
+    """Find the meanall sibling config for a per-layer base config.
+
+    Pattern: ``probe.<encoder>(-layers)?.<task>.yaml`` →
+             ``probe.<encoder>-meanall.<task>.yaml``
+    Returns the path if it exists on disk, else None.
+    """
+    p = Path(base_config)
+    parts = p.name.split(".")
+    # Expected: ['probe', '<encoder>(-layers)?', '<task>', 'yaml']
+    if len(parts) != 4 or parts[0] != "probe" or parts[-1] != "yaml":
+        return None
+    encoder = parts[1].removesuffix("-layers")
+    task = parts[2]
+    candidate = p.with_name(f"probe.{encoder}-meanall.{task}.yaml")
+    return candidate if candidate.exists() else None
+
+
+def _meanall_done(task_tag: str, model_tag: str) -> bool:
+    """Mirror of ``_layer_done`` for the meanall run."""
+    patterns = [
+        f"*{model_tag}-meanall*{task_tag}*",
+        f"*{task_tag}*{model_tag}-meanall*",
+        f"*{model_tag}*{task_tag}*-meanall*",
+        f"*{task_tag}*{model_tag}*-meanall*",
+    ]
+    for pat in patterns:
+        for d in Path("output").glob(pat):
+            if not d.is_dir():
+                continue
+            for summary in d.glob("wandb/run-*/files/wandb-summary.json"):
+                if _has_test_metrics(summary):
+                    return True
+    return False
+
+
+def _run_meanall_first(
+    base_config: str,
+    model_tag: str,
+    task_tag: str,
+    skip_if_done: bool = True,
+    continue_on_failure: bool = False,
+) -> bool:
+    """Run the mean-of-all-layers baseline before the per-layer sweep.
+
+    Returns True if meanall ran (or was correctly skipped); False if it
+    failed and ``continue_on_failure`` is True (caller decides what to do
+    with that). Raises subprocess.CalledProcessError if meanall fails and
+    continue_on_failure is False — meanall failure usually means every
+    per-layer job will hit the same error.
+    """
+    cfg = _meanall_config_for(base_config)
+    if cfg is None:
+        print(
+            f"  ! No meanall sibling for {base_config} "
+            f"(expected probe.<encoder>-meanall.<task>.yaml). Skipping."
+        )
+        return True
+    if skip_if_done and _meanall_done(task_tag, model_tag):
+        print("  ✓ meanall already complete — skipping.")
+        return True
+
+    print(
+        f"\n{'=' * 60}\n meanall (mean-of-all-layers baseline)  "
+        f"[{model_tag} | {task_tag}]\n{'=' * 60}",
+        flush=True,
+    )
+    for stage in ("fit", "test"):
+        cmd = [
+            "python",
+            "cli.py",
+            stage,
+            "-c",
+            str(cfg),
+            f"--trainer.logger.init_args.name=layer-meanall-{stage}",
+            f"--trainer.logger.init_args.job_type={stage}",
+        ]
+        if stage == "fit":
+            cmd += _resume_args_for_config(cfg)
+        try:
+            _run(cmd)
+        except subprocess.CalledProcessError as e:
+            if continue_on_failure:
+                print(
+                    f"  ⚠ meanall {stage} failed (exit {e.returncode}); "
+                    f"continue_on_failure=True → proceeding with per-layer.",
+                    file=sys.stderr,
+                )
+                return False
+            raise
+        if stage == "fit":
+            _delete_last_ckpt(cfg)
+    return True
+
+
+# ──────────────────────────────────────────────
 # Dataset downloads
 # ──────────────────────────────────────────────
+
 
 @app.function(
     image=image,
     volumes=VOL,
-    timeout=3 * 3600,   # 3 h for large downloads
+    timeout=3 * 3600,  # 3 h for large downloads
     secrets=[modal.Secret.from_name("huggingface")],
 )
 def _download_marble_datasets(datasets: list[str]):
     """Download MARBLE datasets from HuggingFace m-a-p/<name>."""
     from huggingface_hub import snapshot_download
+
     _chdir()
     hf_token = os.environ.get("HF_TOKEN")
 
@@ -207,10 +417,11 @@ def _download_covers80():
     Download Covers80 (80 works × 2 versions each) and write JSONL files.
     Audio → /data/Covers80/   JSONL → train / val / test splits.
     """
-    import tarfile
-    import urllib.request
     import json
     import random
+    import tarfile
+    import urllib.request
+
     import torchaudio
 
     dest = Path(f"{WORK_DIR}/data/Covers80")
@@ -225,7 +436,7 @@ def _download_covers80():
         raise RuntimeError(
             f"Covers80 download failed: {e}\n"
             "Place covers80.tar.bz2 manually in /data/Covers80/ and re-run."
-        )
+        ) from e
 
     print("Extracting …")
     with tarfile.open(archive, "r:bz2") as tf:
@@ -235,9 +446,7 @@ def _download_covers80():
     list1 = next(dest.glob("**/list1"), None) or next(dest.glob("**/covers1"), None)
     list2 = next(dest.glob("**/list2"), None) or next(dest.glob("**/covers2"), None)
     if not list1 or not list2:
-        raise RuntimeError(
-            f"Unexpected archive layout. Found: {list(dest.iterdir())}"
-        )
+        raise RuntimeError(f"Unexpected archive layout. Found: {list(dest.iterdir())}")
 
     def audio_files(d: Path):
         return sorted(list(d.glob("**/*.mp3")) + list(d.glob("**/*.wav")))
@@ -250,12 +459,14 @@ def _download_covers80():
         for p in files:
             try:
                 info = torchaudio.info(str(p))
-                recs.append({
-                    "audio_path": str(p),
-                    "label": song_id(p),
-                    "sample_rate": info.sample_rate,
-                    "num_samples": info.num_frames,
-                })
+                recs.append(
+                    {
+                        "audio_path": str(p),
+                        "label": song_id(p),
+                        "sample_rate": info.sample_rate,
+                        "num_samples": info.num_frames,
+                    }
+                )
             except Exception as e:
                 print(f"  ⚠ skip {p.name}: {e}")
         return recs
@@ -267,7 +478,7 @@ def _download_covers80():
     random.seed(42)
     random.shuffle(list1_recs)
     split_n = max(1, int(len(list1_recs) * 0.2))
-    val_recs   = list1_recs[:split_n]
+    val_recs = list1_recs[:split_n]
     train_recs = list1_recs[split_n:]
 
     def write_jsonl(recs, path):
@@ -277,7 +488,7 @@ def _download_covers80():
         print(f"  {Path(path).name}: {len(recs)} records")
 
     write_jsonl(train_recs, dest / "train.jsonl")
-    write_jsonl(val_recs,   dest / "val.jsonl")
+    write_jsonl(val_recs, dest / "val.jsonl")
     write_jsonl(list2_recs, dest / "test.jsonl")
 
     # Write sorted label list for pasting into YAML configs
@@ -293,11 +504,12 @@ def _download_covers80():
 # SHS100K JSONL setup (run once before SHS100K sweeps)
 # ──────────────────────────────────────────────
 
+
 @app.function(
     image=image,
     volumes=VOL,
-    timeout=2 * 60 * 60,    # 2 h: fast at default settings (~30 s), generous if
-                            # use_torchaudio=True is opted in (~2 h for 7k files).
+    timeout=2 * 60 * 60,  # 2 h: fast at default settings (~30 s), generous if
+    # use_torchaudio=True is opted in (~2 h for 7k files).
 )
 def setup_shs100k_jsonl(use_torchaudio: bool = False):
     """One-time setup: rewrite SHS100K.test.jsonl on the marble-data volume
@@ -332,26 +544,30 @@ def setup_shs100k_jsonl(use_torchaudio: bool = False):
         )
 
     cmd = [
-        "python", "scripts/verify/verify_shs100k.py",
-        "--jsonl", jsonl,
-        "--audio-dir", audio_dir,
+        "python",
+        "scripts/verify/verify_shs100k.py",
+        "--jsonl",
+        jsonl,
+        "--audio-dir",
+        audio_dir,
         "--rewrite",
     ]
     if use_torchaudio:
         cmd.append("--torchaudio")
     _run(cmd)
     data_vol.commit()
-    print(f"SHS100K JSONL rebuilt and committed to marble-data:/SHS100K/")
+    print("SHS100K JSONL rebuilt and committed to marble-data:/SHS100K/")
 
 
 # ──────────────────────────────────────────────
 # HookTheory full setup (for HookTheoryMelody)
 # ──────────────────────────────────────────────
 
+
 @app.function(
     image=image,
     volumes=VOL,
-    timeout=8 * 60 * 60,    # 8 h — 104 GB download + extract + JSONL build
+    timeout=8 * 60 * 60,  # 8 h — 104 GB download + extract + JSONL build
     secrets=[modal.Secret.from_name("huggingface")],
 )
 def setup_hooktheory_full():
@@ -372,32 +588,185 @@ def setup_hooktheory_full():
     from download import download_dataset
 
     download_dataset("HookTheory", f"{WORK_DIR}/data", with_full_audio=True)
-    data_vol.commit()   # flush the heavy bits before the JSONL build
+    data_vol.commit()  # flush the heavy bits before the JSONL build
 
     # Build the Melody JSONL using the volume's audio dir for the filter.
     audio_dir = f"{WORK_DIR}/data/HookTheory/audio"
     out_dir = f"{WORK_DIR}/data/HookTheory"
-    _run([
-        "python", "scripts/data/build_hooktheory_melody_jsonl.py",
-        "--out-dir", out_dir,
-        "--audio-dir", audio_dir,
-        "--filter-by-audio",
-        # Land the HF cache on the data volume to survive container restarts
-        "--hf-cache-dir", f"{WORK_DIR}/data/.hf_cache",
-    ])
+    _run(
+        [
+            "python",
+            "scripts/data/build_hooktheory_melody_jsonl.py",
+            "--out-dir",
+            out_dir,
+            "--audio-dir",
+            audio_dir,
+            "--filter-by-audio",
+            # Land the HF cache on the data volume to survive container restarts
+            "--hf-cache-dir",
+            f"{WORK_DIR}/data/.hf_cache",
+        ]
+    )
     data_vol.commit()
-    print(f"HookTheoryMelody ready on marble-data:/HookTheory/")
+    print("HookTheoryMelody ready on marble-data:/HookTheory/")
+
+
+# ──────────────────────────────────────────────
+# HXMSA setup (Harmonix Set MSA — yt-dlp + slice)
+# ──────────────────────────────────────────────
+
+
+@app.function(
+    image=image,
+    volumes=VOL,
+    timeout=8 * 60 * 60,  # 8 h — yt-dlp's 2–5 s rate limits dominate
+)
+def setup_hxmsa(
+    max_tracks: int | None = None,
+    skip_download: bool = False,
+    skip_slice: bool = False,
+):
+    """Build the HXMSA (Harmonix Set MSA) dataset on the marble-data volume.
+
+    Pipeline (mirrors scripts/data/build_hxmsa_dataset.py):
+      1. Clone harmonixset annotation repo into data/HXMSA/harmonixset
+      2. yt-dlp full tracks → data/HXMSA/audio_full/<track_id>.flac
+      3. ffmpeg slice → data/HXMSA/audio/<track_id>__<seg_id>.flac
+      4. Build HXMSA.{train,val,test}.jsonl
+
+    Prerequisite (one-time, upload YouTube cookies to the volume so yt-dlp
+    succeeds on age-gated tracks):
+        modal volume put marble-data cookies.txt cookies.txt
+
+    Defaults to the full ~912-track build (~5.5 GB, 3–6 h). Pass
+    ``max_tracks=N`` for a pilot.
+    """
+    _chdir()
+    data_vol.reload()
+
+    out_dir = f"{WORK_DIR}/data/HXMSA"
+    cookies = f"{WORK_DIR}/cookies.txt"
+
+    cmd = [
+        "python",
+        "scripts/data/build_hxmsa_dataset.py",
+        "--out-dir",
+        out_dir,
+    ]
+    if os.path.exists(cookies):
+        cmd += ["--cookies-file", cookies]
+    else:
+        print(
+            "  ! cookies.txt not found at marble-data root — yt-dlp will "
+            "attempt anonymous download; expect some age-gated failures.\n"
+            "  Upload cookies first to recover them:\n"
+            "    python scripts/data/export_youtube_cookies.py --browser firefox\n"
+            "    modal volume put marble-data cookies.txt cookies.txt",
+            file=sys.stderr,
+        )
+    if max_tracks is not None:
+        cmd += ["--max-tracks", str(max_tracks)]
+    if skip_download:
+        cmd.append("--skip-download")
+    if skip_slice:
+        cmd.append("--skip-slice")
+
+    _run(cmd)
+    data_vol.commit()
+    print("HXMSA ready on marble-data:/HXMSA/")
+
+
+# ──────────────────────────────────────────────
+# SuperMarioStructure setup (user-uploaded MIDIs + audio)
+# ──────────────────────────────────────────────
+
+
+@app.function(
+    image=image,
+    volumes=VOL,
+    timeout=2 * 60 * 60,  # 2 h — symbolic-only ~30s; audio slicing dominates
+)
+def setup_supermario_structure(
+    skip_midi_download: bool = True,
+    skip_midi_slice: bool = False,
+    skip_slice: bool = False,
+    max_pieces: int | None = None,
+):
+    """Build the SuperMarioStructure dataset on the marble-data volume.
+
+    NinSheetMusic blocks scrapers (HTTP 403 regardless of headers), so this
+    relies on user-uploaded MIDIs (and optionally user-uploaded audio).
+
+    Prerequisites (one-time uploads from your laptop):
+        # NSM MIDIs you obtained manually (or via `ohsheet`):
+        modal volume put marble-data path/to/your/midis SuperMarioStructure/midi_source
+        # Optional: user-supplied audio aligned with the MIDIs:
+        modal volume put marble-data path/to/your/audio SuperMarioStructure/audio_source
+
+    Then run this. Pipeline (mirrors scripts/data/build_supermario_dataset.py):
+      1. Clone supermario-structure-annotation repo → data/SuperMarioStructure/annotations
+      2. Slice symbolic MIDIs from user uploads → per-segment MIDIs
+      3. (Optional) Slice user audio via bar→time mapping → per-segment FLACs
+      4. Build SuperMarioStructure.{train,val,test}.jsonl
+
+    Defaults: skip the broken auto-MIDI-download (skip_midi_download=True),
+    do MIDI slicing, do audio slicing if audio_source exists.
+    """
+    _chdir()
+    data_vol.reload()
+
+    out_dir = f"{WORK_DIR}/data/SuperMarioStructure"
+    midi_source = f"{out_dir}/midi_source"
+    audio_source = f"{out_dir}/audio_source"
+
+    if not os.path.exists(midi_source):
+        raise FileNotFoundError(
+            f"{midi_source} not found on marble-data volume.\n"
+            f"  Upload NSM MIDIs first:\n"
+            f"    modal volume put marble-data <local_midi_dir> "
+            f"SuperMarioStructure/midi_source"
+        )
+
+    cmd = [
+        "python",
+        "scripts/data/build_supermario_dataset.py",
+        "--out-dir",
+        out_dir,
+        "--midi-source-dir",
+        midi_source,
+    ]
+    if os.path.exists(audio_source):
+        cmd += ["--audio-dir", audio_source]
+    else:
+        print(
+            f"  ! {audio_source} not found — symbolic-only build (audio "
+            f"slicing will be skipped). Upload audio to enable both paths.",
+            file=sys.stderr,
+        )
+    if skip_midi_download:
+        cmd.append("--skip-midi-download")
+    if skip_midi_slice:
+        cmd.append("--skip-midi-slice")
+    if skip_slice:
+        cmd.append("--skip-slice")
+    if max_pieces is not None:
+        cmd += ["--max-pieces", str(max_pieces)]
+
+    _run(cmd)
+    data_vol.commit()
+    print("SuperMarioStructure ready on marble-data:/SuperMarioStructure/")
 
 
 # ──────────────────────────────────────────────
 # Core probe runner
 # ──────────────────────────────────────────────
 
+
 @app.function(
     image=image,
     gpu="A10G",
     volumes=VOL,
-    timeout=4 * 3600,   # 4 h max per run
+    timeout=4 * 3600,  # 4 h max per run
     secrets=[
         modal.Secret.from_name("huggingface"),
         modal.Secret.from_name("wandb-secret"),
@@ -414,7 +783,7 @@ def run_probe(config: str, skip_if_done: bool = True):
 
     # Optionally wire up WandB online mode
     if os.environ.get("WANDB_API_KEY"):
-        os.environ.pop("WANDB_MODE", None)   # unset offline flag
+        os.environ.pop("WANDB_MODE", None)  # unset offline flag
 
     # Quick skip if checkpoint already exists
     if skip_if_done:
@@ -429,7 +798,9 @@ def run_probe(config: str, skip_if_done: bool = True):
 
     result = subprocess.run(
         ["python", "cli.py", "test", "-c", config],
-        capture_output=True, text=True, cwd=WORK_DIR,
+        capture_output=True,
+        text=True,
+        cwd=WORK_DIR,
     )
     output_vol.commit()
     print(result.stdout)
@@ -443,11 +814,12 @@ def run_probe(config: str, skip_if_done: bool = True):
 # Layer sweep runner  (sequential on a single GPU)
 # ──────────────────────────────────────────────
 
+
 @app.function(
     image=image,
     gpu="A10G",
     volumes=VOL,
-    timeout=24 * 3600,   # up to 24 h for a full 12-layer sweep
+    timeout=24 * 3600,  # up to 24 h for a full 12-layer sweep
     secrets=[
         modal.Secret.from_name("huggingface"),
         modal.Secret.from_name("wandb-secret"),
@@ -458,17 +830,40 @@ def run_sweep(
     num_layers: int,
     model_tag: str,
     task_tag: str,
-    layers: list[int] | None = None,   # None → all layers
+    layers: list[int] | None = None,  # None → all layers
+    skip_meanall: bool = False,
+    continue_on_meanall_failure: bool = False,
 ):
     """
     Generate per-layer YAML configs and run fit+test for each layer sequentially.
 
-    Results (checkpoints + wandb offline logs) are committed to marble-output.
+    Mirrors scripts/sweeps/run_sweep_local.py's flow:
+      1. Run the meanall baseline first (if a probe.<enc>-meanall.<task>.yaml
+         sibling exists). Aborts the sweep on meanall failure unless
+         continue_on_meanall_failure=True — meanall shares the encoder /
+         dataloader / GPU init with every per-layer job, so a meanall
+         failure typically dooms the whole sweep.
+      2. For each layer: resume fit from last.ckpt if present (interrupted
+         Modal containers continue from their last epoch); delete last.ckpt
+         after fit succeeds so it doesn't accumulate on marble-output.
+      3. Commit marble-output after each layer.
     """
     _chdir()
+    # Reload so we see prior layers' completion markers + last.ckpts written
+    # by sibling containers / PC runs into the same volume.
+    output_vol.reload()
 
     if os.environ.get("WANDB_API_KEY"):
         os.environ.pop("WANDB_MODE", None)
+
+    if not skip_meanall:
+        _run_meanall_first(
+            base_config,
+            model_tag,
+            task_tag,
+            continue_on_failure=continue_on_meanall_failure,
+        )
+        output_vol.commit()
 
     sweep_dir = _gen_sweep_configs(base_config, num_layers, model_tag, task_tag)
 
@@ -477,9 +872,9 @@ def run_sweep(
 
     for layer in run_layers:
         cfg = f"{sweep_dir}/sweep.{model_tag}.{task_tag}.layer{layer}.yaml"
-        print(f"\n{'='*60}")
-        print(f" Layer {layer}/{num_layers-1}  [{model_tag} | {task_tag}]")
-        print(f"{'='*60}")
+        print(f"\n{'=' * 60}")
+        print(f" Layer {layer}/{num_layers - 1}  [{model_tag} | {task_tag}]")
+        print(f"{'=' * 60}")
 
         # WandB naming overrides (same convention as run_sweep_local.py)
         fit_overrides = [
@@ -491,20 +886,26 @@ def run_sweep(
             "--trainer.logger.init_args.job_type=test",
         ]
 
-        # fit
-        _run(["python", "cli.py", "fit", "-c", cfg, *fit_overrides])
+        # fit — resume from last.ckpt if present (e.g. previous container timed out)
+        fit_cmd = ["python", "cli.py", "fit", "-c", cfg, *fit_overrides]
+        fit_cmd += _resume_args_for_config(cfg)
+        _run(fit_cmd)
+        # Fit succeeded → drop last.ckpt; best.ckpt remains for the test stage.
+        _delete_last_ckpt(cfg)
 
         # test
         res = subprocess.run(
             ["python", "cli.py", "test", "-c", cfg, *test_overrides],
-            capture_output=True, text=True, cwd=WORK_DIR,
+            capture_output=True,
+            text=True,
+            cwd=WORK_DIR,
         )
         print(res.stdout)
         if res.returncode != 0:
             print("STDERR:", res.stderr, file=sys.stderr)
         results[layer] = res.stdout
 
-        output_vol.commit()   # persist after each layer so we don't lose work on timeout
+        output_vol.commit()  # persist after each layer so we don't lose work on timeout
 
     print("\n=== Sweep complete ===")
     for layer, out in results.items():
@@ -518,11 +919,12 @@ def run_sweep(
 # Layer sweep runner  (parallel — one container per layer)
 # ──────────────────────────────────────────────
 
+
 @app.function(
     image=image,
-    gpu="L4",          # L4 (Ada, 24 GB, bf16): best price/perf vs A10G — ~30% cheaper at ~1.05× speed
+    gpu="L4",  # L4 (Ada, 24 GB, bf16): best price/perf vs A10G — ~30% cheaper at ~1.05× speed
     volumes=VOL,
-    timeout=4 * 3600,   # 4 h cap per layer
+    timeout=4 * 3600,  # 4 h cap per layer
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0),
     secrets=[
         modal.Secret.from_name("huggingface"),
@@ -559,7 +961,7 @@ def run_one_layer(
         print(f"Layer {layer}: already done — skipping.")
         return {"layer": layer, "status": "skipped"}
 
-    print(f"\n{'='*60}\n Layer {layer}/{num_layers-1}  [{model_tag} | {task_tag}]\n{'='*60}")
+    print(f"\n{'=' * 60}\n Layer {layer}/{num_layers - 1}  [{model_tag} | {task_tag}]\n{'=' * 60}")
 
     # Match the WandB naming convention used by run_sweep_local.py so fit and
     # test land as distinct, clearly-labelled runs (group/name/tags/job_type).
@@ -573,11 +975,18 @@ def run_one_layer(
     ]
 
     if not retest_only:
-        _run(["python", "cli.py", "fit", "-c", cfg, *name_overrides_fit])
+        # Resume from last.ckpt if a previous container died mid-fit before
+        # writing the wandb-summary completion marker.
+        fit_cmd = ["python", "cli.py", "fit", "-c", cfg, *name_overrides_fit]
+        fit_cmd += _resume_args_for_config(cfg)
+        _run(fit_cmd)
+        _delete_last_ckpt(cfg)
 
     res = subprocess.run(
         ["python", "cli.py", "test", "-c", cfg, *name_overrides_test],
-        capture_output=True, text=True, cwd=WORK_DIR,
+        capture_output=True,
+        text=True,
+        cwd=WORK_DIR,
     )
     print(res.stdout)
     if res.returncode != 0:
@@ -608,13 +1017,9 @@ def run_parallel_sweep(
     the sequential N × that. Cost is identical — N GPUs × 1 hr = 1 GPU × N hr.
     """
     targets = layers if layers is not None else list(range(num_layers))
-    print(f"Spawning {len(targets)} parallel layer jobs for "
-          f"{model_tag} × {task_tag} ...")
+    print(f"Spawning {len(targets)} parallel layer jobs for {model_tag} × {task_tag} ...")
 
-    args = [
-        (base_config, model_tag, task_tag, num_layers, lyr, retest_only)
-        for lyr in targets
-    ]
+    args = [(base_config, model_tag, task_tag, num_layers, lyr, retest_only) for lyr in targets]
     results = list(run_one_layer.starmap(args))
 
     print("\n=== Parallel sweep complete ===")
@@ -626,6 +1031,7 @@ def run_parallel_sweep(
 # ──────────────────────────────────────────────
 # Named sweep entry points (convenience)
 # ──────────────────────────────────────────────
+
 
 @app.local_entrypoint()
 def download():
