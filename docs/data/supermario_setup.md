@@ -163,6 +163,52 @@ fallback download and gracefully fails (logging the 403 count).
 Pieces without MIDIs get dropped — no symbolic record, no audio
 record.
 
+#### Option E — convert from .mxl / .musicxml (recommended if you have score files)
+
+If you've sourced the SuperMarioAnnotation scores in MusicXML (.mxl /
+.musicxml) — for example by opening the upstream .mus files in
+MuseScore/Finale and exporting — the easiest path is to bulk-convert
+to MIDI once and feed the resulting directory to the build script:
+
+```bash
+# One-time: install music21 (not a core MARBLE dep — only needed for this conversion)
+uv pip install music21
+
+# Bulk convert .mxl → .mid alongside, preserving the stem so piece_id parsing still works.
+uv run python scripts/data/convert_mxl_to_midi.py \
+    --in-dir  /path/to/your/mxl_files \
+    --out-dir data/SuperMarioStructure/midi_user
+
+# Then run the regular build (no changes to its CLI)
+uv run python scripts/data/build_supermario_dataset.py \
+    --midi-source-dir data/SuperMarioStructure/midi_user
+```
+
+Why this path is preferred over .mid scraped directly from NSM:
+
+- music21's MusicXML → MIDI is *strictly higher-fidelity* than whatever
+  pre-rendered MIDI Finale exports. Tempo, time signature, key
+  signature, voicing, ties, and `volta`/repeat structure all survive
+  cleanly into the MIDI; the CLaMP3 M3 patchiliser then sees exactly
+  what the original score described.
+- Bypasses NSM's Cloudflare anti-bot entirely — no Playwright session,
+  no `ohsheet`, no manual click-through. The .mxl files are your local
+  property; the conversion is offline.
+- Sets up a future-proof input. When we add an ABC-tokenised encoder
+  (e.g. NotaGen — see [`../symbolic_encoder_landscape.md`](../symbolic_encoder_landscape.md)),
+  the same .mxl files convert to ABC even more losslessly than MIDI
+  does, so the score-level information (dynamics, articulation, slurs,
+  beaming) becomes available without re-sourcing.
+
+What this path does NOT unlock for the current pipeline:
+
+- CLaMP3-symbolic (today's only symbolic encoder) tokenises via M3
+  patches over MIDI/MTF. It consumes the same MIDI byte-stream
+  whether you got there from .mxl or scraped .mid directly. Articulation /
+  dynamics / slur info from MusicXML doesn't survive that pipeline.
+- BPS-Motif is unaffected — it uses csv_notes from its own upstream
+  repo, not score files.
+
 ### User audio (optional)
 
 If you do want to also build the audio path, files must be named

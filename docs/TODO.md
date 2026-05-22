@@ -68,6 +68,22 @@ EMO (emotion), GTZANGenre, MTG{Genre, Instrument, Mood, Top50}, MTT
 (general tagging), LibriSpeechASR (speech). Configs stay in the tree
 for future re-use but no GPU-time is allocated.
 
+### Symbolic encoder candidates (none yet integrated)
+
+CLaMP3-symbolic is the only symbolic encoder in MARBLE today. Full
+landscape report current to 22 May 2026 in
+[`symbolic_encoder_landscape.md`](symbolic_encoder_landscape.md) —
+covers what's downloadable, integration cost sketches, what's new
+post-Nov-2025 (MuseTok, PianoRoll-Event, BACHI, MIDI-LLaMA, motif-CRF,
+SAVGM), and a recommended priority order. TL;DR when we do add more:
+
+1. **Aria-medium-embedding** (solo-piano contrastive — top pick).
+2. **MidiBERT-Piano** (literature baseline for BPS-Motif).
+3. **Moonbeam-839M** (multi-instrument, modern AMT replacement).
+
+Skip CLaMP 2 / MuPT / MuseTok (not yet packaged) / MusicBERT-original
+(fairseq pain).
+
 ### Potential additions (not implemented yet)
 
 From [`structure_datasets_survey.md`](structure_datasets_survey.md),
