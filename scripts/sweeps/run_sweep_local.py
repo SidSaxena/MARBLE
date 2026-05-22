@@ -338,9 +338,10 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
     )
 
     # Supervised tasks: fit then test.  Zero-shot (max_epochs=0): test only.
-    # The wandb run name embeds the model tag so meanall runs across multiple
-    # encoders are distinguishable in WandB's run list (vs the previous
-    # hard-coded `layer-meanall-{kind}` which collided across encoders).
+    # Wandb run name is `layer-meanall-{fit,test}` to match the per-layer
+    # convention `layer-N-{fit,test}` set by gen_sweep_configs. Disambiguation
+    # across encoders comes from the wandb group (`<encoder> / <task>`) +
+    # tags, not the run name.
     for stage, kind in (("fit", "fit"), ("test", "test")):
         cmd = [
             PYTHON,
@@ -348,7 +349,7 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
             stage,
             "-c",
             str(cfg),
-            f"--trainer.logger.init_args.name={args.model_tag}-meanall-{kind}",
+            f"--trainer.logger.init_args.name=layer-meanall-{kind}",
             f"--trainer.logger.init_args.job_type={kind}",
         ] + common_overrides
         # Resume from last.ckpt on the fit stage if one exists (e.g.
