@@ -232,14 +232,25 @@ def _layer_done(task_tag: str, model_tag: str, layer: int) -> bool:
     * The previous "wandb/run-*/ directory exists" heuristic was wrong:
       WandB creates that directory at run startup, before test runs.
     """
+    # Bind model_tag with the standard `-layers.layerN` suffix and task_tag
+    # with `.` separators so a sibling sweep with a related model name doesn't
+    # match — e.g. when running model_tag=CLaMP3-symbolic, dirs from a prior
+    # CLaMP3-symbolic-abc sweep must NOT count as completion. The substring
+    # form `*model_tag*` was permissive enough to false-positive across
+    # related encoder variants.
     patterns = [
-        f"*{model_tag}*{task_tag}*layer{layer}",
-        f"*{task_tag}*{model_tag}*layer{layer}",
+        f"*{task_tag}.{model_tag}-layers.layer{layer}",
+        f"*{model_tag}-layers.layer{layer}",
     ]
     for pat in patterns:
         for d in Path("output").glob(pat):
             if not d.is_dir():
                 continue
+            # Reject dirs whose model segment is a prefix of a longer encoder
+            # name (e.g. `CLaMP3-symbolic-layers.layerN` matching when looking
+            # for `CLaMP3-symbolic` — fine — but `CLaMP3-symbolic-abc-layers`
+            # must not match `*CLaMP3-symbolic-layers*` either; the glob above
+            # already enforces a literal `-layers.layer{N}` boundary).
             for summary in d.glob("wandb/run-*/files/wandb-summary.json"):
                 if _has_test_metrics(summary):
                     return True
@@ -266,12 +277,12 @@ def _meanall_config_for(base_config: str) -> Path | None:
 
 def _meanall_done(task_tag: str, model_tag: str) -> bool:
     """Mirror of _layer_done for the meanall run. The meanall config writes
-    its output under a path containing ``-meanall``; match that."""
+    its output under a path containing ``-meanall``; match that with a
+    literal `-meanall` boundary so sibling encoder names (e.g.
+    `CLaMP3-symbolic` vs `CLaMP3-symbolic-abc`) don't cross-match."""
     patterns = [
-        f"*{model_tag}-meanall*{task_tag}*",
-        f"*{task_tag}*{model_tag}-meanall*",
-        f"*{model_tag}*{task_tag}*-meanall*",
-        f"*{task_tag}*{model_tag}*-meanall*",
+        f"*{task_tag}.{model_tag}-meanall",
+        f"*{model_tag}-meanall.{task_tag}*",
     ]
     for pat in patterns:
         for d in Path("output").glob(pat):

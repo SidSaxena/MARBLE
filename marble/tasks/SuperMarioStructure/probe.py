@@ -13,11 +13,17 @@ both Accuracy (overall) and MulticlassF1Score with average='macro'
 6-class distribution is similarly long-tailed to HXMSA's 13-class).
 """
 
+import json
+from pathlib import Path
+
 import torch
 from torchmetrics import MetricCollection
 
 from marble.core.base_task import BaseTask
 from marble.core.utils import instantiate_from_config
+
+# Matches the 6-class inventory in datamodule.py (LABEL2IDX).
+_IDX2LABEL = ["bridge", "intro", "linear", "loop", "outro", "stinger"]
 
 
 class ProbeAudioTask(BaseTask):
@@ -103,3 +109,76 @@ class ProbeAudioTask(BaseTask):
         if mc is not None:
             metrics_out = mc(batched_logits, batched_labels)
             self.log_dict(metrics_out, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+
+        # Dump per-class metrics + confusion matrix + per-sample predictions
+        # so the layer-sweep produces enough data for a full per-class analysis
+        # without needing to refit. Lands next to the checkpoint dir as
+        # `test_predictions.json` (one file per sweep run).
+        y_pred = batched_logits.argmax(dim=-1).cpu().numpy()
+        y_true = batched_labels.cpu().numpy()
+        K = batched_logits.shape[-1]
+        per_class = []
+        confusion = [[0] * K for _ in range(K)]
+        for t, p in zip(y_true.tolist(), y_pred.tolist(), strict=False):
+            confusion[t][p] += 1
+        for c in range(K):
+            tp = sum(1 for t, p in zip(y_true, y_pred, strict=False) if t == c and p == c)
+            fp = sum(1 for t, p in zip(y_true, y_pred, strict=False) if t != c and p == c)
+            fn = sum(1 for t, p in zip(y_true, y_pred, strict=False) if t == c and p != c)
+            prec = tp / (tp + fp) if (tp + fp) else 0.0
+            rec = tp / (tp + fn) if (tp + fn) else 0.0
+            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0.0
+            support = int((y_true == c).sum())
+            per_class.append(
+                {
+                    "label": _IDX2LABEL[c] if c < len(_IDX2LABEL) else str(c),
+                    "support": support,
+                    "precision": prec,
+                    "recall": rec,
+                    "f1": f1,
+                }
+            )
+
+        predictions = [
+            {
+                "uid": uid,
+                "true": _IDX2LABEL[t] if t < len(_IDX2LABEL) else int(t),
+                "pred": _IDX2LABEL[p] if p < len(_IDX2LABEL) else int(p),
+                "logits": [round(float(x), 4) for x in logit.tolist()],
+            }
+            for uid, t, p, logit in zip(
+                list(file_dict.keys()),
+                y_true.tolist(),
+                y_pred.tolist(),
+                batched_logits.cpu(),
+                strict=False,
+            )
+        ]
+
+        # Resolve output dir from the trainer's first ModelCheckpoint callback
+        # (the dirpath we set in the config); fall back to logger.save_dir.
+        out_dir = None
+        for cb in self.trainer.callbacks:
+            if hasattr(cb, "dirpath") and cb.dirpath:
+                out_dir = Path(cb.dirpath).parent
+                break
+        if out_dir is None and self.trainer.logger is not None:
+            sd = getattr(self.trainer.logger, "save_dir", None)
+            if sd:
+                out_dir = Path(sd)
+        if out_dir is None:
+            out_dir = Path("output")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "test_predictions.json"
+        with open(out_path, "w") as f:
+            json.dump(
+                {
+                    "per_class": per_class,
+                    "confusion": confusion,
+                    "predictions": predictions,
+                    "labels": _IDX2LABEL,
+                },
+                f,
+                indent=2,
+            )
+        print(f"Per-class metrics + predictions dumped to {out_path}")
