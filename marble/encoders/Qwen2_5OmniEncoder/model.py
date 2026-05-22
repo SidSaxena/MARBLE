@@ -1,15 +1,15 @@
 import torch
-from typing import Dict, Optional
+from transformers import Qwen2_5OmniForConditionalGeneration, Qwen2_5OmniProcessor
 
 from marble.core.base_encoder import BaseEncoder
 from marble.core.base_transform import BaseAudioTransform
-from transformers import Qwen2_5OmniProcessor, Qwen2_5OmniForConditionalGeneration
 
 
 class Qwen2_5OmniEncoder(BaseEncoder):
     """
     A wrapper around the Qwen2.5-Omni encoder's audio tower with optional freezing or full fine-tuning.
     """
+
     NAME = "Qwen2_5OmniEncoder"
     HUGGINGFACE_MODEL_NAME = "Qwen/Qwen2.5-Omni-7B"
     N_TRANSFORMER_LAYERS = 32
@@ -21,9 +21,14 @@ class Qwen2_5OmniEncoder(BaseEncoder):
         self,
         pre_trained_folder: str = None,
         train_mode: str = "freeze",  # one of ["freeze", "full"]
-        attn_implementation: str = "flash_attention_2"
+        attn_implementation: str = "flash_attention_2",
     ) -> None:
         super().__init__()
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        self._marble_train_mode = train_mode
+
         repo = pre_trained_folder or self.HUGGINGFACE_MODEL_NAME
 
         # Load processor and feature extractor
@@ -77,11 +82,20 @@ class Qwen2_5OmniEncoder(BaseEncoder):
         )
         return outputs
 
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the frozen submodule after the recursive
+        # propagation from the parent LightningModule's train() call.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+        return self
+
 
 class Qwen2_5OmniFeatureExtractor(BaseAudioTransform):
     """
     Audio-to-feature transform using Qwen2.5-Omni processor.
     """
+
     NAME = "Qwen2_5OmniFeatureExtractor"
     HUGGINGFACE_MODEL_NAME = "Qwen/Qwen2.5-Omni-7B"
     N_TRANSFORMER_LAYERS = 32
@@ -100,7 +114,7 @@ class Qwen2_5OmniFeatureExtractor(BaseAudioTransform):
         self.feature_extractor = self.processor.feature_extractor
         self.squeeze = squeeze
 
-    def forward(self, sample: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(self, sample: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Extract audio features from a raw waveform tensor.
 
@@ -113,8 +127,9 @@ class Qwen2_5OmniFeatureExtractor(BaseAudioTransform):
         """
         # waveform: ensure 1D
         x = sample["input_features"].squeeze()
-        assert isinstance(x, torch.Tensor) and x.ndim == 1, \
+        assert isinstance(x, torch.Tensor) and x.ndim == 1, (
             f"Input must be 1D waveform Tensor, got shape {x.shape}"
+        )
 
         sr = sample.get("sampling_rate", self.feature_extractor.sampling_rate)
         feats = self.feature_extractor(
@@ -125,8 +140,9 @@ class Qwen2_5OmniFeatureExtractor(BaseAudioTransform):
         features = feats["input_features"]  # shape (1, num_features, seq_len)
         if self.squeeze:
             features = features.squeeze(0)
-        assert features.ndim == 2, \
+        assert features.ndim == 2, (
             f"Extracted features must be 2D [num_features, seq_len], got {features.shape}"
+        )
 
         sample["input_features"] = features
         return sample

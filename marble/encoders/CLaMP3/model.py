@@ -1,27 +1,27 @@
 # marble/encoders/CLaMP3/model.py
 
 import os
+
 import torch
 import torch.nn.functional as F
-import numpy as np
-from tqdm import tqdm
-from typing import Union, List, Optional
 from einops import rearrange
-from transformers import BertConfig, AutoTokenizer
+from tqdm import tqdm
+from transformers import AutoTokenizer, BertConfig
 
 from marble.core.base_encoder import BaseEncoder
 from marble.encoders.CLaMP3.clamp3_util import CLaMP3Model, M3Patchilizer
 from marble.encoders.CLaMP3.mert_util import load_audio
 from marble.encoders.MERT.model import MERT_v1_95M_Encoder, MERT_v1_95M_FeatureExtractor
 
-
 # --- Constants and Configuration ---
 DEFAULT_PRE_TRAINED_FOLDER = os.path.expanduser("~/.cache/clamp3/")
 CLAMP3_CKPT_NAME = "weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_64_p_length_512.pth"
 CLAMP3_LINK = f"https://huggingface.co/sander-wood/clamp3/resolve/main/{CLAMP3_CKPT_NAME}"
 
+
 class CLaMP3Config:
     """Configuration class for CLaMP3 model parameters."""
+
     # Text Model Config
     TEXT_MODEL_NAME = "FacebookAI/xlm-roberta-base"
     MAX_TEXT_LENGTH = 128
@@ -30,20 +30,21 @@ class CLaMP3Config:
     AUDIO_HIDDEN_SIZE = 768
     AUDIO_NUM_LAYERS = 12
     MAX_AUDIO_LENGTH = 128
-    
+
     # Symbolic (M3) Model Config
     M3_HIDDEN_SIZE = 768
     PATCH_SIZE = 64
     PATCH_LENGTH = 512
     PATCH_NUM_LAYERS = 12
-    
+
     # CLaMP3 Model Config
     CLAMP3_HIDDEN_SIZE = 768
-    CLAMP3_LOAD_M3 = True # Inferred from infer_test3, can be configurable
+    CLAMP3_LOAD_M3 = True  # Inferred from infer_test3, can be configurable
     LOGIT_SCALE = 1.0
 
 
 # --- Helper Functions ---
+
 
 def download_checkpoint_if_needed(folder: str, filename: str, url: str):
     """Downloads the checkpoint file if it doesn't exist (cross-platform)."""
@@ -56,10 +57,12 @@ def download_checkpoint_if_needed(folder: str, filename: str, url: str):
         print(f"Downloading pre-trained CLaMP3 model to {filepath} ...")
         tmp = filepath + ".part"
         try:
+
             def _progress(block, block_size, total):
                 if total > 0:
                     pct = min(100, block * block_size * 100 // total)
                     print(f"\r  {pct}%", end="", flush=True)
+
             urllib.request.urlretrieve(url, tmp, reporthook=_progress)
             print()
             os.replace(tmp, filepath)
@@ -70,10 +73,9 @@ def download_checkpoint_if_needed(folder: str, filename: str, url: str):
         print(f"Download complete. File saved to: {filepath}")
     return filepath
 
+
 def extract_mert_features_batch(
-    waveforms: torch.Tensor,
-    feature_extractor: 'MERT_v1_95M_Encoder',
-    device: Union[str, torch.device]
+    waveforms: torch.Tensor, feature_extractor: "MERT_v1_95M_Encoder", device: str | torch.device
 ) -> torch.Tensor:
     """
     Extracts per-layer, time-averaged features from a batch of audio waveforms
@@ -98,14 +100,14 @@ def extract_mert_features_batch(
     # --- Configuration ---
     target_sr = 24000
     sliding_window_size_in_sec = 5.0
-    
+
     wavs = waveforms.to(device)
-    
+
     window_size_samples = int(target_sr * sliding_window_size_in_sec)
-    
+
     # --- Step 1: Chunking ---
     all_chunks = list(wavs.split(window_size_samples, dim=-1))
-    
+
     min_len_samples = int(target_sr * 1)
     if all_chunks and all_chunks[-1].shape[-1] < min_len_samples:
         all_chunks = all_chunks[:-1]
@@ -120,7 +122,7 @@ def extract_mert_features_batch(
         full_chunks = all_chunks[:-1]
     else:
         full_chunks = all_chunks
-    
+
     all_features = []
 
     # --- Step 3a: Process all full-sized chunks ---
@@ -129,89 +131,104 @@ def extract_mert_features_batch(
         o = feature_extractor(full_chunks_tensor).hidden_states
         time_averaged_features = torch.stack(o).mean(-2)
         batch_size = waveforms.size(0)
-        full_features = rearrange(time_averaged_features, 'l (c b) h -> b c l h', b=batch_size)
+        full_features = rearrange(time_averaged_features, "l (c b) h -> b c l h", b=batch_size)
         all_features.append(full_features)
 
     # --- Step 3b: Process the final, shorter chunk ---
     if last_chunk is not None:
         o = feature_extractor(last_chunk).hidden_states
         time_averaged_features = torch.stack(o, dim=0).mean(dim=-2)
-        last_feature = rearrange(time_averaged_features, 'l b h -> b 1 l h')
+        last_feature = rearrange(time_averaged_features, "l b h -> b 1 l h")
         all_features.append(last_feature)
-        
+
     # --- Step 4: Concatenate results ---
     if not all_features:
         return None
-    
+
     final_features = torch.cat(all_features, dim=1)
-    final_features = rearrange(final_features, 'b c l h -> b l c h')
-    
+    final_features = rearrange(final_features, "b c l h -> b l c h")
+
     return final_features
 
 
 # --- Core Encoder Class ---
 class CLaMP3_FeatureExtractor(MERT_v1_95M_FeatureExtractor):
     pass
-    
+
+
 class CLaMP3_Encoder(BaseEncoder):
     """
     CLaMP3 Encoder for generating joint text, audio, and symbolic embeddings.
     This implementation extracts MERT features on-the-fly and supports batching.
     """
+
     NAME = "CLaMP3"
     SAMPLING_RATE = 24000
     NUM_FEATURES = 768
     TOKEN_RATE = 1
 
-    def __init__(self, train_mode: str = "freeze", pre_trained_folder: str = None,) -> None:
+    def __init__(
+        self,
+        train_mode: str = "freeze",
+        pre_trained_folder: str = None,
+    ) -> None:
         super().__init__()
 
         self.config = CLaMP3Config()
         self.sample_rate = self.SAMPLING_RATE
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        # Inherited by CLaMP3_Symbolic_Encoder.
+        self._marble_train_mode = train_mode
 
         # 1. Download CLaMP3 checkpoint
         pre_trained_folder = pre_trained_folder or DEFAULT_PRE_TRAINED_FOLDER
         checkpoint_path = download_checkpoint_if_needed(
             pre_trained_folder, CLAMP3_CKPT_NAME, CLAMP3_LINK
         )
-        
+
         # 2. Initialize MERT models for feature extraction
         self.mert_preprocessor = MERT_v1_95M_FeatureExtractor()
         self.mert_encoder = MERT_v1_95M_Encoder()
-        
+
         # 3. Initialize CLaMP3 components
         self.tokenizer = AutoTokenizer.from_pretrained(self.config.TEXT_MODEL_NAME)
-        
+
         audio_config = BertConfig(
-            vocab_size=1, hidden_size=self.config.AUDIO_HIDDEN_SIZE,
+            vocab_size=1,
+            hidden_size=self.config.AUDIO_HIDDEN_SIZE,
             num_hidden_layers=self.config.AUDIO_NUM_LAYERS,
             num_attention_heads=self.config.AUDIO_HIDDEN_SIZE // 64,
             intermediate_size=self.config.AUDIO_HIDDEN_SIZE * 4,
-            max_position_embeddings=self.config.MAX_AUDIO_LENGTH
+            max_position_embeddings=self.config.MAX_AUDIO_LENGTH,
         )
         symbolic_config = BertConfig(
-            vocab_size=1, hidden_size=self.config.M3_HIDDEN_SIZE,
+            vocab_size=1,
+            hidden_size=self.config.M3_HIDDEN_SIZE,
             num_hidden_layers=self.config.PATCH_NUM_LAYERS,
             num_attention_heads=self.config.M3_HIDDEN_SIZE // 64,
             intermediate_size=self.config.M3_HIDDEN_SIZE * 4,
-            max_position_embeddings=self.config.PATCH_LENGTH
+            max_position_embeddings=self.config.PATCH_LENGTH,
         )
         self.model = CLaMP3Model(
-            audio_config=audio_config, symbolic_config=symbolic_config,
+            audio_config=audio_config,
+            symbolic_config=symbolic_config,
             hidden_size=self.config.CLAMP3_HIDDEN_SIZE,
-            load_m3=self.config.CLAMP3_LOAD_M3
+            load_m3=self.config.CLAMP3_LOAD_M3,
         )
-        
+
         # 4. Load pretrained weights
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        print(f"Loading CLaMP3 Checkpoint from Epoch {checkpoint['epoch']} with loss {checkpoint['min_eval_loss']}")
-        self.model.load_state_dict(checkpoint['model'])
+        print(
+            f"Loading CLaMP3 Checkpoint from Epoch {checkpoint['epoch']} with loss {checkpoint['min_eval_loss']}"
+        )
+        self.model.load_state_dict(checkpoint["model"])
 
         # 5. Patchiliser for symbolic input (MIDI → M3 patches).  Used by both
         #    the symbolic forward path (CLaMP3_Symbolic_Encoder) and the
         #    cross-modal embed_symbolic helper.  Stateless and cheap to
         #    construct, so eager init is fine.
-        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
         self.patchilizer = M3Patchilizer()
 
         # 6. Set training mode
@@ -223,26 +240,24 @@ class CLaMP3_Encoder(BaseEncoder):
             self.model.eval()
             self.mert_encoder.eval()
         else:
-            raise NotImplementedError(f"Train mode '{train_mode}' is not supported for CLaMP3_Encoder.")
+            raise NotImplementedError(
+                f"Train mode '{train_mode}' is not supported for CLaMP3_Encoder."
+            )
 
-    def _prepare_segments(self, data: torch.Tensor, max_len: int) -> List[torch.Tensor]:
+    def _prepare_segments(self, data: torch.Tensor, max_len: int) -> list[torch.Tensor]:
         """Replicates the segmentation strategy from the original inference script."""
         if len(data) <= max_len:
             return [data]
-        
+
         segments = list(data.split(max_len, dim=0))
         # Ensure the last segment is also max_len by overlapping
         if len(segments) > 1 and segments[-1].shape[0] < max_len:
-             segments[-1] = data[-max_len:]
+            segments[-1] = data[-max_len:]
         return segments
 
     @torch.no_grad()
     def _get_embedding_from_segments(
-        self,
-        input_data: torch.Tensor,
-        max_len: int,
-        data_type: str,
-        device: torch.device
+        self, input_data: torch.Tensor, max_len: int, data_type: str, device: torch.device
     ) -> torch.Tensor:
         """Processes segmented data to get a final global embedding."""
         segments = self._prepare_segments(input_data, max_len)
@@ -252,22 +267,24 @@ class CLaMP3_Encoder(BaseEncoder):
             seg_len = segment.size(0)
             mask = torch.ones(seg_len, device=device)
             pad_len = max_len - seg_len
-            mask = F.pad(mask, (0, pad_len), 'constant', 0)
-            
-            if data_type == 'text':
-                segment = F.pad(segment, (0, pad_len), 'constant', self.tokenizer.pad_token_id)
+            mask = F.pad(mask, (0, pad_len), "constant", 0)
+
+            if data_type == "text":
+                segment = F.pad(segment, (0, pad_len), "constant", self.tokenizer.pad_token_id)
                 features = self.model.get_text_features(
                     text_inputs=segment.unsqueeze(0), text_masks=mask.unsqueeze(0), get_global=True
                 )
-            elif data_type == 'audio':
+            elif data_type == "audio":
                 pad_tensor = torch.zeros(pad_len, self.config.AUDIO_HIDDEN_SIZE, device=device)
                 segment = torch.cat((segment, pad_tensor), 0)
                 features = self.model.get_audio_features(
-                    audio_inputs=segment.unsqueeze(0), audio_masks=mask.unsqueeze(0), get_global=True
+                    audio_inputs=segment.unsqueeze(0),
+                    audio_masks=mask.unsqueeze(0),
+                    get_global=True,
                 )
             else:
                 raise ValueError(f"Unsupported data_type: {data_type}")
-            
+
             hidden_states_list.append(features)
 
         # Weighted average of segment features to get the final embedding
@@ -276,13 +293,13 @@ class CLaMP3_Encoder(BaseEncoder):
         weights = [max_len] * full_chunks
         if rem_len > 0:
             weights.append(rem_len)
-        
+
         feature_weights = torch.tensor(weights, device=device).view(-1, 1)
         all_features = torch.cat(hidden_states_list, dim=0)
         final_embedding = (all_features * feature_weights).sum(dim=0) / feature_weights.sum()
-            
+
         return final_embedding
-        
+
     @torch.no_grad()
     def _get_layer_embeddings_from_segments(
         self,
@@ -351,9 +368,7 @@ class CLaMP3_Encoder(BaseEncoder):
 
     @torch.no_grad()
     def forward(
-        self,
-        wavs: Optional[torch.Tensor] = None,
-        texts: Optional[Union[str, List[str]]] = None
+        self, wavs: torch.Tensor | None = None, texts: str | list[str] | None = None
     ) -> tuple:
         """
         Generates embeddings for a batch of audio waveforms or texts.
@@ -383,7 +398,9 @@ class CLaMP3_Encoder(BaseEncoder):
 
             # 1. Preprocess audio batch for MERT
             processed_wavs_list = [
-                self.mert_preprocessor({'input_features': wav, 'sampling_rate': self.SAMPLING_RATE})['input_features']
+                self.mert_preprocessor(
+                    {"input_features": wav, "sampling_rate": self.SAMPLING_RATE}
+                )["input_features"]
                 for wav in wavs
             ]
             processed_wavs = torch.stack(processed_wavs_list, dim=0)
@@ -413,8 +430,9 @@ class CLaMP3_Encoder(BaseEncoder):
 
         # --- Text Path ---
         if texts is not None:
-            if isinstance(texts, str): texts = [texts]
-            
+            if isinstance(texts, str):
+                texts = [texts]
+
             embeddings = []
             for text_item in texts:
                 # Prepare text input
@@ -422,18 +440,31 @@ class CLaMP3_Encoder(BaseEncoder):
                 items = "\n".join(items).split("\n")
                 items = [c for c in items if len(c) > 0]
                 item_str = self.tokenizer.sep_token.join(items)
-                input_data = self.tokenizer(item_str, return_tensors="pt")['input_ids'].squeeze(0).to(device)
+                input_data = (
+                    self.tokenizer(item_str, return_tensors="pt")["input_ids"].squeeze(0).to(device)
+                )
 
                 emb = self._get_embedding_from_segments(
                     input_data=input_data,
                     max_len=self.config.MAX_TEXT_LENGTH,
-                    data_type='text',
-                    device=device
+                    data_type="text",
+                    device=device,
                 )
                 embeddings.append(emb)
 
             output = torch.stack(embeddings, dim=0)
-            return (output.unsqueeze(1),) # Return shape (B, 1, H)
+            return (output.unsqueeze(1),)  # Return shape (B, 1, H)
+
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the two frozen submodules (CLaMP3 head AND
+        # the inner MERT encoder used for audio embedding extraction)
+        # after Lightning's per-epoch self.train() call propagates
+        # recursively to children. Inherited by CLaMP3_Symbolic_Encoder.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+            self.mert_encoder.eval()
+        return self
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -476,28 +507,31 @@ class CLaMP3CrossModalMixin:
         self.mert_encoder.to(device)
 
         # Step 1: MERT preprocessing + feature extraction (same as forward())
-        processed = torch.stack([
-            self.mert_preprocessor(
-                {'input_features': w, 'sampling_rate': self.SAMPLING_RATE}
-            )['input_features']
-            for w in wavs
-        ], dim=0)
+        processed = torch.stack(
+            [
+                self.mert_preprocessor({"input_features": w, "sampling_rate": self.SAMPLING_RATE})[
+                    "input_features"
+                ]
+                for w in wavs
+            ],
+            dim=0,
+        )
         mert_features = extract_mert_features_batch(processed, self.mert_encoder, device)
-        mert_chunks   = mert_features.mean(dim=1)                  # (B, C, H_mert)
+        mert_chunks = mert_features.mean(dim=1)  # (B, C, H_mert)
 
         # Step 2: pad with zero vectors at start/end (matches infer_test3)
         embeddings = []
         for b in range(mert_chunks.size(0)):
-            zero_vec  = torch.zeros((1, mert_chunks.size(-1)), device=device)
-            seq       = torch.cat((zero_vec, mert_chunks[b], zero_vec), dim=0)
-            emb       = self._get_embedding_from_segments(
+            zero_vec = torch.zeros((1, mert_chunks.size(-1)), device=device)
+            seq = torch.cat((zero_vec, mert_chunks[b], zero_vec), dim=0)
+            emb = self._get_embedding_from_segments(
                 input_data=seq,
                 max_len=self.config.MAX_AUDIO_LENGTH,
-                data_type='audio',
+                data_type="audio",
                 device=device,
             )
             embeddings.append(emb)
-        out = torch.stack(embeddings, dim=0)                       # (B, H_shared)
+        out = torch.stack(embeddings, dim=0)  # (B, H_shared)
         return F.normalize(out, dim=-1)
 
     @torch.no_grad()
@@ -535,7 +569,9 @@ class CLaMP3CrossModalMixin:
                 seg_len = seg.size(0)
                 pad_len = max_len - seg_len
                 mask = F.pad(
-                    torch.ones(seg_len, device=device), (0, pad_len), value=0.0,
+                    torch.ones(seg_len, device=device),
+                    (0, pad_len),
+                    value=0.0,
                 )
                 pad_tok = torch.full(
                     (pad_len, self.config.PATCH_SIZE),
@@ -550,15 +586,15 @@ class CLaMP3CrossModalMixin:
                     symbolic_inputs=seg_padded.unsqueeze(0),
                     symbolic_masks=mask.unsqueeze(0),
                     get_global=True,
-                )                                             # (1, H_shared)
+                )  # (1, H_shared)
                 feats.append(emb.squeeze(0))
                 weights.append(float(seg_len))
 
-            stacked = torch.stack(feats, dim=0)              # (S, H_shared)
+            stacked = torch.stack(feats, dim=0)  # (S, H_shared)
             w = torch.tensor(weights, device=device).unsqueeze(-1)
             embeddings.append((stacked * w).sum(0) / w.sum())
 
-        out = torch.stack(embeddings, dim=0)                  # (B, H_shared)
+        out = torch.stack(embeddings, dim=0)  # (B, H_shared)
         return F.normalize(out, dim=-1)
 
     @torch.no_grad()
@@ -581,16 +617,16 @@ class CLaMP3CrossModalMixin:
             items = "\n".join(items).split("\n")
             items = [c for c in items if len(c) > 0]
             item_str = self.tokenizer.sep_token.join(items)
-            input_data = self.tokenizer(item_str, return_tensors="pt")['input_ids']
+            input_data = self.tokenizer(item_str, return_tensors="pt")["input_ids"]
             input_data = input_data.squeeze(0).to(device)
             emb = self._get_embedding_from_segments(
                 input_data=input_data,
                 max_len=self.config.MAX_TEXT_LENGTH,
-                data_type='text',
+                data_type="text",
                 device=device,
             )
             embeddings.append(emb)
-        out = torch.stack(embeddings, dim=0)                  # (B, H_shared)
+        out = torch.stack(embeddings, dim=0)  # (B, H_shared)
         return F.normalize(out, dim=-1)
 
 
@@ -609,9 +645,9 @@ class CLaMP3CrossModalMixin:
 # Do NOT "clean up" by moving these methods inline into CLaMP3_Encoder's
 # class body — keeping them in the mixin keeps the cross-modal API
 # discoverable as a single coherent group.
-CLaMP3_Encoder.embed_audio    = CLaMP3CrossModalMixin.embed_audio
+CLaMP3_Encoder.embed_audio = CLaMP3CrossModalMixin.embed_audio
 CLaMP3_Encoder.embed_symbolic = CLaMP3CrossModalMixin.embed_symbolic
-CLaMP3_Encoder.embed_text     = CLaMP3CrossModalMixin.embed_text
+CLaMP3_Encoder.embed_text = CLaMP3CrossModalMixin.embed_text
 
 
 class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
@@ -641,7 +677,7 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
     # forward() that consumes pre-tokenised patches instead of audio.
 
     @torch.no_grad()
-    def forward(self, patches: torch.Tensor) -> tuple:    # type: ignore[override]
+    def forward(self, patches: torch.Tensor) -> tuple:  # type: ignore[override]
         device = patches.device
         self.model.to(device)
 
@@ -649,10 +685,10 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
         batch_outputs = []
 
         for b in range(patches.size(0)):
-            item = patches[b]                        # (P, PATCH_SIZE)
+            item = patches[b]  # (P, PATCH_SIZE)
 
             # Drop fully-padded trailing rows so we only feed real patches.
-            non_pad_mask = (item != pad_id).any(dim=-1)   # (P,)
+            non_pad_mask = (item != pad_id).any(dim=-1)  # (P,)
             real_len = int(non_pad_mask.sum().item())
             if real_len == 0:
                 # All padding → return zeros for every layer.  Skips BERT
@@ -663,11 +699,11 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
                 n_layers = self.config.PATCH_NUM_LAYERS + 1
                 layer_embeds = torch.zeros(n_layers, H, device=device)
             else:
-                real = item[:real_len].to(device)            # (real_len, PATCH_SIZE)
+                real = item[:real_len].to(device)  # (real_len, PATCH_SIZE)
                 layer_embeds = self._get_symbolic_layer_embeddings(real, device)
-            batch_outputs.append(layer_embeds)             # (13, H)
+            batch_outputs.append(layer_embeds)  # (13, H)
 
-        stacked = torch.stack(batch_outputs, dim=0)        # (B, 13, H)
+        stacked = torch.stack(batch_outputs, dim=0)  # (B, 13, H)
         return tuple(stacked[:, l, :].unsqueeze(1) for l in range(stacked.size(1)))
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -685,10 +721,9 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
         one-hot → linear patch embedding step that ``M3PatchEncoder.forward``
         normally performs before BERT.
         """
-        sym = self.model.symbolic_model           # M3PatchEncoder
-        bert = sym.base                            # HF BertModel
-        patch_embed = sym.patch_embedding          # Linear(PATCH_SIZE*128 → H)
-        H = self.config.M3_HIDDEN_SIZE
+        sym = self.model.symbolic_model  # M3PatchEncoder
+        bert = sym.base  # HF BertModel
+        patch_embed = sym.patch_embedding  # Linear(PATCH_SIZE*128 → H)
 
         max_len = self.config.PATCH_LENGTH
         segments = self._prepare_segments(patches, max_len)
@@ -716,9 +751,9 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
             # → (P, PATCH_SIZE) of int patch token IDs in [0, 128)
 
             # One-hot → linear projection, same as M3PatchEncoder.forward.
-            oh   = F.one_hot(seg_padded, num_classes=128).float()  # (P, PS, 128)
-            flat = oh.reshape(seg_padded.size(0), -1)              # (P, PS*128)
-            emb  = patch_embed(flat).unsqueeze(0)                   # (1, P, H)
+            oh = F.one_hot(seg_padded, num_classes=128).float()  # (P, PS, 128)
+            flat = oh.reshape(seg_padded.size(0), -1)  # (P, PS*128)
+            emb = patch_embed(flat).unsqueeze(0)  # (1, P, H)
 
             bert_out = bert(
                 inputs_embeds=emb,
@@ -727,13 +762,10 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
             )
             # bert_out.hidden_states: tuple of 13 × (1, P, H)
             # Weighted-mean each layer over the real (mask==1) positions.
-            mask_b = mask.unsqueeze(0).unsqueeze(-1)       # (1, P, 1)
+            mask_b = mask.unsqueeze(0).unsqueeze(-1)  # (1, P, 1)
             denom = mask_b.sum().clamp_min(1.0)
-            pooled = [
-                (hs * mask_b).sum(dim=1).squeeze(0) / denom
-                for hs in bert_out.hidden_states
-            ]
-            stacked = torch.stack(pooled, dim=0)            # (13, H)
+            pooled = [(hs * mask_b).sum(dim=1).squeeze(0) / denom for hs in bert_out.hidden_states]
+            stacked = torch.stack(pooled, dim=0)  # (13, H)
 
             weight = float(seg_len)
             if per_layer_accum is None:
@@ -742,28 +774,36 @@ class CLaMP3_Symbolic_Encoder(CLaMP3_Encoder):
                 per_layer_accum = per_layer_accum + stacked * weight
             total_weight += weight
 
-        return per_layer_accum / total_weight              # (13, H)
+        return per_layer_accum / total_weight  # (13, H)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # --- GTZAN Demo for Verification ---
     print("--- Running GTZAN Demo with CLaMP3_Encoder ---")
-    
+
     # 1. Setup paths and audio file
     demo_dir = "tests"
     audio_path = os.path.join(demo_dir, "blues.00000.wav")
     if not os.path.exists(audio_path):
         print(f"'{audio_path}' not found. Please ensure it exists.")
         # Create a dummy file if it doesn't exist, similar to infer_test3.py
-        if not os.path.exists(demo_dir): os.makedirs(demo_dir)
-        import wave, struct
-        sample_rate = 22050.0; duration = 30; n_samples = int(duration * sample_rate)
-        with wave.open(audio_path, 'w') as wf:
-            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(sample_rate)
-            for _ in range(n_samples): wf.writeframes(struct.pack('<h', 0))
+        if not os.path.exists(demo_dir):
+            os.makedirs(demo_dir)
+        import struct
+        import wave
+
+        sample_rate = 22050.0
+        duration = 30
+        n_samples = int(duration * sample_rate)
+        with wave.open(audio_path, "w") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            for _ in range(n_samples):
+                wf.writeframes(struct.pack("<h", 0))
         print(f"Created a dummy silent WAV file at '{audio_path}'.")
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     # 2. Instantiate the encoder
@@ -780,25 +820,36 @@ if __name__ == '__main__':
     # The forward pass handles all intermediate steps (MERT extraction, CLaMP projection)
     audio_output = encoder(wavs=wavs_batch)
     print(f"Audio features extracted with shape: {audio_output[0].shape}")  # Should be (2, 1, 768)
-    
+
     # We only need the embedding for the first item in the batch for this demo
-    audio_feature = audio_output[0][0] # Shape: (1, 768)
+    audio_feature = audio_output[0][0]  # Shape: (1, 768)
     print("Audio feature extracted.")
 
     # 5. Calculate similarities with GTZAN genres
-    gtzan_genres = ["blues", "classical", "country", "disco", "hiphop", "jazz", "metal", "pop", "reggae", "rock"]
+    gtzan_genres = [
+        "blues",
+        "classical",
+        "country",
+        "disco",
+        "hiphop",
+        "jazz",
+        "metal",
+        "pop",
+        "reggae",
+        "rock",
+    ]
     similarities = {}
 
     print("\nCalculating similarities with GTZAN genres...")
     audio_feature_norm = audio_feature / audio_feature.norm(dim=-1, keepdim=True)
-    
+
     for genre in tqdm(gtzan_genres, desc="Genres"):
         # Get text embedding for each genre
         text_output = encoder(texts=genre)
         print(f"Text feature for genre '{genre}': {text_output[0].shape}")
-        text_feature = text_output[0].squeeze(1) # Shape: (1, 768)
+        text_feature = text_output[0].squeeze(1)  # Shape: (1, 768)
         text_feature_norm = text_feature / text_feature.norm(dim=-1, keepdim=True)
-        
+
         similarity = (audio_feature_norm * text_feature_norm).sum().item()
         similarities[genre] = similarity
 

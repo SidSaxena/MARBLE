@@ -1,18 +1,19 @@
 # marble/encoders/Qwen2AudioInstructEncoder/model.py
-from typing import Dict, Optional
 
 import torch
-import torch.nn as nn
+
 from marble.core.base_encoder import BaseEncoder
 from marble.core.base_transform import BaseAudioTransform
-from .processing_qwen2_audio import Qwen2AudioProcessor
+
 from .modeling_qwen2_audio import Qwen2AudioForConditionalGeneration
+from .processing_qwen2_audio import Qwen2AudioProcessor
 
 
 class Qwen2AudioInstructEncoder(BaseEncoder):
     """
     A wrapper around the Qwen2-Audio-7B-Instruct encoder with optional freezing or full fine-tuning.
     """
+
     NAME = "Qwen2AudioInstructEncoder"
     HUGGINGFACE_MODEL_NAME = "Qwen/Qwen2-Audio-7B-Instruct"
     N_TRANSFORMER_LAYERS = 32
@@ -24,9 +25,14 @@ class Qwen2AudioInstructEncoder(BaseEncoder):
         self,
         pre_trained_folder: str = None,
         train_mode: str = "freeze",  # one of ["freeze", "full"]
-        attn_implementation: str = "sdpa"  # or "flash_attention_2"
+        attn_implementation: str = "sdpa",  # or "flash_attention_2"
     ) -> None:
         super().__init__()
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        self._marble_train_mode = train_mode
+
         repo = pre_trained_folder or self.HUGGINGFACE_MODEL_NAME
 
         # Load processor (for feature_extractor)
@@ -61,7 +67,7 @@ class Qwen2AudioInstructEncoder(BaseEncoder):
         self,
         input_features: torch.FloatTensor,
         output_hidden_states: bool = True,
-        attention_mask: Optional[torch.BoolTensor] = None,
+        attention_mask: torch.BoolTensor | None = None,
         **kwargs,
     ) -> dict:
         """
@@ -88,11 +94,20 @@ class Qwen2AudioInstructEncoder(BaseEncoder):
         )
         return outputs
 
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the frozen submodule after the recursive
+        # propagation from the parent LightningModule's train() call.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+        return self
+
 
 class Qwen2AudioInstructFeatureExtractor(BaseAudioTransform):
     """
     Audio-to-feature transform using Qwen2AudioProcessor.
     """
+
     NAME = "Qwen2AudioInstructFeatureExtractor"
     HUGGINGFACE_MODEL_NAME = "Qwen/Qwen2-Audio-7B-Instruct"
     N_TRANSFORMER_LAYERS = 32
@@ -113,7 +128,7 @@ class Qwen2AudioInstructFeatureExtractor(BaseAudioTransform):
         self.feature_extractor = self.processor.feature_extractor
         self.squeeze = squeeze
 
-    def forward(self, sample: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(self, sample: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Args:
             sample["input_features"]: torch.Tensor (1D) or List[torch.Tensor] each 1D
@@ -122,7 +137,7 @@ class Qwen2AudioInstructFeatureExtractor(BaseAudioTransform):
             sample with keys:
               - "input_features": torch.FloatTensor (batch, n_mels, seq_len)
         """
-        x = sample["input_features"].squeeze() # waveform
+        x = sample["input_features"].squeeze()  # waveform
         assert isinstance(x, torch.Tensor)
         assert x.ndim == 1, "Input features must be a 1D tensor (batch_size=1)"
         # while it also supports list of ndarray, we disable it for now
@@ -138,7 +153,9 @@ class Qwen2AudioInstructFeatureExtractor(BaseAudioTransform):
         x = feats["input_features"]
         if self.squeeze:
             x = x.squeeze(0)
-        assert x.ndim == 2, f"Input features must be 2D tensor [num_mel_bins=128, seq_len], got {x.ndim}D, shape {x.shape}"
+        assert x.ndim == 2, (
+            f"Input features must be 2D tensor [num_mel_bins=128, seq_len], got {x.ndim}D, shape {x.shape}"
+        )
         sample["input_features"] = x  # [num_mel_bins=128, seq_len]
         return sample
 
@@ -149,13 +166,15 @@ if __name__ == "__main__":
 
     local_repo = "Qwen/Qwen2-Audio-7B-Instruct"
     encoder = Qwen2AudioInstructEncoder(pre_trained_folder=local_repo)
-    feature_extractor = Qwen2AudioInstructFeatureExtractor(pre_trained_folder=local_repo, squeeze=True)
+    feature_extractor = Qwen2AudioInstructFeatureExtractor(
+        pre_trained_folder=local_repo, squeeze=True
+    )
 
     # 1. make a input
     import librosa
+
     audio_path = "/aifs4su/mmcode/codeclm/MARBLE2/data/GTZAN/genres/blues/blues.00000.wav"
     audio = librosa.load(audio_path, sr=16000)[0]
-    
 
     # 2. 提取特征
     sample = {"input_features": torch.tensor(audio), "sampling_rate": 16000}

@@ -1,10 +1,10 @@
 # marble/encoders/MuQMuLan/model.py
-from typing import Sequence, Dict, Optional, Union, Tuple, List
+from collections.abc import Sequence
 
 import torch
 
-from marble.encoders.MuQMuLan.muq_mulan import MuQMuLan
 from marble.core.base_encoder import BaseEncoder
+from marble.encoders.MuQMuLan.muq_mulan import MuQMuLan
 
 
 class MuQMuLan_Encoder(BaseEncoder):
@@ -40,12 +40,13 @@ class MuQMuLan_Encoder(BaseEncoder):
         """
         super().__init__()
         self.sample_rate = self.SAMPLING_RATE
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        self._marble_train_mode = train_mode
 
         # Load the core MusicHuBERT model
-        self.model = MuQMuLan.from_pretrained(
-            pre_trained_folder or self.HUGGINGFACE_MODEL_NAME
-        )
-
+        self.model = MuQMuLan.from_pretrained(pre_trained_folder or self.HUGGINGFACE_MODEL_NAME)
 
         # Configure which parameters to train
         if train_mode == "freeze":
@@ -55,7 +56,7 @@ class MuQMuLan_Encoder(BaseEncoder):
 
         elif train_mode == "lora":
             # Freeze backbone and add LoRA adapters
-            from peft import get_peft_model, LoraConfig, TaskType
+            from peft import LoraConfig, get_peft_model
 
             for param in self.model.parameters():
                 param.requires_grad = False
@@ -84,11 +85,7 @@ class MuQMuLan_Encoder(BaseEncoder):
             self.model.eval()
 
     def forward(
-        self,
-        wavs: torch.Tensor,
-        texts: Optional[Union[str, List[str]]] = None,
-        *args,
-        **kwargs
+        self, wavs: torch.Tensor, texts: str | list[str] | None = None, *args, **kwargs
     ) -> dict:
         """
         Perform a forward pass through the HuBERT encoder.
@@ -107,21 +104,28 @@ class MuQMuLan_Encoder(BaseEncoder):
         # if 3D and the middle dim is 1, squeeze it
         if wavs.ndim == 3 and wavs.shape[1] == 1:
             wavs = wavs.squeeze(1)
-        
+
         outputs = self.model(wavs=wavs, texts=texts, parallel_processing=True)
-        
+
         # add seq_len dimension
-        outputs = outputs.unsqueeze(1) 
+        outputs = outputs.unsqueeze(1)
 
-        return (outputs, )
+        return (outputs,)
 
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the frozen submodule after the recursive
+        # propagation from the parent LightningModule's train() call.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+        return self
 
 
 if __name__ == "__main__":
-    device = 'cuda'
+    device = "cuda"
     # fake wav for testing
     wav = torch.randn(4, 24000 * 10)  # 10 seconds of audio at 24kHz
-    wavs = torch.tensor(wav).to(device) 
+    wavs = torch.tensor(wav).to(device)
 
     # This will automatically fetch the checkpoint from huggingface
     muq = MuQMuLan_Encoder()
@@ -130,7 +134,5 @@ if __name__ == "__main__":
     with torch.no_grad():
         output = muq(wavs)
 
-    print('Total number of layers: ', len(output))
-    print('Output shape of each layer: ', [layer.shape for layer in output])
-    
-    
+    print("Total number of layers: ", len(output))
+    print("Output shape of each layer: ", [layer.shape for layer in output])

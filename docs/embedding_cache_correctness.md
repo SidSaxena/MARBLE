@@ -124,6 +124,69 @@ encoder-internal stochasticity, but only because eval mode kills it.
 If you ever run a probe with `encoder.train()`, the cache will freeze
 the first epoch's random SpecAugment masks.
 
+**Caveat (see 3.4):** the "encoder is in eval mode" guarantee was
+silently broken from the start of v2 until the encoder-train-mode fix
+landed. Caches written by `fit` runs before that commit contain
+train-mode dropout noise. Caches written by
+`scripts/embeddings/extract.py` are clean either way.
+
+### Encoder train-mode interaction (fixed 2026-05-22)
+
+Every v2 encoder calls `self.model.eval()` in `__init__` when
+`train_mode='freeze'`. The intent is clear: a frozen encoder should run
+with dropout off and BatchNorm in eval mode. But this guarantee was
+silently broken by a propagation bug for the entire lifetime of v2 up
+to commit `[hash-TBD]`:
+
+- The encoder is registered as a child of the `BaseTask` LightningModule
+  (`marble/core/base_task.py:59`).
+- Lightning calls `self.train()` on the parent LightningModule at the
+  start of every training epoch.
+- `nn.Module.train()` recursively calls `train()` on every child,
+  including the encoder → including the encoder's inner `self.model`.
+- The `.eval()` from `__init__` is overwritten on the first epoch and
+  every epoch thereafter.
+
+**What was actually happening pre-fix:**
+- Frozen encoder forwards ran with dropout *active* every epoch.
+- Each epoch's embeddings carried fresh dropout noise.
+- BatchNorm (where present) updated running stats from each batch.
+- Cache writes during a `fit` run captured train-mode dropout noise into
+  the cache file, frozen forever.
+
+**The fix** (commit `[hash-TBD]`): each encoder overrides `train()` to
+re-apply `.eval()` to its frozen submodule(s) after the propagation:
+
+```python
+def train(self, mode: bool = True):
+    super().train(mode)
+    if self._marble_train_mode == "freeze":
+        self.model.eval()
+    return self
+```
+
+CLaMP3 has two frozen submodules (`self.model` AND `self.mert_encoder`);
+its override eval's both. Xcodec has no `train_mode` kwarg and is always
+frozen; its override unconditionally eval's `self.model`. The regression
+test at `tests/test_encoder_eval_under_train_propagation.py` asserts the
+invariant across every encoder.
+
+**Which caches are clean and which carry noise:**
+- ✅ Caches written by `scripts/embeddings/extract.py` — clean. That
+  script explicitly does `task.eval()` + `torch.no_grad()`
+  (`scripts/embeddings/extract.py:283`), and works around the
+  Lightning-propagation issue because it doesn't run inside a Trainer.
+- ❌ Caches written by `fit` runs BEFORE commit `[hash-TBD]` — encode
+  train-mode dropout noise. Still usable (the probe converged against
+  them) but won't match a fresh extraction byte-for-byte. The user has
+  opted to keep these as-is; numbers from those runs stand.
+- ✅ Caches written by `fit` runs AFTER commit `[hash-TBD]` — clean.
+
+**Detection:** if you re-extract embeddings for an existing cache_hash
+and the new values differ from the cached ones, the cached values were
+likely from the buggy era. Compare against
+`scripts/embeddings/extract.py`'s output to be sure.
+
 ---
 
 ## 4. What the cache does NOT change

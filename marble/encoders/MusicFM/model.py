@@ -42,13 +42,17 @@ class MusicFM_Encoder(BaseEncoder):
         """
         super().__init__()
         self.sample_rate = self.SAMPLING_RATE
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        self._marble_train_mode = train_mode
 
         # pre_trained_folder is default to $HOME/.cache/musicfm/
         if pre_trained_folder is None:
             pre_trained_folder = os.path.expanduser("~/.cache/musicfm/")
             if not os.path.exists(pre_trained_folder):
                 os.makedirs(pre_trained_folder)
-        
+
         # autodownload if not exist
         # wget -P ~/.cache/musicfm/ https://huggingface.co/minzwon/MusicFM/resolve/main/msd_stats.json
         # wget -P ~/.cache/musicfm/ https://huggingface.co/minzwon/MusicFM/resolve/main/pretrained_msd.pt
@@ -58,15 +62,15 @@ class MusicFM_Encoder(BaseEncoder):
             os.system(f"wget -P {pre_trained_folder} https://huggingface.co/minzwon/MusicFM/resolve/main/msd_stats.json")
             os.system(f"wget -P {pre_trained_folder} https://huggingface.co/minzwon/MusicFM/resolve/main/pretrained_msd.pt")
             print("Download complete. Files saved to:", pre_trained_folder)
-        
-        
+
+
         # Load the core MusicHuBERT model
         self.model = MusicFM25Hz(
             is_flash=False,
             stat_path=os.path.join(pre_trained_folder, "msd_stats.json"),
             model_path=os.path.join(pre_trained_folder, "pretrained_msd.pt"),
         )
-        
+
 
         # Configure which parameters to train
         if train_mode == "freeze":
@@ -133,13 +137,21 @@ class MusicFM_Encoder(BaseEncoder):
 
         return outputs # tuple of per layer emb, 13 layers in total, each shape of (B, T, H)
 
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the frozen submodule after the recursive
+        # propagation from the parent LightningModule's train() call.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+        return self
+
 
 
 if __name__ == "__main__":
     device = 'cuda'
     # fake wav for testing
     wav = torch.randn(4, 24000 * 10)  # 10 seconds of audio at 24kHz
-    wavs = torch.tensor(wav).to(device) 
+    wavs = torch.tensor(wav).to(device)
 
     # This will automatically fetch the checkpoint from huggingface
     model = MusicFM_Encoder()
@@ -150,5 +162,3 @@ if __name__ == "__main__":
 
     print('Total number of layers: ', len(output))
     print('Output shape of each layer: ', [layer.shape for layer in output])
-    
-    

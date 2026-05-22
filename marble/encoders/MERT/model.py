@@ -50,6 +50,11 @@ class MERT_v1_95M_Encoder(BaseEncoder):
         super().__init__()
         self.sample_rate = self.SAMPLING_RATE
         self.preprocess_in_forward = preprocess_in_forward
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        # MERT_v1_330M_Encoder is a subclass and inherits this behavior.
+        self._marble_train_mode = train_mode
 
         # Load the Wav2Vec2 feature extractor (normalizes and pads audio)
         self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
@@ -147,7 +152,7 @@ class MERT_v1_95M_Encoder(BaseEncoder):
         # Ensure input dtype matches model parameters (fp16 vs fp32)
         model_dtype = next(self.model.parameters()).dtype
         input_values = input_values.to(device=self.model.device, dtype=model_dtype)
-        
+
         outputs = self.model(
             input_values=input_values,
             output_hidden_states=output_hidden_states,
@@ -155,6 +160,17 @@ class MERT_v1_95M_Encoder(BaseEncoder):
         )
 
         return outputs
+
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the frozen submodule after the recursive
+        # propagation from the parent LightningModule's train() call.
+        # Without this, dropout/BatchNorm in self.model would run in
+        # train mode every epoch despite the .eval() in __init__.
+        # Inherited by MERT_v1_330M_Encoder.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+        return self
 
 
 class MERT_v1_95M_FeatureExtractor(BaseAudioTransform):
@@ -220,11 +236,9 @@ if __name__ == "__main__":
     x = torch.randn(24000 * 5)  # 1个5秒的音频
     out = model(x)
     print(out.last_hidden_state.shape)  # 应该是 (1, 24000 * 5 / 75, 1024)
-    
+
     # 测试特征提取器
     feature_extractor = MERT_v1_330M_FeatureExtractor()
     x = torch.randn(24000 * 5)  # 1个5秒的音频
     features = feature_extractor({"waveform": x, "sampling_rate": 24000})
     print(features['waveform'].shape)
-    
-    

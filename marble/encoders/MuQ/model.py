@@ -41,6 +41,10 @@ class MuQ_Encoder(BaseEncoder):
         """
         super().__init__()
         self.sample_rate = self.SAMPLING_RATE
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        self._marble_train_mode = train_mode
 
         # Load the core MusicHuBERT model
         self.model = MuQ.from_pretrained(
@@ -106,7 +110,7 @@ class MuQ_Encoder(BaseEncoder):
         # Ensure input dtype matches model parameters (fp16 vs fp32)
         model_dtype = next(self.model.parameters()).dtype
         x = x.to(device=self.model.device, dtype=model_dtype)
-        
+
         outputs = self.model(
             x=x,
             output_hidden_states=output_hidden_states
@@ -114,13 +118,22 @@ class MuQ_Encoder(BaseEncoder):
 
         return outputs.hidden_states
 
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the frozen submodule after the recursive
+        # propagation from the parent LightningModule's train() call.
+        # Without this, dropout/BatchNorm in self.model would run in
+        # train mode every epoch despite the .eval() in __init__.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+        return self
 
 
 if __name__ == "__main__":
     device = 'cuda'
     # fake wav for testing
     wav = torch.randn(4, 24000 * 10)  # 10 seconds of audio at 24kHz
-    wavs = torch.tensor(wav).to(device) 
+    wavs = torch.tensor(wav).to(device)
 
     # This will automatically fetch the checkpoint from huggingface
     muq = MuQ_Encoder()
@@ -131,5 +144,3 @@ if __name__ == "__main__":
 
     print('Total number of layers: ', len(output))
     print('Output shape of each layer: ', [layer.shape for layer in output])
-    
-    

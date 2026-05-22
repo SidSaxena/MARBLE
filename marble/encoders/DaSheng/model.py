@@ -1,11 +1,12 @@
 # marble/encoders/dasheng/model.py
-from typing import Sequence, Dict, Optional, Union, Tuple, List
+from collections.abc import Sequence
 
 import torch
 
-# Assuming the pretrained models are available from this path
-from marble.encoders.DaSheng.pretrained.pretrained import dasheng_base, dasheng_06B, dasheng_12B
 from marble.core.base_encoder import BaseEncoder
+
+# Assuming the pretrained models are available from this path
+from marble.encoders.DaSheng.pretrained.pretrained import dasheng_06B, dasheng_12B, dasheng_base
 
 
 class DaSheng_Encoder(BaseEncoder):
@@ -20,7 +21,7 @@ class DaSheng_Encoder(BaseEncoder):
 
     def __init__(
         self,
-        model_size: str = "1.2B", # one of ["base", "0.6B", "1.2B"]
+        model_size: str = "1.2B",  # one of ["base", "0.6B", "1.2B"]
         pre_trained_folder: str = None,
         train_mode: str = "freeze",  # one of ["freeze", "full", "lora"]
         lora_r: int = 8,
@@ -43,6 +44,10 @@ class DaSheng_Encoder(BaseEncoder):
         super().__init__()
         self.sample_rate = self.SAMPLING_RATE
         self.model_size = model_size
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        self._marble_train_mode = train_mode
 
         if self.model_size == "base":
             self.model = dasheng_base(pre_trained_folder)
@@ -57,16 +62,20 @@ class DaSheng_Encoder(BaseEncoder):
             self.num_features = 1280
             self.n_transformer_layers = 48
         else:
-            raise ValueError(f"Unknown model_size: {model_size}. Available options are 'base', '0.6B', '1.2B'.")
+            raise ValueError(
+                f"Unknown model_size: {model_size}. Available options are 'base', '0.6B', '1.2B'."
+            )
 
         if train_mode == "freeze":
             for param in self.model.parameters():
                 param.requires_grad = False
         elif train_mode == "lora":
             try:
-                from peft import get_peft_model, LoraConfig
-            except ImportError:
-                raise ImportError("LoRA training requires the 'peft' library. Please install it with 'pip install peft'")
+                from peft import LoraConfig, get_peft_model
+            except ImportError as err:
+                raise ImportError(
+                    "LoRA training requires the 'peft' library. Please install it with 'pip install peft'"
+                ) from err
             for param in self.model.parameters():
                 param.requires_grad = False
             peft_config = LoraConfig(
@@ -89,12 +98,8 @@ class DaSheng_Encoder(BaseEncoder):
             self.model.eval()
 
     def forward(
-        self,
-        x: torch.Tensor,
-        *args,
-        output_hidden_states: bool = True,
-        **kwargs
-    ) -> Tuple[torch.Tensor]:
+        self, x: torch.Tensor, *args, output_hidden_states: bool = True, **kwargs
+    ) -> tuple[torch.Tensor]:
         """
         Perform a forward pass through the DaSheng encoder.
 
@@ -117,7 +122,7 @@ class DaSheng_Encoder(BaseEncoder):
 
         if x.ndim == 3 and x.shape[1] == 1:
             x = x.squeeze(1)
-        
+
         # --- FIX 2: Handle the model's direct tensor output ---
         # The underlying DaSheng model likely does not accept 'output_hidden_states'
         # and returns the final hidden state tensor directly.
@@ -128,14 +133,22 @@ class DaSheng_Encoder(BaseEncoder):
         # to maintain a consistent return type with other encoders.
         return (last_hidden_state,)
 
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the frozen submodule after the recursive
+        # propagation from the parent LightningModule's train() call.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+        return self
+
 
 if __name__ == "__main__":
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     for size in ["base", "1.2B"]:
         print(f"\n----- Testing DaSheng_Encoder with model_size='{size}' -----")
-        
+
         wav = torch.randn(2, DaSheng_Encoder.SAMPLING_RATE * 10)
         wavs = wav.to(device)
 
@@ -143,7 +156,7 @@ if __name__ == "__main__":
             encoder = DaSheng_Encoder(model_size=size)
             # The .to(device) call is on our wrapper, which then applies it
             # to the underlying self.model
-            encoder = encoder.to(device).eval() 
+            encoder = encoder.to(device).eval()
         except Exception as e:
             print(f"Could not instantiate model size '{size}': {e}")
             continue
@@ -152,12 +165,16 @@ if __name__ == "__main__":
             try:
                 # This will now work correctly
                 output_states = encoder(wavs, output_hidden_states=True)
-                
+
                 # Because we fixed the forward pass to wrap the output in a tuple,
                 # the length will now be 1.
                 print(f"Total number of layers returned: {len(output_states)}")
-                print(f"Expected number of transformer layers in model: {encoder.n_transformer_layers}")
-                print(f"Output shape of the final (and only returned) layer: {output_states[0].shape}")
-                
+                print(
+                    f"Expected number of transformer layers in model: {encoder.n_transformer_layers}"
+                )
+                print(
+                    f"Output shape of the final (and only returned) layer: {output_states[0].shape}"
+                )
+
             except Exception as e:
-                 print(f"Forward pass failed for model size '{size}': {e}")
+                print(f"Forward pass failed for model size '{size}': {e}")

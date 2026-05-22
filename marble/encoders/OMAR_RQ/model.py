@@ -16,10 +16,7 @@ The encoder returns a tuple of 24 tensors (one per layer), each shaped
 (B, T_tokens, 1024), compatible with MARBLE's LayerSelector.
 """
 
-from typing import Dict, Optional, Tuple
-
 import torch
-import torch.nn as nn
 
 from marble.core.base_encoder import BaseEncoder
 from marble.core.base_transform import BaseAudioTransform
@@ -37,7 +34,7 @@ class OMARRQ_FeatureExtractor(BaseAudioTransform):
     same dict with the waveform modified in-place.
     """
 
-    def forward(self, sample: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(self, sample: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Args:
             sample: dict containing ``"input_features"`` of shape ``(C, T)``
@@ -79,17 +76,21 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
     # model_id="mtg-upf/omar-rq-multifeature-25hz-fsq" explicitly to
     # restore the original variant for direct comparison.
     HUGGINGFACE_MODEL_NAME = "mtg-upf/omar-rq-multifeature-25hz"
-    SAMPLING_RATE = 24000   # model trained at 24 kHz (config.gin: new_freq=24000)
-    TOKEN_RATE = 25.0       # patch_size=960 @ 24kHz → 960/24000 = 40ms = 25 Hz
-    NUM_FEATURES = 1024     # config.gin: embed_dim=1024
+    SAMPLING_RATE = 24000  # model trained at 24 kHz (config.gin: new_freq=24000)
+    TOKEN_RATE = 25.0  # patch_size=960 @ 24kHz → 960/24000 = 40ms = 25 Hz
+    NUM_FEATURES = 1024  # config.gin: embed_dim=1024
     N_TRANSFORMER_LAYERS = 24  # config.gin: depth=24
 
     def __init__(
         self,
-        model_id: Optional[str] = None,
+        model_id: str | None = None,
         train_mode: str = "freeze",
     ) -> None:
         super().__init__()
+        # Stashed for the train() override below — Lightning's per-epoch
+        # self.train() call propagates recursively to children and would
+        # otherwise undo the .eval() applied here for train_mode='freeze'.
+        self._marble_train_mode = train_mode
 
         hf_id = model_id if model_id is not None else self.HUGGINGFACE_MODEL_NAME
 
@@ -109,18 +110,22 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
         # variant (multifeature, multifeature-25hz, multifeature-25hz-fsq, ...)
         # which differ in sample rate, token rate, and possibly layer count.
         self.sampling_rate = int(self.model.sr)
-        self.token_rate    = float(self.model.eps)
-        self.num_features  = int(self.model.net.embed_dim)
+        self.token_rate = float(self.model.eps)
+        self.num_features = int(self.model.net.embed_dim)
         self.n_transformer_layers = len(self.model.net.layers)
 
         # Sanity-warn when the loaded variant differs from the class defaults
         # so a misconfigured probe head (in_dim mismatch) is loud upfront.
         if self.num_features != self.NUM_FEATURES:
-            print(f"  ! OMAR-RQ variant feature dim = {self.num_features} "
-                  f"(class default {self.NUM_FEATURES}); update probe in_dim")
+            print(
+                f"  ! OMAR-RQ variant feature dim = {self.num_features} "
+                f"(class default {self.NUM_FEATURES}); update probe in_dim"
+            )
         if abs(self.token_rate - self.TOKEN_RATE) > 0.1:
-            print(f"  ! OMAR-RQ variant token rate = {self.token_rate:.2f} Hz "
-                  f"(class default {self.TOKEN_RATE} Hz); update fps/label_freq")
+            print(
+                f"  ! OMAR-RQ variant token rate = {self.token_rate:.2f} Hz "
+                f"(class default {self.TOKEN_RATE} Hz); update fps/label_freq"
+            )
 
         if train_mode == "freeze":
             for param in self.model.parameters():
@@ -140,8 +145,8 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
     def forward(
         self,
         x: torch.Tensor,
-        input_len: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, ...]:
+        input_len: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, ...]:
         """
         Parameters
         ----------
@@ -179,3 +184,13 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
         embeddings = self.model.extract_embeddings(x, layers=layer_indices)
 
         return tuple(embeddings[i] for i in range(self.n_transformer_layers))
+
+    def train(self, mode: bool = True):
+        # Re-apply .eval() to the frozen submodule after the recursive
+        # propagation from the parent LightningModule's train() call.
+        # OMAR-RQ only supports train_mode='freeze' today, but the guard
+        # keeps the override correct if other modes are added later.
+        super().train(mode)
+        if self._marble_train_mode == "freeze":
+            self.model.eval()
+        return self

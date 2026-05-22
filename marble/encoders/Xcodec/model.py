@@ -28,7 +28,7 @@ class Xcodec_Encoder(BaseEncoder):
     HUGGINGFACE_MODEL_NAME = "m-a-p/xcodec"
     TOKEN_RATE = 50  # Typical frame rate for XCodec at 16kHz (16000 / 320)
     SAMPLING_RATE = 16000  # Audio sampling rate expected by the model
-    
+
     NUM_FEATURES = 1024
     N_TRANSFORMER_LAYERS = 1  # The XCodec encoder is a CNN, not a Transformer
 
@@ -52,10 +52,14 @@ class Xcodec_Encoder(BaseEncoder):
                                                 (e.g., ~/.cache/xcodec).
         """
         super().__init__()
+        # Xcodec is always frozen — no train_mode kwarg exposed. Stashed
+        # for the train() override below so Lightning's per-epoch
+        # self.train() propagation can't undo the .eval() in __init__.
+        self._marble_train_mode = "freeze"
         self.mode = mode
         # removed support for "indices" mode in marble
         assert self.mode in ["vq_emb", "pre_vq_emb"], "Mode must be in ['vq_emb', 'pre_vq_emb']."
-        
+
         self.target_bw = target_bw
         assert self.target_bw in [i*0.5 for i in range(1, 13)], "target_bw must be one of [0.5, 1.0, ..., 6.0]"
         print(f"Initializing XCodec Encoder in '{self.mode}' mode with target_bw={self.target_bw} kbps.")
@@ -66,7 +70,7 @@ class Xcodec_Encoder(BaseEncoder):
         else:
             # Use a dedicated cache directory for this model
             ckpt_root = Path.home() / ".cache" / "xcodec"
-        
+
         # Ensure the cache directory exists
         ckpt_root.mkdir(parents=True, exist_ok=True)
 
@@ -108,7 +112,7 @@ class Xcodec_Encoder(BaseEncoder):
         # Freeze all model parameters
         for param in self.model.parameters():
             param.requires_grad = False
-        
+
         # Set the model to evaluation mode
         self.model.eval()
 
@@ -127,7 +131,7 @@ class Xcodec_Encoder(BaseEncoder):
 
         Returns:
             hidden_states (Tuple[torch.Tensor]): A tuple containing a single tensor, which is the
-                  embedding from the final layer. The embedding tensor has a shape of 
+                  embedding from the final layer. The embedding tensor has a shape of
                   (batch_size, seq_len, NUM_FEATURES).
         """
         # Ensure input dtype matches model parameters
@@ -138,8 +142,16 @@ class Xcodec_Encoder(BaseEncoder):
         # SoundStream/EnCodec models expect an input shape of [B, C, T], where C=1
         if x.dim() == 2:
             x = x.unsqueeze(1)
-        
+
         embeddings_b_d_t = self.model.encode(x, mode=self.mode, target_bw=self.target_bw, **kwargs) # [B, H, T]
         embeddings_b_t_d = embeddings_b_d_t.permute(0, 2, 1) # [B, T, H]
 
         return (embeddings_b_t_d,)
+
+    def train(self, mode: bool = True):
+        # Xcodec is unconditionally frozen — re-apply .eval() to the
+        # submodule after the recursive propagation from the parent
+        # LightningModule's train() call.
+        super().train(mode)
+        self.model.eval()
+        return self
