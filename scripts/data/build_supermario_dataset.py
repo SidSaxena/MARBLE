@@ -604,7 +604,16 @@ _MXL_SCORE_CACHE: dict[str, object] = {}
 
 
 def _load_mxl_score(mxl_path: Path):
-    """Lazily parse + cache the music21 score for a .mxl file."""
+    """Lazily parse + expand-repeats + cache the music21 score.
+
+    Returns an EXPANDED score (repeat blocks unrolled into a linear bar
+    sequence) so positional measure slicing matches the annotation's
+    bar-number convention. SuperMarioStructure annotations use bar
+    numbers from the unrolled-MIDI view (what the annotator saw in the
+    rendered score), not from the abstract repeat-marked source.
+    If ``expandRepeats()`` fails (rare — voltas, da-capo, weird
+    notation), we fall back to the original score and warn.
+    """
     key = str(mxl_path)
     if key in _MXL_SCORE_CACHE:
         return _MXL_SCORE_CACHE[key]
@@ -619,8 +628,17 @@ def _load_mxl_score(mxl_path: Path):
         log.warning(f"  music21 parse failed for {mxl_path.name}: {e}")
         _MXL_SCORE_CACHE[key] = None
         return None
-    _MXL_SCORE_CACHE[key] = score
-    return score
+    try:
+        expanded = score.expandRepeats()
+    except Exception as e:
+        log.warning(
+            f"  music21 expandRepeats failed for {mxl_path.name}: {e} "
+            f"— falling back to unexpanded score; bar numbering may diverge "
+            f"from annotation for any repeated sections"
+        )
+        expanded = score
+    _MXL_SCORE_CACHE[key] = expanded
+    return expanded
 
 
 def _slice_abc(
@@ -646,12 +664,51 @@ def _slice_abc(
 
     import tempfile
 
+    import music21
+
+    # Positional slicing on the EXPANDED score, not music21.measures(start, end)
+    # which keys on the .number attribute. Annotations from the upstream repo
+    # use sequential bar numbering matching the expanded MIDI (what the
+    # annotator saw); music21's .number attribute keeps the SCORE's numbering
+    # even after expandRepeats, so duplicate / non-sequential numbers can
+    # appear and `.measures(17, 26)` would clip or miss bars.
     try:
-        sub_score = score.measures(bar_start, bar_end)
+        sub_score = music21.stream.Score()
+        # Preserve global metadata so xml2abc emits the right headers (T, C, K).
+        if score.metadata is not None:
+            sub_score.metadata = score.metadata
+        produced_any = False
+        for part in score.parts:
+            measures = list(part.getElementsByClass(music21.stream.Measure))
+            # 1-indexed inclusive: positions [bar_start-1, bar_end-1]
+            slice_lo = max(0, bar_start - 1)
+            slice_hi = min(len(measures), bar_end)
+            if slice_hi <= slice_lo:
+                continue
+            sliced_measures = measures[slice_lo:slice_hi]
+            if not sliced_measures:
+                continue
+            new_part = music21.stream.Part()
+            new_part.id = part.id
+            # Copy initial context (clef, key sig, time sig) from the FIRST
+            # measure of the part so the slice is musically self-contained.
+            first_in_part = measures[0]
+            for ctx in first_in_part.getElementsByClass(
+                (music21.clef.Clef, music21.key.KeySignature, music21.meter.TimeSignature)
+            ):
+                new_part.append(ctx)
+            for m in sliced_measures:
+                # Use a deepcopy-equivalent so we don't mutate the cached score.
+                new_part.append(m)
+            sub_score.append(new_part)
+            produced_any = True
+        if not produced_any:
+            log.debug(
+                f"  music21 positional slice [{bar_start},{bar_end}] empty for {mxl_path.name}"
+            )
+            return False
     except Exception as e:
-        log.debug(f"  music21 measures({bar_start},{bar_end}) failed for {mxl_path.name}: {e}")
-        return False
-    if sub_score is None:
+        log.debug(f"  music21 slice ({bar_start},{bar_end}) failed for {mxl_path.name}: {e}")
         return False
 
     dst_path.parent.mkdir(parents=True, exist_ok=True)
@@ -699,6 +756,11 @@ def _slice_abc(
         return True
     finally:
         tmp_path.unlink(missing_ok=True)
+        # ALSO clean the tmp .abc — xml2abc may have partially written
+        # it and then failed (returncode != 0, or an empty file). Without
+        # this we leak `tmpXXX.abc` files alongside the real segments,
+        # which breaks downstream scans assuming `*.abc` are valid.
+        Path(tmp_path).with_suffix(".abc").unlink(missing_ok=True)
 
 
 # ── Split assignment ──────────────────────────────────────────────────────────

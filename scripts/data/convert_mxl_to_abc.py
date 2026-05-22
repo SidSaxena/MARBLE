@@ -153,6 +153,10 @@ def _run_xml2abc_via_music21(src: Path, out_dir: Path) -> tuple[bool, str]:
         return True, "ok (via music21 fallback)"
     finally:
         Path(tmp.name).unlink(missing_ok=True)
+        # Also clean the .abc xml2abc may have partially written under the
+        # temp stem (e.g. failed mid-write). Without this the user's
+        # --out-dir gets littered with `tmpXXX.abc` files.
+        Path(tmp.name).with_suffix(".abc").unlink(missing_ok=True)
 
 
 def _convert_one(src: Path, out_dir: Path, use_music21_fallback: bool) -> tuple[bool, str]:
