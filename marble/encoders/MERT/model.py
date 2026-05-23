@@ -118,18 +118,44 @@ class MERT_v1_95M_Encoder(BaseEncoder):
         # ~/.cache/torch_inductor across processes, so the 30-90s first-compile
         # cost is paid once per machine per encoder; subsequent layers in the
         # sweep reuse the cached graph.
+        #
+        # Capability check before applying: torch.compile() itself succeeds
+        # eagerly (returns a wrapper) but the actual Inductor compilation only
+        # fires on the first forward pass — by then we're past this __init__
+        # and deep inside Lightning's training loop, where an exception kills
+        # the whole sweep. So we have to validate up-front:
+        #   1. Triton must be importable — it's the CUDA-side kernel compiler
+        #      Inductor needs. Triton has no official Windows build, so
+        #      compile_mode is effectively a Linux/Mac-only feature.
+        #   2. A CUDA device should exist — compile barely helps on CPU/MPS.
         if compile_mode is not None:
+            skip_reason = None
             try:
-                self.model = torch.compile(self.model, mode=compile_mode)
-                print(
-                    f"[{self.NAME}] torch.compile(mode={compile_mode!r}) applied. "
-                    f"First forward will trigger compilation (30-90s typically)."
+                import triton  # noqa: F401 — capability check
+            except ImportError:
+                skip_reason = (
+                    "Triton not installed (no official Windows build; "
+                    "install on Linux/Mac for compile support)"
                 )
-            except Exception as e:  # pragma: no cover — defensive
+            if skip_reason is None and not torch.cuda.is_available():
+                skip_reason = "no CUDA device available (compile gives little benefit on CPU/MPS)"
+            if skip_reason is not None:
                 print(
-                    f"[{self.NAME}] torch.compile(mode={compile_mode!r}) failed: "
-                    f"{type(e).__name__}: {e}. Falling back to eager."
+                    f"[{self.NAME}] torch.compile(mode={compile_mode!r}) requested "
+                    f"but skipped — {skip_reason}. Falling back to eager."
                 )
+            else:
+                try:
+                    self.model = torch.compile(self.model, mode=compile_mode)
+                    print(
+                        f"[{self.NAME}] torch.compile(mode={compile_mode!r}) applied. "
+                        f"First forward will trigger compilation (30-90s typically)."
+                    )
+                except Exception as e:  # pragma: no cover — defensive
+                    print(
+                        f"[{self.NAME}] torch.compile(mode={compile_mode!r}) failed at "
+                        f"wrap time: {type(e).__name__}: {e}. Falling back to eager."
+                    )
 
     def forward(
         self,
