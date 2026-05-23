@@ -6,7 +6,7 @@ trainer:
   accelerator: gpu
   # strategy: ddp # or ddp_find_unused_parameters
   devices: [1]
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 4
   num_nodes: 1
   precision: bf16-mixed
   max_epochs: 50
@@ -104,7 +104,7 @@ model:
 data:
   class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyDataModule
   init_args:
-    batch_size: 32
+    batch_size: 16
     num_workers: 8
 
     audio_transforms:

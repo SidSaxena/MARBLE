@@ -10,7 +10,7 @@ trainer:
   fast_dev_run: false
   accelerator: gpu
   devices: [0]
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 4
   num_nodes: 1
   precision: bf16-mixed
   max_epochs: 40
@@ -144,7 +144,7 @@ model:
 data:
   class_path: marble.tasks.BPSMotif.datamodule.BPSMotifMNIDDataModule
   init_args:
-    batch_size: 32
+    batch_size: 16
     num_workers: 4
 
     audio_transforms:
