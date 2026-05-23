@@ -121,6 +121,29 @@ VOL = {
 }
 
 # ──────────────────────────────────────────────
+# GPU selection
+# ──────────────────────────────────────────────
+#
+# Modal evaluates `@app.function(gpu=...)` at app-definition time, which runs
+# locally before submitting to Modal. So an env var read here works as a
+# per-invocation knob:
+#
+#     MARBLE_GPU=A100-40GB modal run modal_marble.py::run_probe --config ...
+#     MARBLE_GPU=H100      modal run modal_marble.py::run_sweep  ...
+#     MARBLE_GPU=L4        modal run modal_marble.py::run_probe ...   # default per fn
+#
+# Accepted GPU strings are anything Modal recognises:
+#   T4, L4, A10G, A100-40GB, A100-80GB, H100, H200, B200, ...
+# See https://modal.com/docs/guide/gpu for the current list + pricing.
+#
+# Per-function default: short, cheap GPUs (A10G / L4). Override per run via the
+# env var. Functions read this once at module load — relaunching the Modal app
+# with a different MARBLE_GPU value applies it to all subsequent containers.
+PROBE_GPU = os.environ.get("MARBLE_GPU", "A10G")
+SWEEP_GPU = os.environ.get("MARBLE_GPU", "A10G")
+PARALLEL_GPU = os.environ.get("MARBLE_GPU", "L4")
+
+# ──────────────────────────────────────────────
 # Helpers shared across functions
 # ──────────────────────────────────────────────
 
@@ -799,7 +822,7 @@ def setup_bps_motif(max_movements: int | None = None):
 
 @app.function(
     image=image,
-    gpu="A10G",
+    gpu=PROBE_GPU,
     volumes=VOL,
     timeout=4 * 3600,  # 4 h max per run
     secrets=[
@@ -852,7 +875,7 @@ def run_probe(config: str, skip_if_done: bool = True):
 
 @app.function(
     image=image,
-    gpu="A10G",
+    gpu=SWEEP_GPU,
     volumes=VOL,
     timeout=24 * 3600,  # up to 24 h for a full 12-layer sweep
     secrets=[
@@ -957,7 +980,9 @@ def run_sweep(
 
 @app.function(
     image=image,
-    gpu="L4",  # L4 (Ada, 24 GB, bf16): best price/perf vs A10G — ~30% cheaper at ~1.05× speed
+    # L4 default (Ada, 24 GB, bf16) — best price/perf vs A10G, ~30 % cheaper
+    # at ~1.05× speed. Override via MARBLE_GPU=A100-40GB / H100 / etc.
+    gpu=PARALLEL_GPU,
     volumes=VOL,
     timeout=4 * 3600,  # 4 h cap per layer
     retries=modal.Retries(max_retries=2, backoff_coefficient=2.0),
