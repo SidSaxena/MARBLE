@@ -33,6 +33,7 @@ class MERT_v1_95M_Encoder(BaseEncoder):
         lora_alpha: int = 16,
         lora_dropout: float = 0.1,
         lora_target_modules: Sequence[str] = ["q_proj", "v_proj"],
+        compile_mode: Optional[str] = None,
     ) -> None:
         """
         Initialize the MERT HuBERT encoder.
@@ -46,6 +47,13 @@ class MERT_v1_95M_Encoder(BaseEncoder):
             lora_r (int): LoRA adapter rank (only if train_mode="lora").
             lora_alpha (int): LoRA scaling alpha (only if train_mode="lora").
             lora_dropout (float): Dropout probability for LoRA adapters.
+            compile_mode (str | None): If set, wraps ``self.model`` with
+                ``torch.compile(mode=compile_mode)``. Recommended values:
+                ``"default"`` (safe; ~10-20% speedup on transformer inference),
+                ``"reduce-overhead"`` (CUDA Graphs; ~20-35% speedup but
+                requires static shapes — fails or recompiles on the val
+                remainder batch when ``drop_last=False``).
+                Falls back to eager with a warning if compile fails.
         """
         super().__init__()
         self.sample_rate = self.SAMPLING_RATE
@@ -105,6 +113,23 @@ class MERT_v1_95M_Encoder(BaseEncoder):
             self.model.train()
         else:
             self.model.eval()
+
+        # Optional torch.compile wrap. Inductor cache is persistent in
+        # ~/.cache/torch_inductor across processes, so the 30-90s first-compile
+        # cost is paid once per machine per encoder; subsequent layers in the
+        # sweep reuse the cached graph.
+        if compile_mode is not None:
+            try:
+                self.model = torch.compile(self.model, mode=compile_mode)
+                print(
+                    f"[{self.NAME}] torch.compile(mode={compile_mode!r}) applied. "
+                    f"First forward will trigger compilation (30-90s typically)."
+                )
+            except Exception as e:  # pragma: no cover — defensive
+                print(
+                    f"[{self.NAME}] torch.compile(mode={compile_mode!r}) failed: "
+                    f"{type(e).__name__}: {e}. Falling back to eager."
+                )
 
     def forward(
         self,

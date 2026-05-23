@@ -65,6 +65,13 @@ model:
         train_mode: freeze
         force_half: false
         preprocess_in_forward: false
+        # A/B test point: torch.compile the frozen encoder forward.
+        # `default` is the safe first try (no CUDA Graphs → tolerates the
+        # val remainder batch with drop_last=False). If wall-clock improves
+        # AND val/acc_rpa is unchanged within noise, upgrade to
+        # `reduce-overhead` for extra speedup. Falls back to eager on
+        # compile failure with a warning, no run-time impact.
+        compile_mode: default
 
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector

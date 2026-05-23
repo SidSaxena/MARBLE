@@ -65,6 +65,10 @@ model:
         train_mode: freeze
         force_half: false
         preprocess_in_forward: false
+        # A/B test point — see probe.MERT-v1-95M-layers.HookTheoryMelody.yaml
+        # for rationale. `default` is the safe first try; upgrade to
+        # `reduce-overhead` later if numerics are stable.
+        compile_mode: default
 
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
