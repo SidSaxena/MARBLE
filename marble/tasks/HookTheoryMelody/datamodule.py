@@ -105,14 +105,29 @@ class _HookTheoryMelodyDataset(Dataset):
                 file=__import__("sys").stderr,
             )
 
-        # Pre-create resamplers and build index_map
+        # Pre-create resamplers and build index_map.
+        #
+        # FAST PATH: if the JSONL record carries `num_samples` and
+        # `sample_rate` (populated by
+        # scripts/data/cache_audio_info_in_jsonl.py), use those directly.
+        # SLOW PATH: fall back to torchaudio.info() per file. This is
+        # tolerable on local SSD (~10ms/file) but catastrophic on Modal
+        # volumes (~50-100ms/file × ~10k files = 10-15 min before training
+        # even starts). The cache script eliminates the slow path entirely.
         self.resamplers = {}
         self.index_map: list[tuple[int, int, int, int]] = []
         for file_idx, ytid in enumerate(self.yt_ids):
-            audio_path = os.path.join(self.audio_dir, f"{ytid}.mp3")
-            info = torchaudio.info(audio_path)
-            orig_sr = info.sample_rate
-            num_frames = info.num_frames
+            meta = self.meta[file_idx]
+            cached_sr = meta.get("sample_rate")
+            cached_ns = meta.get("num_samples")
+            if isinstance(cached_sr, int) and isinstance(cached_ns, int):
+                orig_sr = cached_sr
+                num_frames = cached_ns
+            else:
+                audio_path = os.path.join(self.audio_dir, f"{ytid}.mp3")
+                info = torchaudio.info(audio_path)
+                orig_sr = info.sample_rate
+                num_frames = info.num_frames
             orig_clip_frames = int(self.clip_seconds * orig_sr)
             if orig_clip_frames <= 0:
                 continue

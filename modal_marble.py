@@ -726,6 +726,52 @@ def setup_hooktheory_full():
     print("HookTheoryMelody ready on marble-data:/HookTheory/")
 
 
+@app.function(
+    image=image,
+    volumes=VOL,
+    timeout=1 * 60 * 60,  # 1 h cap; typical run is ~5-15 min
+)
+def setup_hooktheory_audio_info():
+    """Add num_samples + sample_rate to HookTheory.{train,val,test}.jsonl.
+
+    The HookTheoryMelody datamodule needs these fields to build its index
+    map. Without them it falls back to a per-file `torchaudio.info()` call,
+    which is ~50-100 ms per record over a Modal volume (network FS). That
+    means a ~16-min stall before the first training step for the BotW-scale
+    corpus (~11.5k records). Pre-computing them once via this function
+    makes future training runs start in seconds.
+
+    The runs against the marble-data volume's audio dir so the patched
+    JSONLs end up directly on the volume, ready for the next sweep.
+
+    Idempotent: records that already have both fields are skipped.
+    """
+    _chdir()
+    data_vol.reload()
+    audio_dir = f"{WORK_DIR}/data/HookTheory/audio"
+    out_dir = f"{WORK_DIR}/data/HookTheory"
+    _run(
+        [
+            "python",
+            "scripts/data/cache_audio_info_in_jsonl.py",
+            "--jsonl",
+            f"{out_dir}/HookTheory.train.jsonl",
+            "--jsonl",
+            f"{out_dir}/HookTheory.val.jsonl",
+            "--jsonl",
+            f"{out_dir}/HookTheory.test.jsonl",
+            "--audio-dir",
+            audio_dir,
+            "--id-key",
+            "youtube.id",
+            "--workers",
+            "32",
+        ]
+    )
+    data_vol.commit()
+    print("HookTheory JSONLs patched with num_samples + sample_rate.")
+
+
 # ──────────────────────────────────────────────
 # HXMSA setup (Harmonix Set MSA — yt-dlp + slice)
 # ──────────────────────────────────────────────
