@@ -21,6 +21,7 @@ authors = [
   { name = "Ruibin Yuan" },
 ]
 dependencies = [
+    # ── Training core (used by every probe/sweep) ──────────────────────────
     "lightning==2.5.1",
     "torch==2.7.0",
     "torchaudio==2.7.0",
@@ -35,44 +36,80 @@ dependencies = [
     "omegaconf",
     "wandb",
     "mir_eval",
-    "pretty_midi",
-    "mido",          # marble/encoders/CLaMP3/midi_util.py — MIDI→MTF conversion
-    "yt-dlp",        # download_hooktheory.py
+    "torchmetrics",      # implicit before; pinned explicitly here
+    "soundfile",         # audio I/O backend for librosa
     "numpy>=1.19",
     "scipy>=1.5",
-    "matplotlib",    # scripts/analysis/* visualisations
-    "seaborn",       # scripts/analysis/* heatmaps + nicer defaults
-    "numba",         # GTZANBeatTracking HMM (replaces the old Cython extension)
-    "omar-rq @ git+https://github.com/MTG/omar-rq.git",  # OMARRQ encoder
+    # ── HF infrastructure (transitive but pinned to avoid drift) ───────────
+    "huggingface_hub>=0.24.0",
     "hf-xet>=1.5.0",
-    "patchright>=1.59.1",
+    "accelerate",
 ]
 
+# Task-/script-specific deps live in extras. uv sync without any --extra
+# gets you the smallest working image (audio tasks with HF-backed encoders
+# like MERT, MuQ, MusicFM); add extras when you need the corresponding
+# task. Local developers who want everything: `uv sync --all-extras`.
 [project.optional-dependencies]
-# uv sync --extra xcodec
-xcodec = [
-    "descript-audiotools @ git+https://github.com/descriptinc/audiotools",
+# uv sync --extra omarrq
+# Required for OMARRQ_*_Encoder. Pulls a sizable transitive chain
+# (nnaudio, samplings, omar-rq internals) — only install when actually
+# running OMAR-RQ probes/sweeps.
+omarrq = [
+    "omar-rq @ git+https://github.com/MTG/omar-rq.git",
 ]
-# uv sync --extra ninsheetmusic   (then `playwright install chromium`)
-# Required only for scripts/data/download_ninsheetmusic.py — the
-# SuperMarioStructure dataset's MIDI source. NSM blocks all non-browser
-# HTTP requests (403); Playwright drives a real Chromium that handles
-# whatever cookie/JS dance NSM expects.
-ninsheetmusic = [
-    "playwright>=1.40",
-    "playwright-stealth>=2.0",   # patches navigator.webdriver + other bot tells
+# uv sync --extra symbolic-midi
+# Required for any task that ingests MIDI through marble (CLaMP3
+# symbolic-MIDI path, BPS-Motif, VGMIDITVar, SuperMarioStructure MIDI
+# segments). `mido` parses .mid; `pretty_midi` is used by
+# marble/utils/theory/lead_sheet.py for HookTheoryStructure analytics.
+symbolic-midi = [
+    "mido",
+    "pretty_midi",
 ]
 # uv sync --extra symbolic-abc
 # Required for the ABC path on SuperMarioStructure (and any future
-# task that wants CLaMP3-symbolic's bar-level ABC tokenisation
-# instead of the secondary MIDI/MTF mode). music21 handles
-# .mxl → musicxml + bar-range slicing; the vendored xml2abc handles
-# musicxml → ABC; abctoolkit handles the post-xml2abc cleanup +
-# voice-rotation that CLaMP3 used during training. See
-# docs/data/supermario_setup.md § Option E.
+# task that wants CLaMP3-symbolic's bar-level ABC tokenisation instead
+# of MIDI/MTF). music21 handles .mxl → musicxml + bar-range slicing;
+# the vendored xml2abc handles musicxml → ABC; abctoolkit handles the
+# post-xml2abc cleanup + voice-rotation that CLaMP3 used during training.
+# See docs/data/supermario_setup.md § Option E.
 symbolic-abc = [
     "music21>=9.0",
-    "abctoolkit>=0.0.4",   # interleaved-ABC preprocessing (matches CLaMP3 training)
+    "abctoolkit>=0.0.4",
+]
+# uv sync --extra xcodec
+xcodec = [
+    "descript-audiotools @ git+https://github.com/descriptinc/audiotools",
+    "matplotlib",   # marble/encoders/Xcodec/utils/utils.py uses pyplot
+]
+# uv sync --extra gtzan-beat
+# Required for GTZANBeatTracking probe (numba-accelerated HMM in
+# marble/tasks/GTZANBeatTracking/madmom/hmm_numba.py).
+gtzan-beat = [
+    "numba",
+]
+# uv sync --extra ninsheetmusic   (then `playwright install chromium`)
+# Data-prep only: scripts/data/download_ninsheetmusic.py for the
+# SuperMarioStructure MIDI source. NSM blocks non-browser HTTP requests
+# (403); Playwright + patchright drive a real Chromium.
+ninsheetmusic = [
+    "playwright>=1.40",
+    "playwright-stealth>=2.0",
+    "patchright>=1.59.1",
+]
+# uv sync --extra data-prep
+# Data-prep only: download / convert scripts. Not needed at training time
+# when the relevant dataset is already on disk or a Modal volume.
+data-prep = [
+    "yt-dlp",     # download_hooktheory.py — YouTube audio recovery
+]
+# uv sync --extra analysis
+# Plotting / analytics for scripts/analysis/*. Not needed at training time.
+analysis = [
+    "matplotlib",
+    "seaborn",
+    "scikit-learn",
 ]
 
 [dependency-groups]

@@ -39,74 +39,166 @@ HF_CACHE = f"{WORK_DIR}/data/.hf_cache"
 
 app = modal.App(APP_NAME)
 
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .apt_install(["ffmpeg", "libsndfile1", "git", "curl", "wget"])
-    .pip_install(
-        [
-            # Core ML stack — pinned to match pyproject.toml. Torch 2.7 needed for
-            # the cu128 wheels used locally (RTX 5060 Ti = sm_120 / Blackwell);
-            # Modal still pulls CUDA 12.x at runtime and 2.7 wheels work cleanly.
-            "torch==2.7.0",
-            "torchaudio==2.7.0",
-            "transformers==4.52.3",
-            "lightning==2.5.1",
-            # MARBLE deps
-            "jsonargparse[signatures]>=4.27.7",
-            "albumentations==1.4.4",
-            "datasets==3.6.0",
-            "peft==0.15.2",
-            "einops",
-            "requests",
-            "librosa",
-            "omegaconf",
-            "wandb",
-            "mir_eval",
-            "pretty_midi",
-            "torchmetrics",
-            "soundfile",
-            "huggingface_hub>=0.24.0",
-            "hf-xet>=1.5.0",  # HF filesystem helpers
-            "accelerate",
-            # MARBLE deps added since the last Modal-touching commit (5c2ee41):
-            "mido",  # CLaMP3 MIDI→MTF tokenisation (SuperMarioStructure path)
-            "yt-dlp",  # HookTheoryMelody + HXMSA audio recovery
-            "numpy>=1.19",
-            "scipy>=1.5",
-            "matplotlib",  # scripts/analysis/*
-            "seaborn",  # scripts/analysis/*
-            "numba",  # GTZANBeatTracking HMM
-            "patchright>=1.59.1",  # NinSheetMusic MIDI scrape fallback (SuperMario)
-            # OMAR-RQ
-            "git+https://github.com/MTG/omar-rq.git",
-        ]
+# ──────────────────────────────────────────────
+# Image layers
+# ──────────────────────────────────────────────
+#
+# Modal caches image layers, so layered images share cached layers up to the
+# point they diverge. We define one BASE image (core training deps used by
+# every task) and layered task-specific images on top.
+#
+# Each `@app.function(image=..., ...)` picks the right image for its workload.
+# This keeps the per-container install footprint slim: e.g. an OMARRQ probe
+# doesn't install music21/abctoolkit/numba/yt-dlp/matplotlib/seaborn that it
+# never imports.
+#
+# Mapping (verified via grep over marble/ source):
+#   omar-rq      → OMARRQ_*_Encoder
+#   mido         → marble/encoders/CLaMP3/midi_util.py (MIDI→MTF)
+#   pretty_midi  → marble/utils/theory/lead_sheet.py (HookTheoryStructure)
+#   music21,     → SuperMarioStructure ABC path (build_supermario_dataset.py)
+#     abctoolkit
+#   matplotlib   → marble/encoders/Xcodec/utils/utils.py (Xcodec internal viz)
+#   numba        → marble/tasks/GTZANBeatTracking/madmom/hmm_numba.py
+#   yt-dlp       → scripts/data/download_hooktheory.py (NOT needed when
+#                  data is already on marble-data volume — which it is)
+#   patchright   → scripts/data/download_ninsheetmusic.py (data prep)
+#   seaborn      → scripts/analysis/* only (not imported in marble/)
+
+
+_CORE_DEPS = [
+    # Core ML stack — pinned to match pyproject.toml. Torch 2.7 needed for
+    # the cu128 wheels used locally (RTX 5060 Ti = sm_120 / Blackwell);
+    # Modal still pulls CUDA 12.x at runtime and 2.7 wheels work cleanly.
+    "torch==2.7.0",
+    "torchaudio==2.7.0",
+    "transformers==4.52.3",
+    "lightning==2.5.1",
+    "jsonargparse[signatures]>=4.27.7",
+    "albumentations==1.4.4",
+    "datasets==3.6.0",
+    "peft==0.15.2",
+    "einops",
+    "requests",
+    "librosa",
+    "omegaconf",
+    "wandb",
+    "mir_eval",
+    "torchmetrics",
+    "soundfile",
+    "huggingface_hub>=0.24.0",
+    "hf-xet>=1.5.0",
+    "accelerate",
+    "numpy>=1.19",
+    "scipy>=1.5",
+]
+
+# Per-task extras. Pulled in as additional pip_install layers ON TOP of the
+# base image, so the base layer cache is shared. Mirror pyproject.toml's
+# [project.optional-dependencies] entries.
+_EXTRA_DEPS = {
+    "omarrq": ["git+https://github.com/MTG/omar-rq.git"],
+    "symbolic-midi": ["mido", "pretty_midi"],
+    "symbolic-abc": ["music21>=9.0", "abctoolkit>=0.0.4"],
+    "xcodec": [
+        "git+https://github.com/descriptinc/audiotools",
+        "matplotlib",
+    ],
+    "gtzan-beat": ["numba"],
+    # data-prep / ninsheetmusic / analysis intentionally NOT defined here —
+    # they're not needed inside training containers. Run those locally.
+}
+
+
+def _make_image(extras: list[str] | None = None) -> "modal.Image":
+    """Build a Modal image layered with the requested extras.
+
+    The local marble code is baked into a final layer so editing code only
+    invalidates the top-most cache layer, not the (heavy) pip layers below.
+    """
+    img = (
+        modal.Image.debian_slim(python_version="3.10")
+        .apt_install(["ffmpeg", "libsndfile1", "git", "curl", "wget"])
+        .pip_install(_CORE_DEPS)
     )
-    .add_local_dir(
-        local_path=".",
-        remote_path=WORK_DIR,
-        copy=True,  # bake into image layer (not runtime mount)
-        ignore=[
-            "data/**",
-            "output/**",
-            ".git/**",
-            "**/__pycache__",
-            "**/*.pyc",
-            "**/*.pth",
-            "memory/**",
-            ".venv/**",
-        ],
+    for extra in extras or []:
+        if extra not in _EXTRA_DEPS:
+            raise ValueError(f"Unknown extra: {extra!r}. Known: {sorted(_EXTRA_DEPS)}")
+        img = img.pip_install(_EXTRA_DEPS[extra])
+
+    return (
+        img.add_local_dir(
+            local_path=".",
+            remote_path=WORK_DIR,
+            copy=True,
+            ignore=[
+                "data/**",
+                "output/**",
+                ".git/**",
+                "**/__pycache__",
+                "**/*.pyc",
+                "**/*.pth",
+                "memory/**",
+                ".venv/**",
+            ],
+        )
+        .run_commands([f"pip install -e {WORK_DIR} --no-deps --quiet"])
+        .env(
+            {
+                "PYTHONPATH": WORK_DIR,
+                "HF_HOME": HF_CACHE,
+                "HF_DATASETS_CACHE": HF_CACHE,
+                "WANDB_MODE": "offline",
+                "TOKENIZERS_PARALLELISM": "false",
+            }
+        )
     )
-    .run_commands([f"pip install -e {WORK_DIR} --no-deps --quiet"])
-    .env(
-        {
-            "PYTHONPATH": WORK_DIR,
-            "HF_HOME": HF_CACHE,
-            "HF_DATASETS_CACHE": HF_CACHE,
-            "WANDB_MODE": "offline",  # logs saved locally; sync with: wandb sync output/
-            "TOKENIZERS_PARALLELISM": "false",
-        }
+
+
+# Pre-built named images. Add new ones as needed.
+base_image = _make_image()
+omarrq_image = _make_image(extras=["omarrq"])
+symbolic_image = _make_image(extras=["symbolic-midi", "symbolic-abc", "omarrq"])
+# `image` (legacy name) = the everything-bundle, preserved so existing
+# function definitions still work. New runs should opt into a slimmer image
+# via the MARBLE_IMAGE env var (see below).
+image = _make_image(extras=["omarrq", "symbolic-midi", "symbolic-abc", "gtzan-beat"])
+
+# ──────────────────────────────────────────────
+# Image + GPU selection via env vars
+# ──────────────────────────────────────────────
+#
+# `MARBLE_IMAGE` picks which image runs the @app.function decorators below.
+# Read at module load time (decorators are evaluated on the local machine
+# before Modal submits anything to the cloud), so:
+#
+#     MARBLE_IMAGE=audio MARBLE_GPU=A100-40GB \
+#         modal run modal_marble.py::run_probe --config ...
+#
+# gives you the slim OMARRQ-only image on an A100-40GB container. Layered
+# image caches mean re-running with the same extras is near-instant; only
+# the final marble-code layer rebuilds on code edits.
+#
+# Values:
+#   full      everything-bundle (default — backwards-compatible)
+#   audio     base + omarrq                       (MERT, MuQ, MusicFM,
+#                                                  OMARRQ audio tasks)
+#   symbolic  base + symbolic-midi + symbolic-abc + omarrq
+#                                                 (CLaMP3-symbolic, BPS-Motif,
+#                                                  SuperMarioStructure ABC/MIDI)
+#   base      core only — for cheap test runs that don't load any encoder
+_IMAGE_MAP = {
+    "full": image,
+    "audio": omarrq_image,
+    "symbolic": symbolic_image,
+    "base": base_image,
+}
+_IMAGE_NAME = os.environ.get("MARBLE_IMAGE", "full")
+if _IMAGE_NAME not in _IMAGE_MAP:
+    raise ValueError(
+        f"MARBLE_IMAGE={_IMAGE_NAME!r} unknown. Pick one of: {', '.join(sorted(_IMAGE_MAP))}"
     )
-)
+ACTIVE_IMAGE = _IMAGE_MAP[_IMAGE_NAME]
 
 # ──────────────────────────────────────────────
 # Persistent storage
@@ -821,7 +913,7 @@ def setup_bps_motif(max_movements: int | None = None):
 
 
 @app.function(
-    image=image,
+    image=ACTIVE_IMAGE,
     gpu=PROBE_GPU,
     volumes=VOL,
     timeout=4 * 3600,  # 4 h max per run
@@ -874,7 +966,7 @@ def run_probe(config: str, skip_if_done: bool = True):
 
 
 @app.function(
-    image=image,
+    image=ACTIVE_IMAGE,
     gpu=SWEEP_GPU,
     volumes=VOL,
     timeout=24 * 3600,  # up to 24 h for a full 12-layer sweep
@@ -979,7 +1071,7 @@ def run_sweep(
 
 
 @app.function(
-    image=image,
+    image=ACTIVE_IMAGE,
     # L4 default (Ada, 24 GB, bf16) — best price/perf vs A10G, ~30 % cheaper
     # at ~1.05× speed. Override via MARBLE_GPU=A100-40GB / H100 / etc.
     gpu=PARALLEL_GPU,
@@ -1059,7 +1151,7 @@ def run_one_layer(
 
 
 @app.function(
-    image=image,
+    image=ACTIVE_IMAGE,
     volumes=VOL,
     timeout=24 * 3600,
 )
