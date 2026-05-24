@@ -98,21 +98,38 @@ def download_split(split: str, dest_dir: Path) -> Path:
     return split_d
 
 
-def generate_jsonl(split_dir: Path, out_jsonl: Path) -> int:
+def generate_jsonl(split_dir: Path, out_jsonl: Path, allow_partial: bool = False) -> int:
     """
     Parse examples.json from a NSynth split directory and write JSONL.
 
-    NSynth examples.json format:
+    NSynth examples.json schema (verified against Magenta 2021 release):
       {
-        "bass_acoustic_000-021-075": {
-          "note": 21,
-          "velocity": 75,
-          "instrument_family_str": "bass",
+        "guitar_acoustic_001-082-050": {
+          "note":   16629,             # UNIQUE SAMPLE ID — not MIDI pitch!
+          "pitch":  82,                # MIDI pitch (0–127) — what we want
+          "velocity": 50,              # MIDI velocity (25 | 50 | 75 | 100 | 127)
+          "instrument_family_str": "guitar",
           "instrument_source_str": "acoustic",
+          "sample_rate": 16000,
           ...
         },
         ...
       }
+
+    Filename format: ``{family}_{source}_{instrument_id}-{pitch}-{velocity}.wav``
+    so position-3 of the filename (e.g. ``082`` above) equals ``meta["pitch"]``,
+    NOT ``meta["note"]``. Prior to commit fixing this, the script filtered on
+    ``meta["note"]`` thinking it was MIDI pitch — wrote ~76 records out of
+    289 K and the labels were globally unique IDs instead of pitches, so
+    NSynth probes silently produced 0% test accuracy on every encoder.
+
+    The output JSONL field is named ``pitch`` to match the source schema; the
+    NSynth datamodule reads ``info["pitch"]`` accordingly.
+
+    Safety: if more than 90 % of examples.json entries are skipped (missing
+    audio or out-of-MIDI-21-108 range), hard-fail to catch incomplete
+    downloads / schema drift early. Pass ``allow_partial=True`` for
+    intentional smoke / CI subsets where partial output is expected.
     """
     examples_json = split_dir / "examples.json"
     audio_dir = split_dir / "audio"
@@ -125,19 +142,24 @@ def generate_jsonl(split_dir: Path, out_jsonl: Path) -> int:
     with open(examples_json) as f:
         examples = json.load(f)
 
-    print(f"  Writing {len(examples)} records → {out_jsonl}")
-    skipped = 0
+    total = len(examples)
+    print(f"  Writing {total} records → {out_jsonl}")
+    skipped_missing_audio = 0
+    skipped_out_of_range = 0
     written = 0
     with open(out_jsonl, "w") as out:
         for key, meta in sorted(examples.items()):
             wav_path = audio_dir / f"{key}.wav"
             if not wav_path.exists():
-                skipped += 1
+                skipped_missing_audio += 1
                 continue
 
-            note = int(meta["note"])
-            if not (21 <= note <= 108):
-                skipped += 1
+            # Filter to MIDI pitches 21–108 (A0–C8, 88-class piano range).
+            # meta["pitch"] is the MIDI pitch; meta["note"] is a globally
+            # unique sample ID and MUST NOT be used here (see docstring).
+            pitch = int(meta["pitch"])
+            if not (21 <= pitch <= 108):
+                skipped_out_of_range += 1
                 continue
 
             record = {
@@ -145,7 +167,7 @@ def generate_jsonl(split_dir: Path, out_jsonl: Path) -> int:
                 # readable on Linux/Modal after being generated on Windows.
                 # See marble/utils/path_compat.py.
                 "audio_path": wav_path.as_posix(),
-                "note": note,
+                "pitch": pitch,
                 "velocity": int(meta.get("velocity", 0)),
                 "instrument_family": meta.get("instrument_family_str", ""),
                 "instrument_source": meta.get("instrument_source_str", ""),
@@ -157,8 +179,31 @@ def generate_jsonl(split_dir: Path, out_jsonl: Path) -> int:
             out.write(json.dumps(record) + "\n")
             written += 1
 
-    if skipped:
-        print(f"    Skipped {skipped} entries (missing audio or out-of-range note).")
+    total_skipped = skipped_missing_audio + skipped_out_of_range
+    if total_skipped:
+        print(
+            f"    Skipped {total_skipped} entries "
+            f"({skipped_missing_audio} missing audio, "
+            f"{skipped_out_of_range} pitch outside MIDI 21–108)."
+        )
+
+    # Safety: if we wrote <10% of input rows, something's wrong upstream.
+    # Common causes: incomplete tarball extraction, schema drift in
+    # examples.json, wrong --data-dir. Hard-fail so the failure is loud.
+    if not allow_partial and total > 0 and written < 0.1 * total:
+        raise RuntimeError(
+            f"\n  ✗ generate_jsonl({split_dir.name}): wrote only {written} of "
+            f"{total} records ({100 * written / total:.1f} %).\n"
+            f"    {skipped_missing_audio} skipped for missing audio, "
+            f"{skipped_out_of_range} for out-of-range pitch.\n"
+            f"    Most likely cause: incomplete extraction of "
+            f"nsynth-{split_dir.name.split('-')[-1]}.jsonwav.tar.gz, OR a\n"
+            f"    schema mismatch in examples.json (e.g. you're reading\n"
+            f"    meta['note'] thinking it's MIDI pitch — it's a unique ID;\n"
+            f"    use meta['pitch']).\n"
+            f"    To bypass this safety check for intentional smoke subsets,\n"
+            f"    re-run with --allow-partial."
+        )
     return written
 
 
@@ -183,6 +228,13 @@ def main():
         "--no-download",
         action="store_true",
         help="Skip downloading — regenerate JSONL from already-extracted data.",
+    )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Bypass the >90%%-skipped safety check. Use when intentionally "
+        "building a JSONL from a small subset (smoke tests / CI subsets) "
+        "where most NSynth records have no audio on disk by design.",
     )
     args = parser.parse_args()
 
@@ -209,7 +261,7 @@ def main():
 
         out_name = f"NSynth.{name_map[split]}.jsonl"
         out_path = dest / out_name
-        n = generate_jsonl(split_dir, out_path)
+        n = generate_jsonl(split_dir, out_path, allow_partial=args.allow_partial)
         total_records += n
         print(f"  ✓  {n} records  →  {out_path}\n")
 

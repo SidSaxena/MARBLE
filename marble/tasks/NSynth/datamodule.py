@@ -5,7 +5,7 @@ NSynth pitch classification datamodule.
 Dataset format — one JSON line per audio clip:
   {
     "audio_path": "data/NSynth/nsynth-train/audio/bass_acoustic_000-021-075.wav",
-    "note":       21,           # MIDI note number (21–108 inclusive)
+    "pitch":      21,           # MIDI pitch (21–108 inclusive)
     "velocity":   75,           # MIDI velocity (25 | 50 | 75 | 100 | 127)
     "instrument_family": "bass",
     "instrument_source": "acoustic",
@@ -15,7 +15,13 @@ Dataset format — one JSON line per audio clip:
     "duration":    4.0
   }
 
-Label mapping:  class_idx = note - 21   →  88 classes  (A0=0 … C8=87)
+Label mapping:  class_idx = pitch - 21   →  88 classes  (A0=0 … C8=87)
+
+JSONL field renamed from ``note`` to ``pitch`` after discovering NSynth's
+``examples.json`` uses ``note`` for a globally unique sample ID (not MIDI
+pitch). See ``scripts/data/download_nsynth.py`` docstring for details.
+Any JSONL generated before that fix had garbage labels — regenerate via
+``uv run python scripts/data/download_nsynth.py --no-download``.
 
 Download:  python scripts/data/download_nsynth.py
 """
@@ -30,7 +36,7 @@ from marble.utils.emb_cache import make_clip_id
 
 # ─── constants ────────────────────────────────────────────────────────────────
 NUM_PITCH_CLASSES = 88  # MIDI pitches 21–108
-MIDI_OFFSET = 21  # class_idx = note - MIDI_OFFSET
+MIDI_OFFSET = 21  # class_idx = pitch - MIDI_OFFSET
 NSYNTH_SR = 16_000  # original sample rate of all NSynth WAVs
 NSYNTH_DURATION = 4.0  # all NSynth clips are exactly 4 seconds
 
@@ -54,7 +60,7 @@ class _NSynthAudioBase(Dataset):
 
     EXAMPLE_JSONL = {
         "audio_path": "data/NSynth/nsynth-train/audio/bass_acoustic_000-021-075.wav",
-        "note": 21,
+        "pitch": 21,
         "velocity": 75,
         "instrument_family": "bass",
         "instrument_source": "acoustic",
@@ -102,7 +108,7 @@ class _NSynthAudioBase(Dataset):
 
             buckets: dict[int, list[dict]] = defaultdict(list)
             for entry in self.meta:
-                buckets[int(entry["note"]) - MIDI_OFFSET].append(entry)
+                buckets[int(entry["pitch"]) - MIDI_OFFSET].append(entry)
             # Per-class quota (floor); remainder goes to the largest classes
             per_class = max_samples // NUM_PITCH_CLASSES
             subsampled: list[dict] = []
@@ -145,8 +151,8 @@ class _NSynthAudioBase(Dataset):
         """
         info = self.meta[idx]
         path = info["audio_path"]
-        note = int(info["note"])
-        label = note - MIDI_OFFSET  # 0–87
+        pitch = int(info["pitch"])
+        label = pitch - MIDI_OFFSET  # 0–87
         orig_sr = int(info["sample_rate"])
         clip_id = make_clip_id(path, 0)  # NSynth: one clip per file
 
