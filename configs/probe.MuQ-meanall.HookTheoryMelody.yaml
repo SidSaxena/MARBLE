@@ -128,7 +128,7 @@ data:
   class_path: marble.tasks.HookTheoryMelody.datamodule.HookTheoryMelodyDataModule
   init_args:
     batch_size: 16
-    num_workers: 8
+    num_workers: 16
 
     audio_transforms:
       train:
@@ -146,9 +146,11 @@ data:
         clip_seconds: 15.0
         min_clip_ratio: 0.5
         channel_mode: random
-        jsonl: data/HookTheory/HookTheory.train.jsonl
+        jsonl: data/HookTheory/HookTheory.train.wav.jsonl
         label_freq: 25
-        audio_dir: data/HookTheory/audio
+        audio_dir: data/HookTheory/audio_wav
+        audio_ext: .wav
+        precompute_labels: true
     val:
       class_path: marble.tasks.HookTheoryMelody.datamodule.HookTheoryMelodyVal
       init_args:
@@ -157,9 +159,11 @@ data:
         clip_seconds: 15.0
         min_clip_ratio: 0.5
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheory.val.jsonl
+        jsonl: data/HookTheory/HookTheory.val.wav.jsonl
         label_freq: 25
-        audio_dir: data/HookTheory/audio
+        audio_dir: data/HookTheory/audio_wav
+        audio_ext: .wav
+        precompute_labels: true
     test:
       class_path: marble.tasks.HookTheoryMelody.datamodule.HookTheoryMelodyTest
       init_args:
@@ -168,9 +172,11 @@ data:
         clip_seconds: 15.0
         min_clip_ratio: 0.5
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheory.test.jsonl
+        jsonl: data/HookTheory/HookTheory.test.wav.jsonl
         label_freq: 25
-        audio_dir: data/HookTheory/audio
+        audio_dir: data/HookTheory/audio_wav
+        audio_ext: .wav
+        precompute_labels: true
 
 optimizer:
   class_path: torch.optim.Adam
