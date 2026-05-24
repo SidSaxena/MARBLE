@@ -178,3 +178,33 @@ def test_output_path_multi_dot_name():
     for p in tmpdir.iterdir():
         p.unlink()
     tmpdir.rmdir()
+
+
+def test_rewrite_normalises_windows_backslashes_to_posix():
+    """A Windows-style input audio_path comes out POSIX after rewrite.
+
+    Guards the rewriter's POSIX-output guarantee: regardless of input
+    OS or the dir/ext swap, the rewritten JSONL is portable. Without
+    this, a Windows-generated JSONL fed through ``rewrite_jsonl_audio_paths.py``
+    would carry its backslashes forward and break on Linux/Modal.
+    """
+    rec = {"audio_path": "data\\HookTheory\\audio\\abc123.mp3", "label": "C"}
+    jsonl = _write_jsonl([rec])
+    _run_rewrite(
+        jsonl,
+        "--from-dir",
+        "data\\HookTheory\\audio",
+        "--to-dir",
+        "data/HookTheory/audio_wav",
+        "--from-ext",
+        ".mp3",
+        "--to-ext",
+        ".wav",
+    )
+    out_path = jsonl.with_name(jsonl.stem + ".wav.jsonl")
+    new_recs = _read_jsonl(out_path)
+    assert new_recs[0]["audio_path"] == "data/HookTheory/audio_wav/abc123.wav", (
+        f"expected POSIX-normalised path, got {new_recs[0]['audio_path']!r}"
+    )
+    jsonl.unlink()
+    out_path.unlink()

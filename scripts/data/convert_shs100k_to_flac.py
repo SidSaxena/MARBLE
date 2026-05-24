@@ -74,8 +74,10 @@ def _convert_one(
     dst = out_dir / f"{ytid}.flac"
 
     if dst.exists() and dst.stat().st_size > 4096:
-        # Already converted — just update the path and refresh metadata
-        rec["audio_path"] = str(dst)
+        # Already converted — just update the path and refresh metadata.
+        # .as_posix() so the JSONL is portable to Linux/Modal even if this
+        # script was run on Windows. See marble/utils/path_compat.py.
+        rec["audio_path"] = dst.as_posix()
         return rec, "already"
 
     # ffmpeg: keep audio stream, encode to FLAC (lossless), no re-encode
@@ -100,7 +102,8 @@ def _convert_one(
     if r.returncode != 0 or not dst.exists() or dst.stat().st_size < 4096:
         return rec, f"failed: {r.stderr.strip()[:120]}"
 
-    rec["audio_path"] = str(dst)
+    # POSIX path for cross-OS JSONL portability. See marble/utils/path_compat.py.
+    rec["audio_path"] = dst.as_posix()
     # Refresh metadata via ffprobe (path now points at the new FLAC)
     try:
         import json as _json

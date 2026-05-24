@@ -58,7 +58,24 @@ def _rewrite(audio_path: str, from_dir: str, to_dir: str, from_ext: str, to_ext:
     The swaps are independent — pass an empty string for either to skip
     that side of the swap. Dir replacement is a literal substring match
     (not regex) to keep behaviour predictable.
+
+    Output is always POSIX (forward slashes) so the rewritten JSONL is
+    portable across Windows / Linux / macOS, regardless of what the
+    input looked like or what OS this rewriter ran on.
+    See marble/utils/path_compat.py.
     """
+    # Import inside the function to keep this script importable from
+    # contexts where marble is not on sys.path (e.g. a Modal sandbox
+    # that only mounts scripts/data/).
+    try:
+        from marble.utils.path_compat import posix_path
+    except ImportError:
+        # Fallback: inline the same one-line transform so we never silently
+        # drift from path_compat.posix_path. Tested against the canonical
+        # helper in tests/test_path_compat.py.
+        def posix_path(s: str) -> str:
+            return s.replace("\\", "/")
+
     p = audio_path
     if from_dir and from_dir in p:
         # First-occurrence replace, so the same dir name appearing twice in
@@ -66,7 +83,7 @@ def _rewrite(audio_path: str, from_dir: str, to_dir: str, from_ext: str, to_ext:
         p = p.replace(from_dir, to_dir, 1)
     if from_ext and p.endswith(from_ext):
         p = p[: -len(from_ext)] + to_ext
-    return p
+    return posix_path(p)
 
 
 def main():
