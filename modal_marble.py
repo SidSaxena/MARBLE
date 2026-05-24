@@ -251,6 +251,74 @@ def _chdir():
     sys.path.insert(0, WORK_DIR)
 
 
+def _warmup_audio_dir(audio_dir: str, workers: int = 32) -> None:
+    """Force every file under ``audio_dir`` into the container's local FS cache.
+
+    Modal volumes are network-backed: the first open of each file pays a
+    50–200 ms round-trip while the FUSE layer fetches the file into the
+    container's local disk cache. Subsequent opens are local-disk fast.
+
+    For a HookTheoryMelody sweep, the DataLoader will hit ~11.5 k MP3 files
+    in random order during training — pre-touching them once at job start
+    converts ~1.2 s/batch dataloader stalls into ~0.1 s/batch. Cost is a
+    one-shot ~30–90 s walk of the audio dir, plus the container's ephemeral
+    disk space (HookTheory audio ≈ 3.5 GB; container disks are 100+ GB).
+
+    Idempotent and safe — repeated calls only re-touch already-cached files.
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    p = Path(audio_dir)
+    if not p.exists():
+        print(f"  ! warmup: {audio_dir} does not exist — skipping", file=sys.stderr)
+        return
+    files = [f for f in p.iterdir() if f.is_file()]
+    if not files:
+        print(f"  ! warmup: {audio_dir} is empty — skipping", file=sys.stderr)
+        return
+
+    print(f"  warmup: pre-touching {len(files):,} files in {audio_dir} ({workers} workers)…")
+    start = time.time()
+    total_bytes = 0
+
+    def _touch(path: Path) -> int:
+        try:
+            with path.open("rb") as fh:
+                # Read in 4 MB chunks to keep memory bounded but force the
+                # entire file into the kernel's page cache. open() alone only
+                # fetches the inode+first block; many MP3 metadata-only reads
+                # would miss the audio data we actually decode in __getitem__.
+                n = 0
+                while True:
+                    chunk = fh.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    n += len(chunk)
+                return n
+        except OSError:
+            return 0
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(_touch, f) for f in files]
+        for done, fut in enumerate(as_completed(futures), start=1):
+            total_bytes += fut.result()
+            if done % 1000 == 0 or done == len(files):
+                elapsed = time.time() - start
+                rate = done / elapsed if elapsed > 0 else 0.0
+                print(
+                    f"    [{done:>6,}/{len(files):,}] "
+                    f"{rate:5.1f} files/s  {total_bytes / 1e9:.2f} GB so far",
+                    flush=True,
+                )
+    elapsed = time.time() - start
+    print(
+        f"  warmup: {len(files):,} files / {total_bytes / 1e9:.2f} GB in {elapsed:.1f}s "
+        f"({total_bytes / max(elapsed, 1e-9) / 1e6:.0f} MB/s)",
+        flush=True,
+    )
+
+
 def _gen_sweep_configs(base_config: str, num_layers: int, model_tag: str, task_tag: str) -> str:
     """Generate per-layer YAML configs and return the sweep dir path."""
     sweep_dir = f"configs/sweeps/{model_tag}.{task_tag}"
@@ -727,6 +795,432 @@ def setup_hooktheory_full():
 
 
 @app.function(
+    image=base_image,
+    volumes=VOL,
+    timeout=3 * 60 * 60,  # 3 h cap — 10 k MP3s × ~0.5 s/file ≈ 5-15 min on 16 workers
+)
+def convert_hooktheory_to_wav(
+    target_sr: int = 24000, channels: int = 1, workers: int = 16, force: bool = False
+):
+    """Convert HookTheory MP3s to 24 kHz mono int16 WAVs on the marble-data volume.
+
+    Removes MP3 decode + resample from the DataLoader hot path. After this
+    runs, point the configs at the new audio dir via:
+        audio_dir: data/HookTheory/audio_wav
+        audio_ext: .wav
+
+    Also re-runs cache_audio_info_in_jsonl.py against the new dir so the
+    JSONLs carry the WAV files' num_samples/sample_rate (different from the
+    MP3 frame counts that are already there).
+
+    Idempotent: re-running skips already-present WAVs unless ``force=True``.
+    """
+    _chdir()
+    data_vol.reload()
+    src_dir = f"{WORK_DIR}/data/HookTheory/audio"
+    dst_dir = f"{WORK_DIR}/data/HookTheory/audio_wav"
+
+    cmd = [
+        "python",
+        "scripts/data/convert_audio_to_wav.py",
+        "--src-dir",
+        src_dir,
+        "--dst-dir",
+        dst_dir,
+        "--src-ext",
+        ".mp3",
+        "--target-sr",
+        str(target_sr),
+        "--channels",
+        str(channels),
+        "--workers",
+        str(workers),
+    ]
+    if force:
+        cmd.append("--force")
+    _run(cmd)
+    data_vol.commit()
+
+    # Build separate .wav.jsonl variants so MP3-based configs keep working.
+    # Copies the originals, then re-caches num_samples/sample_rate from the
+    # WAV files (different from MP3 frame counts that are already there).
+    import shutil
+
+    out_dir = f"{WORK_DIR}/data/HookTheory"
+    print("\n── Copying JSONLs and patching with WAV num_samples/sample_rate ──")
+    for split in ("train", "val", "test"):
+        src = f"{out_dir}/HookTheory.{split}.jsonl"
+        dst = f"{out_dir}/HookTheory.{split}.wav.jsonl"
+        if not Path(src).exists():
+            print(f"  ! missing {src}; skipping copy", file=sys.stderr)
+            continue
+        shutil.copyfile(src, dst)
+        print(f"  cp {src} → {dst}")
+    _run(
+        [
+            "python",
+            "scripts/data/cache_audio_info_in_jsonl.py",
+            "--jsonl",
+            f"{out_dir}/HookTheory.train.wav.jsonl",
+            "--jsonl",
+            f"{out_dir}/HookTheory.val.wav.jsonl",
+            "--jsonl",
+            f"{out_dir}/HookTheory.test.wav.jsonl",
+            "--audio-dir",
+            dst_dir,
+            "--id-key",
+            "youtube.id",
+            "--audio-suffix",
+            ".wav",
+            "--workers",
+            "32",
+            "--force",
+        ]
+    )
+    data_vol.commit()
+    print(f"HookTheory WAV corpus ready at {dst_dir}.")
+
+
+@app.function(
+    image=ACTIVE_IMAGE,
+    gpu=PROBE_GPU,
+    volumes=VOL,
+    timeout=2 * 60 * 60,  # 2 h cap — typical smoke is 25-35 min
+    secrets=[
+        modal.Secret.from_name("huggingface"),
+        modal.Secret.from_name("wandb-secret"),
+    ],
+)
+def smoke_test_wav(
+    n_songs: int = 500,
+    batches: int = 500,
+    config: str = "configs/probe.OMARRQ-multifeature-25hz-layers.HookTheoryMelody.yaml",
+    skip_mp3: bool = False,
+    skip_wav: bool = False,
+) -> dict:
+    """Smoke-test the MP3 → WAV conversion on a ``n_songs``-song subset.
+
+    Runs one container that:
+      1. Builds smoke JSONLs (first ``n_songs`` records of each split).
+      2. Converts just those songs' MP3s → 24 kHz mono int16 WAV in
+         ``data/HookTheory/audio_wav_smoke/``.
+      3. Refreshes num_samples/sample_rate in copied smoke JSONLs.
+      4. Warms both MP3 and WAV audio dirs so neither has a cold-start
+         advantage in the comparison.
+      5. Runs MP3 baseline: 1 epoch × ``batches`` train batches over the
+         smoke subset, with simple profiler enabled and WandB disabled.
+      6. Runs WAV experiment: same, swapping audio_dir + audio_ext + jsonl.
+      7. Parses each run's profiler output and prints a comparison.
+
+    Decision criteria (printed at the end):
+      ≥ 1.5×  → green-light convert_hooktheory_to_wav for the full corpus.
+      1.0-1.5× → marginal; inspect dataloader vs compute split.
+      < 1.0× → debug before rolling out.
+
+    The smoke files live under distinct paths (``*.smoke.jsonl``,
+    ``audio_wav_smoke/``) so they don't conflict with production data.
+    Re-running the function reuses already-built smoke files (the
+    subset / conversion / cache steps are all idempotent).
+    """
+    import re
+    import shutil as _shutil
+    import time as _time
+
+    import yaml
+
+    _chdir()
+    data_vol.reload()
+
+    if os.environ.get("WANDB_API_KEY"):
+        os.environ.pop("WANDB_MODE", None)
+    # Smoke must NOT pollute the wandb dashboard regardless of secret state.
+    os.environ["WANDB_MODE"] = "disabled"
+
+    audio_dir_mp3 = f"{WORK_DIR}/data/HookTheory/audio"
+    audio_dir_wav = f"{WORK_DIR}/data/HookTheory/audio_wav_smoke"
+    splits = ("train", "val", "test")
+    mp3_jsonls = {s: f"{WORK_DIR}/data/HookTheory/HookTheory.{s}.smoke.jsonl" for s in splits}
+    wav_jsonls = {s: f"{WORK_DIR}/data/HookTheory/HookTheory.{s}.smoke.wav.jsonl" for s in splits}
+
+    # 1. Build smoke MP3 JSONLs
+    print(f"\n━━━ smoke_test_wav: n_songs={n_songs} batches={batches} ━━━")
+    _run(
+        [
+            "python",
+            "scripts/data/build_smoke_jsonl.py",
+            *sum(
+                (["--jsonl", f"{WORK_DIR}/data/HookTheory/HookTheory.{s}.jsonl"] for s in splits),
+                [],
+            ),
+            "--n",
+            str(n_songs),
+        ]
+    )
+    data_vol.commit()
+
+    # 2. Convert the referenced source MP3s to WAV
+    convert_args = [
+        "python",
+        "scripts/data/convert_audio_to_wav.py",
+        "--src-dir",
+        audio_dir_mp3,
+        "--dst-dir",
+        audio_dir_wav,
+        "--src-ext",
+        ".mp3",
+        "--target-sr",
+        "24000",
+        "--channels",
+        "1",
+        "--workers",
+        "16",
+        "--id-key",
+        "youtube.id",
+    ]
+    for s in splits:
+        convert_args += ["--from-jsonl", mp3_jsonls[s]]
+    _run(convert_args)
+    data_vol.commit()
+
+    # 3. Copy smoke JSONLs → *.smoke.wav.jsonl and refresh num_samples
+    for s in splits:
+        _shutil.copyfile(mp3_jsonls[s], wav_jsonls[s])
+    _run(
+        [
+            "python",
+            "scripts/data/cache_audio_info_in_jsonl.py",
+            *sum((["--jsonl", wav_jsonls[s]] for s in splits), []),
+            "--audio-dir",
+            audio_dir_wav,
+            "--id-key",
+            "youtube.id",
+            "--audio-suffix",
+            ".wav",
+            "--workers",
+            "32",
+            "--force",
+        ]
+    )
+    data_vol.commit()
+
+    # 4. Warmup is skipped for the smoke. Steps 2-3 already read every
+    #    smoke MP3 (ffmpeg input) and every smoke WAV (torchaudio.info via
+    #    cache_audio_info_in_jsonl.py), so both sets live in the kernel
+    #    page cache going into training. The full-corpus 108 GB warmup
+    #    would burn ~3 min for files the smoke never touches.
+
+    # 5. Build per-variant merged config YAMLs.
+    #
+    # Lightning CLI's multi-`-c` stacking does NOT deep-merge
+    # ``class_path`` + ``init_args`` blocks — a partial override of
+    # ``data.init_args.train.init_args.jsonl`` clobbers the surrounding
+    # ``class_path`` and the datamodule fails with KeyError at setup.
+    # Workaround: read the base YAML, deep-merge our overrides in pure
+    # Python, write to one temp YAML, run with a single `-c`. No magic.
+    #
+    # Override knobs:
+    #   - max_epochs/limit_*_batches: bound the smoke runtime.
+    #   - profiler=simple: emits the train_dataloader_next / training_batch
+    #     timings we parse below.
+    #   - callbacks=[]: drop the YAML's ModelCheckpoint (would write to the
+    #     production output dir) and EarlyStopping (depends on val/acc_rpa
+    #     which may not arrive in 1 val batch).
+    #   - logger=false: skip wandb entirely; WANDB_MODE=disabled also set.
+    smoke_dir = Path(f"{WORK_DIR}/output/.smoke")
+    smoke_dir.mkdir(parents=True, exist_ok=True)
+
+    def _deep_merge(base: dict, override: dict) -> dict:
+        """Recursive dict merge — override wins on leaves, dicts merged."""
+        for k, v in override.items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict):
+                _deep_merge(base[k], v)
+            else:
+                base[k] = v
+        return base
+
+    def _write_smoke_yaml(out_path: Path, audio_dir: str, audio_ext: str, jsonls: dict) -> None:
+        rel = lambda p: p.removeprefix(f"{WORK_DIR}/")  # noqa: E731
+        with open(config) as f:
+            cfg = yaml.safe_load(f)
+        overrides = {
+            "trainer": {
+                "max_epochs": 1,
+                "limit_train_batches": batches,
+                "limit_val_batches": 1,
+                "profiler": "simple",
+                "enable_checkpointing": False,
+                "callbacks": [],
+                "logger": False,
+            },
+            "data": {
+                "init_args": {
+                    s: {
+                        "init_args": {
+                            "jsonl": rel(jsonls[s]),
+                            "audio_dir": rel(audio_dir),
+                            "audio_ext": audio_ext,
+                        }
+                    }
+                    for s in splits
+                },
+            },
+        }
+        _deep_merge(cfg, overrides)
+        with out_path.open("w") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+
+    mp3_yaml = smoke_dir / "smoke_mp3.yaml"
+    wav_yaml = smoke_dir / "smoke_wav.yaml"
+    _write_smoke_yaml(mp3_yaml, audio_dir_mp3, ".mp3", mp3_jsonls)
+    _write_smoke_yaml(wav_yaml, audio_dir_wav, ".wav", wav_jsonls)
+
+    # 6 + 7. Run both training jobs and capture stdout for profiler parsing.
+    def _run_smoke(label: str, smoke_yaml: Path) -> tuple[float, str, int]:
+        print(f"\n━━━ {label} ━━━")
+        t0 = _time.time()
+        # Stream-capture: print incrementally AND retain for parsing.
+        proc = subprocess.Popen(
+            ["python", "cli.py", "fit", "-c", str(smoke_yaml)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=WORK_DIR,
+            bufsize=1,
+        )
+        captured = []
+        for line in proc.stdout:
+            captured.append(line)
+            print(line, end="", flush=True)
+        proc.wait()
+        elapsed = _time.time() - t0
+        return elapsed, "".join(captured), proc.returncode
+
+    mp3_time, mp3_out, mp3_rc = 0.0, "", -1
+    wav_time, wav_out, wav_rc = 0.0, "", -1
+    if not skip_mp3:
+        mp3_time, mp3_out, mp3_rc = _run_smoke("MP3 baseline", mp3_yaml)
+    else:
+        print("[skip] MP3 baseline training")
+    if not skip_wav:
+        wav_time, wav_out, wav_rc = _run_smoke("WAV experiment", wav_yaml)
+    else:
+        print("[skip] WAV experiment training")
+
+    # 8. Parse Lightning's simple profiler output.
+    def _parse_profiler(stdout: str) -> dict[str, float | None]:
+        # Lightning's simple profiler prints a markdown-ish table per call:
+        #   Action                                       |  Mean ...  |  Num calls  |  Total time  |  Percentage %
+        # We extract Total time (the 3rd numeric column) for the two rows
+        # we care about. Robust to small whitespace variations.
+        def _row(name_pat: str) -> float | None:
+            m = re.search(
+                rf"{name_pat}\s*\|\s*[\d.eE+-]+\s*\|\s*[\d.eE+-]+\s*\|\s*([\d.eE+-]+)",
+                stdout,
+            )
+            return float(m.group(1)) if m else None
+
+        return {
+            "train_dataloader_next": _row(r"\[_TrainingEpochLoop\]\.train_dataloader_next"),
+            "run_training_batch": _row(r"run_training_batch"),
+        }
+
+    mp3_p = _parse_profiler(mp3_out)
+    wav_p = _parse_profiler(wav_out)
+
+    mp3_its = batches / mp3_time if mp3_time > 0 else 0.0
+    wav_its = batches / wav_time if wav_time > 0 else 0.0
+
+    # 9. Summary — verdict only meaningful when both runs actually happened.
+    print(f"\n━━━ Smoke test result (n_songs={n_songs}, batches={batches}) ━━━")
+    if not skip_mp3:
+        print(
+            f"  MP3 baseline   : {mp3_time:6.1f}s wall  ≈ {mp3_its:.2f} it/s  "
+            f"(train_dataloader_next={mp3_p['train_dataloader_next']}s, "
+            f"run_training_batch={mp3_p['run_training_batch']}s, rc={mp3_rc})"
+        )
+    else:
+        print("  MP3 baseline   : [skipped]")
+    if not skip_wav:
+        print(
+            f"  WAV experiment : {wav_time:6.1f}s wall  ≈ {wav_its:.2f} it/s  "
+            f"(train_dataloader_next={wav_p['train_dataloader_next']}s, "
+            f"run_training_batch={wav_p['run_training_batch']}s, rc={wav_rc})"
+        )
+    else:
+        print("  WAV experiment : [skipped]")
+
+    if not skip_mp3 and not skip_wav and mp3_its > 0:
+        speedup = wav_its / mp3_its
+        print(f"  Speedup (it/s) : {speedup:.2f}×")
+        if speedup >= 1.5:
+            verdict = "GREEN — proceed with full conversion"
+        elif speedup >= 1.0:
+            verdict = "YELLOW — marginal; inspect dataloader vs compute split before deciding"
+        else:
+            verdict = "RED — WAV slower than MP3; debug before rolling out"
+        print(f"  Decision       : {verdict}\n")
+    else:
+        speedup = float("nan")
+        print("  Speedup (it/s) : [one or both runs skipped — compare profiler rows above]\n")
+
+    return {
+        "mp3_time_s": mp3_time,
+        "wav_time_s": wav_time,
+        "mp3_its": mp3_its,
+        "wav_its": wav_its,
+        "speedup": speedup,
+        "mp3_rc": mp3_rc,
+        "wav_rc": wav_rc,
+        "mp3_profiler": mp3_p,
+        "wav_profiler": wav_p,
+    }
+
+
+@app.function(
+    image=base_image,
+    volumes=VOL,
+    timeout=30 * 60,  # 30 min cap — typical warmup of 11.5 k MP3s ≈ 1-3 min
+)
+def warmup_hooktheory_audio(workers: int = 32):
+    """Pre-fetch every HookTheory MP3 into a container's local FS cache.
+
+    Standalone version of the warmup that ``run_probe``/``run_sweep`` can run
+    inline. Useful when you want to verify warmup throughput / volume layout
+    independently before kicking off an expensive sweep.
+
+    Note: the local cache is per-container, so this function's warmth does
+    NOT carry over to the next ``run_probe`` invocation — those containers
+    are separate. Instead, pass ``warmup_audio_dir=...`` to the runner so the
+    same container that warms it then trains on it.
+    """
+    _chdir()
+    data_vol.reload()
+    _warmup_audio_dir(f"{WORK_DIR}/data/HookTheory/audio", workers=workers)
+
+
+@app.function(
+    image=base_image,
+    volumes=VOL,
+    timeout=30 * 60,
+)
+def warmup_hooktheory_audio_wav(workers: int = 32):
+    """Pre-fetch every HookTheory WAV into a container's local FS cache.
+
+    The WAV equivalent of ``warmup_hooktheory_audio``. After
+    ``convert_hooktheory_to_wav`` has populated ``data/HookTheory/audio_wav``,
+    a fresh container's local-disk cache is still cold; this function does
+    the up-front read so the next training stage starts warm.
+
+    WAV files at 24 kHz mono int16 are ~half the size of the source MP3s
+    (~8.6 MB vs ~10.7 MB per song), so the total bytes pulled is ~85 GB
+    rather than ~108 GB.
+    """
+    _chdir()
+    data_vol.reload()
+    _warmup_audio_dir(f"{WORK_DIR}/data/HookTheory/audio_wav", workers=workers)
+
+
+@app.function(
     image=image,
     volumes=VOL,
     timeout=1 * 60 * 60,  # 1 h cap; typical run is ~5-15 min
@@ -968,14 +1462,22 @@ def setup_bps_motif(max_movements: int | None = None):
         modal.Secret.from_name("wandb-secret"),
     ],
 )
-def run_probe(config: str, skip_if_done: bool = True):
+def run_probe(config: str, skip_if_done: bool = True, warmup_audio_dir: str | None = None):
     """
     Fit + test a single MARBLE probe from a YAML config path (relative to WORK_DIR).
     Returns the test output as a string.
 
     Set WANDB_API_KEY via: modal secret create wandb-secret WANDB_API_KEY=<key>
+
+    Pass ``warmup_audio_dir="data/HookTheory/audio"`` (or any audio dir under
+    the marble-data volume) to pre-touch every file into the container's local
+    FS cache before training starts. Essential for frame-level audio probes on
+    Modal volumes — see ``_warmup_audio_dir`` for the rationale.
     """
     _chdir()
+
+    if warmup_audio_dir:
+        _warmup_audio_dir(warmup_audio_dir)
 
     # Optionally wire up WandB online mode
     if os.environ.get("WANDB_API_KEY"):
@@ -1029,6 +1531,7 @@ def run_sweep(
     layers: list[int] | None = None,  # None → all layers
     skip_meanall: bool = False,
     continue_on_meanall_failure: bool = False,
+    warmup_audio_dir: str | None = None,
 ):
     """
     Generate per-layer YAML configs and run fit+test for each layer sequentially.
@@ -1048,6 +1551,12 @@ def run_sweep(
     # Reload so we see prior layers' completion markers + last.ckpts written
     # by sibling containers / PC runs into the same volume.
     output_vol.reload()
+
+    # Warm the local FS cache before either meanall OR per-layer fits. Both
+    # share the same dataloader workers, so paying this once at job start
+    # benefits every fit that follows.
+    if warmup_audio_dir:
+        _warmup_audio_dir(warmup_audio_dir)
 
     if os.environ.get("WANDB_API_KEY"):
         os.environ.pop("WANDB_MODE", None)
@@ -1136,6 +1645,7 @@ def run_one_layer(
     num_layers: int,
     layer: int,
     retest_only: bool = False,
+    warmup_audio_dir: str | None = None,
 ) -> dict:
     """Run fit+test for a single layer of a sweep — designed to be invoked
     via `.starmap()` N times in parallel by `run_parallel_sweep`.
@@ -1158,6 +1668,9 @@ def run_one_layer(
     if not retest_only and _layer_done(task_tag, model_tag, layer):
         print(f"Layer {layer}: already done — skipping.")
         return {"layer": layer, "status": "skipped"}
+
+    if warmup_audio_dir:
+        _warmup_audio_dir(warmup_audio_dir)
 
     print(f"\n{'=' * 60}\n Layer {layer}/{num_layers - 1}  [{model_tag} | {task_tag}]\n{'=' * 60}")
 
@@ -1208,6 +1721,7 @@ def run_parallel_sweep(
     task_tag: str,
     layers: list[int] | None = None,
     retest_only: bool = False,
+    warmup_audio_dir: str | None = None,
 ) -> list[dict]:
     """Spawn N parallel `run_one_layer` containers via `.starmap()`.
 
@@ -1217,7 +1731,10 @@ def run_parallel_sweep(
     targets = layers if layers is not None else list(range(num_layers))
     print(f"Spawning {len(targets)} parallel layer jobs for {model_tag} × {task_tag} ...")
 
-    args = [(base_config, model_tag, task_tag, num_layers, lyr, retest_only) for lyr in targets]
+    args = [
+        (base_config, model_tag, task_tag, num_layers, lyr, retest_only, warmup_audio_dir)
+        for lyr in targets
+    ]
     results = list(run_one_layer.starmap(args))
 
     print("\n=== Parallel sweep complete ===")
@@ -1345,6 +1862,76 @@ def sweep_clamp3_emo():
         num_layers=13,
         model_tag="CLaMP3",
         task_tag="EMO",
+    )
+
+
+# ──────────────────────────────────────────────
+# HookTheoryMelody sweeps — frame-level probe on ~11.5 k MP3 corpus.
+# These bake in warmup_audio_dir so each container pre-fetches the audio
+# corpus into its local FS cache before training (avoids ~1.2 s/batch
+# stalls on Modal volume opens — see profiler notes in commit history).
+# ──────────────────────────────────────────────
+
+_HOOKTHEORY_AUDIO = f"{WORK_DIR}/data/HookTheory/audio_wav"
+
+
+@app.local_entrypoint()
+def sweep_omarrq_hooktheorymelody():
+    """OMARRQ-multifeature-25hz layer sweep on HookTheoryMelody."""
+    run_sweep.remote(
+        base_config="configs/probe.OMARRQ-multifeature-25hz-layers.HookTheoryMelody.yaml",
+        num_layers=24,
+        model_tag="OMARRQ-multifeature-25hz",
+        task_tag="HookTheoryMelody",
+        warmup_audio_dir=_HOOKTHEORY_AUDIO,
+    )
+
+
+@app.local_entrypoint()
+def sweep_mert95m_hooktheorymelody():
+    """MERT-v1-95M layer sweep on HookTheoryMelody."""
+    run_sweep.remote(
+        base_config="configs/probe.MERT-v1-95M-layers.HookTheoryMelody.yaml",
+        num_layers=13,
+        model_tag="MERT-v1-95M",
+        task_tag="HookTheoryMelody",
+        warmup_audio_dir=_HOOKTHEORY_AUDIO,
+    )
+
+
+@app.local_entrypoint()
+def sweep_mert330m_hooktheorymelody():
+    """MERT-v1-330M layer sweep on HookTheoryMelody."""
+    run_sweep.remote(
+        base_config="configs/probe.MERT-v1-330M-layers.HookTheoryMelody.yaml",
+        num_layers=25,
+        model_tag="MERT-v1-330M",
+        task_tag="HookTheoryMelody",
+        warmup_audio_dir=_HOOKTHEORY_AUDIO,
+    )
+
+
+@app.local_entrypoint()
+def sweep_muq_hooktheorymelody():
+    """MuQ layer sweep on HookTheoryMelody."""
+    run_sweep.remote(
+        base_config="configs/probe.MuQ-layers.HookTheoryMelody.yaml",
+        num_layers=13,
+        model_tag="MuQ",
+        task_tag="HookTheoryMelody",
+        warmup_audio_dir=_HOOKTHEORY_AUDIO,
+    )
+
+
+@app.local_entrypoint()
+def sweep_musicfm_hooktheorymelody():
+    """MusicFM layer sweep on HookTheoryMelody."""
+    run_sweep.remote(
+        base_config="configs/probe.MusicFM-layers.HookTheoryMelody.yaml",
+        num_layers=13,
+        model_tag="MusicFM",
+        task_tag="HookTheoryMelody",
+        warmup_audio_dir=_HOOKTHEORY_AUDIO,
     )
 
 
