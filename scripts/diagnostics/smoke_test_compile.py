@@ -95,7 +95,42 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return base
 
 
-def _write_ab_yaml(base_config: Path, out_path: Path, compile_mode: str | None, batches: int):
+def _swap_to_smoke_jsonls(cfg: dict) -> int:
+    """Rewrite every ``jsonl:`` path under ``data.init_args.{train,val,test}.init_args``
+    to its smoke variant. Returns the number of paths rewritten.
+
+    Rule: insert ``.smoke`` immediately before the WAV-aware suffix when present,
+    otherwise before ``.jsonl``. Matches the manual sed swap used for the MERT
+    smoke harness (``HookTheory.train.wav.jsonl`` → ``HookTheory.train.smoke.wav.jsonl``).
+
+    Idempotent: paths that already contain ``.smoke.`` are left alone.
+    """
+    n_rewrites = 0
+    for split in ("train", "val", "test"):
+        try:
+            block = cfg["data"]["init_args"][split]["init_args"]
+        except (KeyError, TypeError):
+            continue
+        orig = block.get("jsonl")
+        if not isinstance(orig, str) or ".smoke." in orig:
+            continue
+        if orig.endswith(".wav.jsonl"):
+            block["jsonl"] = orig.replace(".wav.jsonl", ".smoke.wav.jsonl")
+        elif orig.endswith(".jsonl"):
+            block["jsonl"] = orig.replace(".jsonl", ".smoke.jsonl")
+        else:
+            continue
+        n_rewrites += 1
+    return n_rewrites
+
+
+def _write_ab_yaml(
+    base_config: Path,
+    out_path: Path,
+    compile_mode: str | None,
+    batches: int,
+    jsonl_smoke: bool = False,
+):
     """Write a temp YAML that overrides compile_mode + bounds the run.
 
     Trainer overrides are minimal:
@@ -103,6 +138,11 @@ def _write_ab_yaml(base_config: Path, out_path: Path, compile_mode: str | None, 
       - profiler=simple: capture per-row timings
       - callbacks=[]: skip ModelCheckpoint (don't pollute production output dir)
       - enable_checkpointing=False, logger=False: skip wandb + ckpt I/O
+
+    If ``jsonl_smoke=True``, also rewrites the data.init_args jsonl paths to
+    their ``.smoke.`` variants (e.g. ``HookTheory.train.wav.jsonl`` →
+    ``HookTheory.train.smoke.wav.jsonl``). Used when only a subset of the audio
+    corpus is present locally (the typical smoke-on-a-laptop case).
     """
     with open(base_config) as f:
         cfg = yaml.safe_load(f)
@@ -129,6 +169,14 @@ def _write_ab_yaml(base_config: Path, out_path: Path, compile_mode: str | None, 
         },
     }
     _deep_merge(cfg, overrides)
+    if jsonl_smoke:
+        n = _swap_to_smoke_jsonls(cfg)
+        if n == 0:
+            print(
+                f"  ! --jsonl-smoke had no effect on {base_config.name} "
+                f"(no eligible jsonl: paths found under data.init_args)",
+                file=sys.stderr,
+            )
     with out_path.open("w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
 
@@ -214,6 +262,15 @@ def main():
         action="store_true",
         help="Skip ALL compile runs (only run eager). Useful to just measure the eager baseline.",
     )
+    ap.add_argument(
+        "--jsonl-smoke",
+        action="store_true",
+        help=(
+            "Rewrite data.init_args jsonl paths to their .smoke. variants "
+            "(e.g. HookTheory.train.wav.jsonl → HookTheory.train.smoke.wav.jsonl). "
+            "Use when only the smoke subset of audio is available locally."
+        ),
+    )
     args = ap.parse_args()
 
     if not args.config.exists():
@@ -240,7 +297,13 @@ def main():
     results: dict[str, dict] = {}  # label → {wall, out, rc, profiler, val_acc, per_batch}
     for label, mode in plan:
         yaml_path = smoke_dir / (f"{mode or 'eager'}.yaml")
-        _write_ab_yaml(args.config, yaml_path, compile_mode=mode, batches=args.batches)
+        _write_ab_yaml(
+            args.config,
+            yaml_path,
+            compile_mode=mode,
+            batches=args.batches,
+            jsonl_smoke=args.jsonl_smoke,
+        )
         wall, out, rc = _run_training(label, yaml_path)
         prof = _parse_profiler(out)
         rtb = prof["run_training_batch"]
