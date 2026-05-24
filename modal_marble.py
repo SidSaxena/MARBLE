@@ -885,6 +885,120 @@ def convert_hooktheory_to_wav(
 
 
 @app.function(
+    image=base_image,
+    volumes=VOL,
+    timeout=3 * 60 * 60,  # 3 h cap — clips dir is smaller than full songs
+)
+def convert_hooktheory_clips_to_wav(
+    target_sr: int = 24000, channels: int = 1, workers: int = 16, force: bool = False
+):
+    """Convert HookTheory clip MP3s to WAV + rebuild Key/Structure JSONLs.
+
+    Key/Structure tasks use a DIFFERENT MP3 corpus than HookTheoryMelody:
+    pre-clipped excerpts in ``data/HookTheory/hooktheory_clips/`` (vs HTM's
+    full songs in ``data/HookTheory/audio/``). This function mirrors
+    ``convert_hooktheory_to_wav`` for that corpus.
+
+    Pipeline:
+      1. Convert hooktheory_clips/*.mp3 → hooktheory_clips_wav/*.wav.
+      2. Rewrite HookTheoryKey.{train,val,test}.jsonl + HookTheoryStructure
+         equivalents to point at the new WAV paths
+         (audio_path: ".../hooktheory_clips/<id>.mp3" → ".../hooktheory_clips_wav/<id>.wav").
+         Saved as ``<orig>.wav.jsonl`` alongside the originals.
+
+    After this runs, flip the ~24 Key/Structure configs to point at the
+    new ``*.wav.jsonl`` (one-line change per config). The original
+    MP3 JSONLs stay on the volume so MP3-based runs still work for
+    reproducibility / comparison.
+
+    Idempotent: re-running skips already-present WAVs unless ``force=True``.
+
+    Note: unlike convert_hooktheory_to_wav, this does NOT rerun
+    cache_audio_info_in_jsonl.py — Key/Structure datamodules don't read
+    num_samples from JSONL (they load the whole clip as one item rather
+    than slicing). Skipping that step saves ~5 min.
+    """
+    _chdir()
+    data_vol.reload()
+    src_dir = f"{WORK_DIR}/data/HookTheory/hooktheory_clips"
+    dst_dir = f"{WORK_DIR}/data/HookTheory/hooktheory_clips_wav"
+
+    if not Path(src_dir).exists():
+        raise SystemExit(
+            f"{src_dir} does not exist on the volume. Upload the clip MP3s first:\n"
+            f"  modal volume put marble-data <local_clips_dir> HookTheory/hooktheory_clips"
+        )
+
+    cmd = [
+        "python",
+        "scripts/data/convert_audio_to_wav.py",
+        "--src-dir",
+        src_dir,
+        "--dst-dir",
+        dst_dir,
+        "--src-ext",
+        ".mp3",
+        "--target-sr",
+        str(target_sr),
+        "--channels",
+        str(channels),
+        "--workers",
+        str(workers),
+    ]
+    if force:
+        cmd.append("--force")
+    _run(cmd)
+    data_vol.commit()
+
+    # Rewrite Key + Structure JSONLs to point at the new WAV dir.
+    print("\n── Rewriting HookTheoryKey + HookTheoryStructure JSONLs ──")
+    out_dir = f"{WORK_DIR}/data/HookTheory"
+    jsonl_args = []
+    for task in ("HookTheoryKey", "HookTheoryStructure"):
+        for split in ("train", "val", "test"):
+            p = f"{out_dir}/{task}.{split}.jsonl"
+            if Path(p).exists():
+                jsonl_args += ["--jsonl", p]
+            else:
+                print(f"  ! missing {p}; skipping", file=sys.stderr)
+    if jsonl_args:
+        _run(
+            [
+                "python",
+                "scripts/data/rewrite_jsonl_audio_paths.py",
+                *jsonl_args,
+                "--from-dir",
+                "hooktheory_clips",
+                "--to-dir",
+                "hooktheory_clips_wav",
+                "--from-ext",
+                ".mp3",
+                "--to-ext",
+                ".wav",
+            ]
+        )
+        data_vol.commit()
+    print(f"HookTheory clips WAV corpus ready at {dst_dir}.")
+
+
+@app.function(
+    image=base_image,
+    volumes=VOL,
+    timeout=30 * 60,
+)
+def warmup_hooktheory_clips_wav(workers: int = 32):
+    """Pre-fetch every hooktheory_clips_wav WAV into the container's local FS cache.
+
+    The Key/Structure equivalent of ``warmup_hooktheory_audio_wav``. The
+    smaller per-clip size (a few seconds vs full songs) means total disk
+    pull is much smaller — typically 15-30 GB rather than HTM's 87 GB.
+    """
+    _chdir()
+    data_vol.reload()
+    _warmup_audio_dir(f"{WORK_DIR}/data/HookTheory/hooktheory_clips_wav", workers=workers)
+
+
+@app.function(
     image=ACTIVE_IMAGE,
     gpu=PROBE_GPU,
     volumes=VOL,
