@@ -194,20 +194,25 @@ def main():
         help="limit_train_batches per run (default 300 — ~5 min on 5060 Ti)",
     )
     ap.add_argument(
-        "--mode",
-        default="default",
+        "--modes",
+        nargs="+",
+        default=["default"],
         choices=["default", "reduce-overhead", "max-autotune"],
-        help="Which compile mode to A/B against eager (default: 'default')",
+        help=(
+            "Compile mode(s) to A/B against eager. Pass one or more: "
+            "'default reduce-overhead' runs a 3-way comparison "
+            "(eager / default / reduce-overhead) in a single invocation."
+        ),
     )
     ap.add_argument(
         "--skip-eager",
         action="store_true",
-        help="Skip the baseline (no-compile) run.",
+        help="Skip the baseline (no-compile) run. Useful when re-running compile-only experiments.",
     )
     ap.add_argument(
         "--skip-compile",
         action="store_true",
-        help="Skip the experiment (with-compile) run.",
+        help="Skip ALL compile runs (only run eager). Useful to just measure the eager baseline.",
     )
     args = ap.parse_args()
 
@@ -219,97 +224,97 @@ def main():
 
     smoke_dir = Path("output/.smoke_compile")
     smoke_dir.mkdir(parents=True, exist_ok=True)
-    eager_yaml = smoke_dir / "eager.yaml"
-    compile_yaml = smoke_dir / "compile.yaml"
-    _write_ab_yaml(args.config, eager_yaml, compile_mode=None, batches=args.batches)
-    _write_ab_yaml(args.config, compile_yaml, compile_mode=args.mode, batches=args.batches)
-    print(f"\nWrote {eager_yaml} and {compile_yaml}")
-    print(f"Config: {args.config}   batches: {args.batches}   compile_mode: {args.mode}\n")
 
-    eager_time, eager_out, eager_rc = 0.0, "", -1
-    compile_time, compile_out, compile_rc = 0.0, "", -1
-
+    # Build the run plan: list of (label, compile_mode) tuples in execution order.
+    plan: list[tuple[str, str | None]] = []
     if not args.skip_eager:
-        eager_time, eager_out, eager_rc = _run_training(
-            "EAGER baseline (compile_mode=null)", eager_yaml
-        )
-    else:
-        print("[skip] eager baseline")
-
+        plan.append(("EAGER baseline (compile_mode=null)", None))
     if not args.skip_compile:
-        compile_time, compile_out, compile_rc = _run_training(
-            f"COMPILE experiment (compile_mode={args.mode})", compile_yaml
-        )
-    else:
-        print("[skip] compile experiment")
+        for m in args.modes:
+            plan.append((f"COMPILE (compile_mode={m})", m))
 
-    # Headline: wall-clock it/s INCLUDING compile/setup overhead.
-    eager_its_wall = args.batches / eager_time if eager_time > 0 else 0.0
-    compile_its_wall = args.batches / compile_time if compile_time > 0 else 0.0
+    print(f"\nConfig: {args.config}   batches: {args.batches}")
+    print(f"Run plan: {[p[0] for p in plan]}\n")
 
-    # Cleaner: per-batch compute time from profiler row, EXCLUDES setup + compile warmup.
-    eager_p = _parse_profiler(eager_out)
-    compile_p = _parse_profiler(compile_out)
+    # Run each variant; collect results keyed by label.
+    results: dict[str, dict] = {}  # label → {wall, out, rc, profiler, val_acc, per_batch}
+    for label, mode in plan:
+        yaml_path = smoke_dir / (f"{mode or 'eager'}.yaml")
+        _write_ab_yaml(args.config, yaml_path, compile_mode=mode, batches=args.batches)
+        wall, out, rc = _run_training(label, yaml_path)
+        prof = _parse_profiler(out)
+        rtb = prof["run_training_batch"]
+        results[label] = {
+            "mode": mode,
+            "wall": wall,
+            "rc": rc,
+            "profiler": prof,
+            "val_acc": _parse_val_acc(out),
+            "per_batch": (rtb / args.batches) if rtb else None,
+            "its_wall": (args.batches / wall) if wall > 0 else 0.0,
+        }
 
-    def _per_batch(profiler_total_s: float | None) -> float | None:
-        return (profiler_total_s / args.batches) if profiler_total_s else None
-
-    eager_pb = _per_batch(eager_p["run_training_batch"])
-    compile_pb = _per_batch(compile_p["run_training_batch"])
-
-    eager_acc = _parse_val_acc(eager_out)
-    compile_acc = _parse_val_acc(compile_out)
-
+    # Pretty-print results table.
     print(f"\n━━━ A/B test result (batches={args.batches}, config={args.config.name}) ━━━")
-    if not args.skip_eager:
+    for label, r in results.items():
+        pb = r["per_batch"]
+        pb_str = f"{pb * 1000:.1f} ms" if pb else "(unparsed)"
+        acc = r["val_acc"]
+        acc_str = f"{acc:.4f}" if acc else "(unparsed)"
+        dl = r["profiler"]["train_dataloader_next"]
+        dl_str = f"{dl}s" if dl is not None else "(unparsed)"
         print(
-            f"  EAGER baseline   :  wall={eager_time:6.1f}s  ≈ {eager_its_wall:.2f} it/s "
-            f" |  per-batch compute={eager_pb * 1000:.1f} ms"
-            if eager_pb
-            else "    eager baseline   :  (profiler parse failed)"
+            f"  {label:<42}  wall={r['wall']:6.1f}s  ≈ {r['its_wall']:.2f} it/s  "
+            f"|  per-batch compute={pb_str}"
         )
-        print(f"    val/acc_rpa = {eager_acc:.4f}" if eager_acc else "    val/acc_rpa = (unparsed)")
-        print(f"    rc = {eager_rc}, train_dataloader_next = {eager_p['train_dataloader_next']}s")
-    else:
-        print("  EAGER baseline   : [skipped]")
-    if not args.skip_compile:
-        print(
-            f"  COMPILE experiment:  wall={compile_time:6.1f}s  ≈ {compile_its_wall:.2f} it/s "
-            f" |  per-batch compute={compile_pb * 1000:.1f} ms"
-            if compile_pb
-            else "    compile experiment: (profiler parse failed)"
-        )
-        print(
-            f"    val/acc_rpa = {compile_acc:.4f}"
-            if compile_acc
-            else "    val/acc_rpa = (unparsed)"
-        )
-        print(
-            f"    rc = {compile_rc}, train_dataloader_next = {compile_p['train_dataloader_next']}s"
-        )
-    else:
-        print("  COMPILE experiment: [skipped]")
+        print(f"    val/acc_rpa = {acc_str}    rc = {r['rc']}    train_dataloader_next = {dl_str}")
 
-    # Verdict only when both ran AND profiler parsed.
-    if not args.skip_eager and not args.skip_compile and eager_pb and compile_pb:
-        pct = (eager_pb - compile_pb) / eager_pb * 100
-        print(f"\n  Per-batch compute speedup (compile vs eager):  {pct:+.1f}%")
-        # Sanity check on val
-        if eager_acc and compile_acc:
-            drift = abs(eager_acc - compile_acc)
+    # Verdicts: compare each compile run against eager.
+    eager_result = next((r for r in results.values() if r["mode"] is None), None)
+    if eager_result and eager_result["per_batch"]:
+        eager_pb = eager_result["per_batch"]
+        eager_acc = eager_result["val_acc"]
+        print()
+        for label, r in results.items():
+            if r["mode"] is None:
+                continue
+            pb = r["per_batch"]
+            if not pb:
+                print(f"  {label}: profiler parse failed; can't compute verdict")
+                continue
+            pct = (eager_pb - pb) / eager_pb * 100
+            drift_str = ""
+            if eager_acc and r["val_acc"]:
+                drift = abs(eager_acc - r["val_acc"])
+                drift_str = f"   val/acc drift={drift:.4f} ({'OK' if drift < 0.005 else 'WARN'})"
             print(
-                f"  val/acc_rpa drift: {drift:.4f} ({'OK' if drift < 0.005 else 'WARN — investigate'})"
+                f"  compile_mode={r['mode']:<18}  per-batch speedup vs eager: {pct:+5.1f}%{drift_str}"
             )
 
-        if pct >= 5:
-            verdict = "GREEN — compile_mode is a real win, keep on MERT + consider extending to MuQ/OMARRQ"
-        elif pct >= -2:
-            verdict = (
-                "MEH — within noise, compile_mode isn't helping. Consider removing for simplicity"
-            )
-        else:
-            verdict = "BAD — compile_mode is hurting throughput. Remove from MERT configs"
-        print(f"  Verdict: {verdict}\n")
+        # Overall verdict on the BEST compile mode.
+        best = max(
+            (r for r in results.values() if r["mode"] is not None and r["per_batch"]),
+            key=lambda r: (eager_pb - r["per_batch"]) / eager_pb,
+            default=None,
+        )
+        if best:
+            pct = (eager_pb - best["per_batch"]) / eager_pb * 100
+            if pct >= 5:
+                verdict = (
+                    f"GREEN — best mode is '{best['mode']}' at {pct:+.1f}%. "
+                    f"Keep on MERT + extend to other compatible encoders."
+                )
+            elif pct >= -2:
+                verdict = (
+                    f"MEH — best mode is '{best['mode']}' at {pct:+.1f}% (within noise). "
+                    f"Compile isn't meaningfully helping; consider removing for simplicity."
+                )
+            else:
+                verdict = (
+                    f"BAD — best mode is '{best['mode']}' at {pct:+.1f}%. "
+                    f"Compile is hurting throughput; remove from configs."
+                )
+            print(f"  Verdict: {verdict}\n")
 
 
 if __name__ == "__main__":

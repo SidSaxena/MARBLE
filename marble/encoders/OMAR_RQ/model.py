@@ -85,7 +85,24 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
         self,
         model_id: str | None = None,
         train_mode: str = "freeze",
+        compile_mode: str | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        model_id : str | None
+            HuggingFace model id (defaults to ``HUGGINGFACE_MODEL_NAME``).
+        train_mode : str
+            Only ``"freeze"`` is supported.
+        compile_mode : str | None
+            If set, wraps the underlying ``self.model`` with
+            ``torch.compile(mode=compile_mode)``. Recommended values: ``"default"``
+            (safe with drop_last=False; no CUDA Graphs) or ``"reduce-overhead"``
+            (uses CUDA Graphs — faster but recompiles on shape mismatch).
+            Capability-gated on Triton + CUDA; falls back to eager with a
+            warning if either is missing. ~30-90s first-forward cost; cached
+            in ``~/.cache/torch_inductor`` across processes.
+        """
         super().__init__()
         # Stashed for the train() override below — Lightning's per-epoch
         # self.train() call propagates recursively to children and would
@@ -136,6 +153,40 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
                 f"train_mode='{train_mode}' is not supported for "
                 "OMARRQ_Multifeature25hz_Encoder. Only 'freeze' is available."
             )
+
+        # Optional torch.compile wrap. Same capability gate as MERT — Triton +
+        # CUDA required; falls back to eager with a warning otherwise. The
+        # OMAR-RQ upstream forward is a clean pass-through to extract_embeddings
+        # (no Python-side data-dependent control flow), so compile is expected
+        # to work cleanly with both 'default' and 'reduce-overhead' modes.
+        if compile_mode is not None:
+            skip_reason = None
+            try:
+                import triton  # noqa: F401 — capability check
+            except ImportError:
+                skip_reason = (
+                    "Triton not installed (no official Windows build; "
+                    "install on Linux/Mac for compile support)"
+                )
+            if skip_reason is None and not torch.cuda.is_available():
+                skip_reason = "no CUDA device available (compile gives little benefit on CPU/MPS)"
+            if skip_reason is not None:
+                print(
+                    f"[OMARRQ-multifeature-25hz] torch.compile(mode={compile_mode!r}) requested "
+                    f"but skipped — {skip_reason}. Falling back to eager."
+                )
+            else:
+                try:
+                    self.model = torch.compile(self.model, mode=compile_mode)
+                    print(
+                        f"[OMARRQ-multifeature-25hz] torch.compile(mode={compile_mode!r}) applied. "
+                        f"First forward will trigger compilation (30-90s typically)."
+                    )
+                except Exception as e:  # pragma: no cover — defensive
+                    print(
+                        f"[OMARRQ-multifeature-25hz] torch.compile(mode={compile_mode!r}) failed "
+                        f"at wrap time: {type(e).__name__}: {e}. Falling back to eager."
+                    )
 
     # Upstream documents "up to 30 s" of audio per forward. Past that the
     # vit_tokenization assertions are silent on what happens — guard here.

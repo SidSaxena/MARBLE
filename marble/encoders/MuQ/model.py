@@ -27,6 +27,7 @@ class MuQ_Encoder(BaseEncoder):
         lora_alpha: int = 16,
         lora_dropout: float = 0.1,
         lora_target_modules: Sequence[str] = ["q_proj", "v_proj"],
+        compile_mode: str | None = None,
     ) -> None:
         """
         Initialize the MERT HuBERT encoder.
@@ -38,6 +39,17 @@ class MuQ_Encoder(BaseEncoder):
             lora_r (int): LoRA adapter rank (only if train_mode="lora").
             lora_alpha (int): LoRA scaling alpha (only if train_mode="lora").
             lora_dropout (float): Dropout probability for LoRA adapters.
+            compile_mode (str | None): If set, wraps ``self.model`` with
+                ``torch.compile(mode=compile_mode)``. Recommended values:
+                ``"default"`` (safe with drop_last=False) or ``"reduce-overhead"``
+                (CUDA Graphs; faster but recompiles on shape mismatch).
+                Capability-gated on Triton + CUDA; falls back to eager otherwise.
+                Note: MuQ's Conformer has an attention_mask-dependent code path
+                (muq_model.py); for consistent compilation, the encoder must
+                always be called with the same mask presence (None vs tensor).
+                The MARBLE inference path always passes ``attention_mask=None``,
+                so this is satisfied by default — but be aware if you override.
+                Only applied when train_mode="freeze"; otherwise ignored.
         """
         super().__init__()
         self.sample_rate = self.SAMPLING_RATE
@@ -87,6 +99,47 @@ class MuQ_Encoder(BaseEncoder):
             self.model.train()
         else:
             self.model.eval()
+
+        # Optional torch.compile wrap. Same capability gate as MERT/OMARRQ.
+        # Only applied when frozen — compile gives little benefit during fine-
+        # tuning since the gradient path is also compiled and recompiled per
+        # autograd step. MuQ's attention_mask-dependent branching in
+        # muq_model.py:211 means we want consistent mask presence at trace
+        # time; MARBLE's inference path always passes attention_mask=None
+        # which satisfies that constraint.
+        if compile_mode is not None and train_mode == "freeze":
+            skip_reason = None
+            try:
+                import triton  # noqa: F401 — capability check
+            except ImportError:
+                skip_reason = (
+                    "Triton not installed (no official Windows build; "
+                    "install on Linux/Mac for compile support)"
+                )
+            if skip_reason is None and not torch.cuda.is_available():
+                skip_reason = "no CUDA device available (compile gives little benefit on CPU/MPS)"
+            if skip_reason is not None:
+                print(
+                    f"[MuQ] torch.compile(mode={compile_mode!r}) requested "
+                    f"but skipped — {skip_reason}. Falling back to eager."
+                )
+            else:
+                try:
+                    self.model = torch.compile(self.model, mode=compile_mode)
+                    print(
+                        f"[MuQ] torch.compile(mode={compile_mode!r}) applied. "
+                        f"First forward will trigger compilation (30-90s typically)."
+                    )
+                except Exception as e:  # pragma: no cover — defensive
+                    print(
+                        f"[MuQ] torch.compile(mode={compile_mode!r}) failed at "
+                        f"wrap time: {type(e).__name__}: {e}. Falling back to eager."
+                    )
+        elif compile_mode is not None:
+            print(
+                f"[MuQ] compile_mode={compile_mode!r} ignored — only applied "
+                f"when train_mode='freeze' (got {train_mode!r})."
+            )
 
     def forward(
         self,
