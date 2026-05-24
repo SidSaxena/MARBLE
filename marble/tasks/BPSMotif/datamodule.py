@@ -29,7 +29,6 @@ sub-millisecond per file; the heavy work is the encoder forward).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import torch
@@ -87,8 +86,11 @@ class _BPSMotifSymbolicBase(Dataset):
                 "  Build the dataset first:\n"
                 "    uv run python scripts/data/build_bps_motif_dataset.py"
             )
-        with open(jsonl_path, encoding="utf-8") as f:
-            self.meta: list[dict] = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(jsonl_path)
         self.split = split
         self.fold_idx = fold_idx
         # Set by EmbeddingCacheMixin._inject_cache_check_into_datasets when

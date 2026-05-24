@@ -1,6 +1,5 @@
 # marble/core/base_datamodule.py
 
-import json
 import logging
 import os
 from abc import ABC, ABCMeta, abstractmethod
@@ -178,9 +177,13 @@ class BaseAudioDataset(Dataset, ABC):
                 f"channel_mode must be one of 'first', 'mix', 'random' when channels=1, got: {self.channel_mode}"
             )
 
-        # 1. Load metadata entries from the JSONL file
-        with open(self.jsonl) as f:
-            self.meta: list[dict] = [json.loads(line) for line in f]
+        # 1. Load metadata entries from the JSONL file.
+        # Uses ``load_jsonl`` to coerce any Windows-style ``audio_path``
+        # (backslashes) to POSIX so JSONLs round-trip Win ↔ Linux/macOS.
+        # See marble/utils/path_compat.py for the rationale.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(self.jsonl)
 
         # 2. Pre-create resamplers for any original sample rate != target sample_rate
         self.resamplers: dict = {}

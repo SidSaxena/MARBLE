@@ -17,9 +17,6 @@ Audio clips are split into non-overlapping windows of ``clip_seconds``
 seconds (last window is zero-padded to full length).
 """
 
-import json
-from typing import Dict, List, Optional, Tuple
-
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -61,7 +58,7 @@ class _LeitmotifAudioBase(Dataset):
         channels: int,
         clip_seconds: float,
         jsonl: str,
-        labels: List[str],
+        labels: list[str],
         channel_mode: str = "first",
         min_clip_ratio: float = 1.0,
     ) -> None:
@@ -76,22 +73,23 @@ class _LeitmotifAudioBase(Dataset):
             raise ValueError(f"Unknown channel_mode: {channel_mode!r}")
 
         # Build label → index mapping from the ordered list
-        self.label2idx: Dict[str, int] = {lbl: i for i, lbl in enumerate(labels)}
+        self.label2idx: dict[str, int] = {lbl: i for i, lbl in enumerate(labels)}
 
         # Load metadata
-        with open(jsonl, "r") as fh:
-            self.meta: List[dict] = [json.loads(line) for line in fh]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(jsonl)
 
         # Build a flat index_map over all (file, slice) pairs
-        self.index_map: List[Tuple[int, int, int, int, int]] = []
-        self.resamplers: Dict[int, torchaudio.transforms.Resample] = {}
+        self.index_map: list[tuple[int, int, int, int, int]] = []
+        self.resamplers: dict[int, torchaudio.transforms.Resample] = {}
 
         for file_idx, info in enumerate(self.meta):
             orig_sr: int = info["sample_rate"]
             if orig_sr != self.sample_rate and orig_sr not in self.resamplers:
-                self.resamplers[orig_sr] = torchaudio.transforms.Resample(
-                    orig_sr, self.sample_rate
-                )
+                self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
             orig_clip_frames = int(clip_seconds * orig_sr)
             orig_channels: int = info.get("channels", 1)
@@ -100,9 +98,7 @@ class _LeitmotifAudioBase(Dataset):
             n_full = total_samples // orig_clip_frames
             rem = total_samples - n_full * orig_clip_frames
 
-            n_slices = n_full + (
-                1 if rem > 0 and rem / orig_clip_frames >= min_clip_ratio else 0
-            )
+            n_slices = n_full + (1 if rem > 0 and rem / orig_clip_frames >= min_clip_ratio else 0)
 
             for slice_idx in range(n_slices):
                 self.index_map.append(
@@ -113,7 +109,7 @@ class _LeitmotifAudioBase(Dataset):
     def __len__(self) -> int:
         return len(self.index_map)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, str]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int, str]:
         """
         Returns
         -------
@@ -165,16 +161,19 @@ class _LeitmotifAudioBase(Dataset):
 
 class LeitmotifAudioTrain(_LeitmotifAudioBase):
     """Training split — DataModule sets ``shuffle=True``."""
+
     pass
 
 
 class LeitmotifAudioVal(_LeitmotifAudioBase):
     """Validation split — DataModule sets ``shuffle=False``."""
+
     pass
 
 
 class LeitmotifAudioTest(_LeitmotifAudioBase):
     """Test split — same logic as validation."""
+
     pass
 
 
@@ -186,4 +185,5 @@ class LeitmotifDetectionDataModule(BaseDataModule):
     ``marble.core.base_datamodule.BaseDataModule``.  No additional logic
     is needed here — the datasets above already handle everything.
     """
+
     pass

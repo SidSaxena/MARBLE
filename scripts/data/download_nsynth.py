@@ -141,7 +141,10 @@ def generate_jsonl(split_dir: Path, out_jsonl: Path) -> int:
                 continue
 
             record = {
-                "audio_path": str(wav_path),
+                # as_posix() forces forward-slash separators so the JSONL is
+                # readable on Linux/Modal after being generated on Windows.
+                # See marble/utils/path_compat.py.
+                "audio_path": wav_path.as_posix(),
                 "note": note,
                 "velocity": int(meta.get("velocity", 0)),
                 "instrument_family": meta.get("instrument_family_str", ""),

@@ -25,8 +25,6 @@ The 13-class inventory must match build_hxmsa_dataset.py CANONICAL_LABELS
 exactly. Order matters — index 0 is the first alphabetical class.
 """
 
-import json
-
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -130,8 +128,11 @@ class _HXMSAAudioBase(Dataset):
         self.min_clip_ratio = min_clip_ratio
 
         # Read metadata
-        with open(jsonl) as f:
-            self.meta = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta = load_jsonl(jsonl)
 
         # Validate labels up-front (fail-loud)
         for info in self.meta:

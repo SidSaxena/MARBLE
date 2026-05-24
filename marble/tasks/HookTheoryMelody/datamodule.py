@@ -1,6 +1,5 @@
 # File: marble/tasks/HookTheoryMelody/datamodule.py
 
-import json
 import os
 
 import numpy as np
@@ -80,8 +79,11 @@ class _HookTheoryMelodyDataset(Dataset):
         # to YouTube audio for whatever reason). The build script ideally
         # filters these out, but be defensive here too in case a stale
         # JSONL is passed in.
-        with open(jsonl) as f:
-            raw_meta: list[dict] = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        raw_meta: list[dict] = load_jsonl(jsonl)
 
         self.alignments = []
         self.melodies = []

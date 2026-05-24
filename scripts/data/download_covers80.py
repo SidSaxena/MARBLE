@@ -161,7 +161,9 @@ def main():
 
             records.append(
                 {
-                    "audio_path": str(audio_path),
+                    # Forward-slash separators for cross-OS portability. See
+                    # marble/utils/path_compat.py.
+                    "audio_path": audio_path.as_posix(),
                     "work_id": work_id,
                     "version": version,
                     "work_name": work_dir.name,  # human-readable label

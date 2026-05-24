@@ -20,8 +20,6 @@ Label mapping:  class_idx = note - 21   →  88 classes  (A0=0 … C8=87)
 Download:  python scripts/data/download_nsynth.py
 """
 
-import json
-
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -88,8 +86,12 @@ class _NSynthAudioBase(Dataset):
         self.channel_mode = channel_mode
         self.clip_len_target = int(clip_seconds * self.sample_rate)
 
-        with open(jsonl) as f:
-            self.meta: list[dict] = [json.loads(line) for line in f]
+        # Load JSONL via the cross-OS-safe helper so Windows-generated
+        # NSynth.{train,val,test}.jsonl files (backslash paths) work on
+        # Linux. See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(jsonl)
 
         # Optional stratified subsample ──────────────────────────────────────
         if max_samples is not None and max_samples < len(self.meta):

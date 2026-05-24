@@ -24,8 +24,6 @@ scripts/data/build_supermario_dataset.py CANONICAL_LABELS exactly.
 Order matters — index 0 is the first alphabetical class.
 """
 
-import json
-
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -105,8 +103,11 @@ class _SuperMarioStructureAudioBase(Dataset):
         self.min_clip_ratio = min_clip_ratio
 
         # Read metadata
-        with open(jsonl) as f:
-            self.meta = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta = load_jsonl(jsonl)
 
         # Validate labels up-front (fail-loud)
         for info in self.meta:
@@ -332,8 +333,11 @@ class _SuperMarioStructureSymbolicBase(Dataset):
             raise ValueError(f"input_format must be 'midi' or 'abc', got {input_format!r}")
         self.input_format = input_format
 
-        with open(jsonl, encoding="utf-8") as f:
-            self.meta: list[dict] = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(jsonl)
 
         # Fail-loud validation. For MIDI: every record needs `midi_path`. For
         # ABC: filter to records that have `abc_path` (those without are

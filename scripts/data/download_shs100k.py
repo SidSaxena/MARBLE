@@ -430,7 +430,9 @@ def _process(
         return None
 
     return {
-        "audio_path": str(path),
+        # Forward-slash separators for cross-OS portability. See
+        # marble/utils/path_compat.py.
+        "audio_path": path.as_posix(),
         "work_id": row["work_id"],
         "performance_id": row["perf_id"],
         "title": row["title"],

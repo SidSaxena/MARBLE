@@ -47,8 +47,6 @@ The JSONL is split-aware: the dataset ships with explicit train/test splits.
 preserved so future supervised probes can use it.
 """
 
-import json
-
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -105,8 +103,11 @@ class _VGMIDITVarAudioBase(Dataset):
         self.cache_check_fn = None
         self.split = split
 
-        with open(jsonl, encoding="utf-8") as f:
-            self.meta: list[dict] = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(jsonl)
 
         # Optionally filter to one split
         if split is not None:
@@ -290,8 +291,11 @@ class _VGMIDITVarSymbolicBase(Dataset):
         self.pad_token_id = self.patchilizer.pad_token_id
         self.midi_dir = _Path(midi_dir) if midi_dir else None
 
-        with open(jsonl, encoding="utf-8") as f:
-            self.meta: list[dict] = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(jsonl)
         if split is not None:
             self.meta = [m for m in self.meta if m.get("split") == split]
 

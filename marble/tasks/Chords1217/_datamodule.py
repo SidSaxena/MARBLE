@@ -1,18 +1,15 @@
 # marble/tasks/Chords1217/datamodule.py
 
-import os
-import json
-from typing import List, Tuple, Optional
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
-import numpy as np
-from torch.utils.data import Dataset, DataLoader
-import lightning.pytorch as pl
+from torch.utils.data import Dataset
 
 from marble.core.base_datamodule import BaseDataModule
-from marble.utils.utils import chord_to_majmin, id2chord_str
+from marble.utils.utils import chord_to_majmin
+
 
 class _Chords1217AudioBase(Dataset):
     """
@@ -39,50 +36,93 @@ class _Chords1217AudioBase(Dataset):
         "channels": <int>
     }
     """
+
     EXAMPLE_JSONL = {
-        "audio_path": "data/Chords1217/audio/TRWTQYM149E35B4C40.mp3", 
-        "label": 
-            [
-                {"start_time": 0.0, "end_time": 0.42124700000000004, "chord_str": "N"}, 
-                {"start_time": 0.42124700000000004, "end_time": 1.2562470000000001, 
-                "chord_str": "N"}, 
-                {"start_time": 1.2562470000000001, "end_time": 21.840737000000004, "chord_str": "E:maj"}, 
-                {"start_time": 21.840737, "end_time": 23.048174, "chord_str": "F#:maj"}, 
-                {"start_time": 23.048174000000003, "end_time": 24.290442000000002, "chord_str": "B:maj"}, 
-                {"start_time": 24.290442000000002, "end_time": 25.474660000000004, "chord_str": "E:maj"}, 
-                {"start_time": 25.47466, "end_time": 26.682097, "chord_str": "C#:maj"}, 
-                {"start_time": 26.682097000000002, "end_time": 27.877925, "chord_str": "F#:maj"}, 
-                {"start_time": 27.877925, "end_time": 29.073753, "chord_str": "B:maj"}, 
-                {"start_time": 29.073753000000004, "end_time": 29.372436000000004, "chord_str": "E:maj"}, 
-                {"start_time": 29.372436, "end_time": 31.546678, "chord_str": "D:maj/2"}, 
-                {"start_time": 31.546678000000004, "end_time": 52.293707000000005, "chord_str": "E:maj"}, 
-                {"start_time": 52.293707000000005, "end_time": 53.466315, "chord_str": "F#:maj"}, 
-                {"start_time": 53.466315, "end_time": 54.720192000000004, "chord_str": "B:maj"}, 
-                {"start_time": 54.720192000000004, "end_time": 55.939240000000005, "chord_str": "E:maj"}, 
-                {"start_time": 55.939240000000005, "end_time": 57.158288000000006, "chord_str": "C#:maj"}, 
-                {"start_time": 57.158288000000006, "end_time": 58.365725000000005, "chord_str": "F#:maj"}, 
-                {"start_time": 58.365725000000005, "end_time": 59.584773000000006, "chord_str": "B:maj"}, 
-                {"start_time": 59.584773000000006, "end_time": 59.893728, "chord_str": "E:maj"}, 
-                {"start_time": 59.893728, "end_time": 62.022868, "chord_str": "D:maj/2"}, 
-                {"start_time": 62.022868, "end_time": 76.26493500000001, "chord_str": "E:maj"}, 
-                {"start_time": 76.264934999, "end_time": 96.71347999900001, "chord_str": "E:maj"}, 
-                {"start_time": 96.71348, "end_time": 97.94413800000001, "chord_str": "F#:maj"}, 
-                {"start_time": 97.94413800000001, "end_time": 99.16318600000001, "chord_str": "B:maj"}, 
-                {"start_time": 99.16318600000001, "end_time": 100.393843, "chord_str": "E:maj"}, 
-                {"start_time": 100.393843, "end_time": 101.578061, "chord_str": "C#:maj"}, 
-                {"start_time": 101.578061, "end_time": 102.80871900000001, "chord_str": "F#:maj"}, 
-                {"start_time": 102.80871900000001, "end_time": 103.969716, "chord_str": "B:maj"}, 
-                {"start_time": 103.969716, "end_time": 104.27789100000001, "chord_str": "E:maj"}, 
-                {"start_time": 104.27789100000001, "end_time": 106.45425100000001, "chord_str": "D:maj/2"}, 
-                {"start_time": 106.45425100000001, "end_time": 114.15805800000001, "chord_str": "E:maj"}, 
-                {"start_time": 114.15805800000001, "end_time": 118.987755, "chord_str": "N"}
-            ], 
-        "duration": 119.01387755102041, 
-        "sample_rate": 44100, 
-        "num_samples": 5248512, 
-        "bit_depth": 0, 
-        "channels": 1
-        }
+        "audio_path": "data/Chords1217/audio/TRWTQYM149E35B4C40.mp3",
+        "label": [
+            {"start_time": 0.0, "end_time": 0.42124700000000004, "chord_str": "N"},
+            {"start_time": 0.42124700000000004, "end_time": 1.2562470000000001, "chord_str": "N"},
+            {
+                "start_time": 1.2562470000000001,
+                "end_time": 21.840737000000004,
+                "chord_str": "E:maj",
+            },
+            {"start_time": 21.840737, "end_time": 23.048174, "chord_str": "F#:maj"},
+            {
+                "start_time": 23.048174000000003,
+                "end_time": 24.290442000000002,
+                "chord_str": "B:maj",
+            },
+            {
+                "start_time": 24.290442000000002,
+                "end_time": 25.474660000000004,
+                "chord_str": "E:maj",
+            },
+            {"start_time": 25.47466, "end_time": 26.682097, "chord_str": "C#:maj"},
+            {"start_time": 26.682097000000002, "end_time": 27.877925, "chord_str": "F#:maj"},
+            {"start_time": 27.877925, "end_time": 29.073753, "chord_str": "B:maj"},
+            {
+                "start_time": 29.073753000000004,
+                "end_time": 29.372436000000004,
+                "chord_str": "E:maj",
+            },
+            {"start_time": 29.372436, "end_time": 31.546678, "chord_str": "D:maj/2"},
+            {
+                "start_time": 31.546678000000004,
+                "end_time": 52.293707000000005,
+                "chord_str": "E:maj",
+            },
+            {"start_time": 52.293707000000005, "end_time": 53.466315, "chord_str": "F#:maj"},
+            {"start_time": 53.466315, "end_time": 54.720192000000004, "chord_str": "B:maj"},
+            {
+                "start_time": 54.720192000000004,
+                "end_time": 55.939240000000005,
+                "chord_str": "E:maj",
+            },
+            {
+                "start_time": 55.939240000000005,
+                "end_time": 57.158288000000006,
+                "chord_str": "C#:maj",
+            },
+            {
+                "start_time": 57.158288000000006,
+                "end_time": 58.365725000000005,
+                "chord_str": "F#:maj",
+            },
+            {
+                "start_time": 58.365725000000005,
+                "end_time": 59.584773000000006,
+                "chord_str": "B:maj",
+            },
+            {"start_time": 59.584773000000006, "end_time": 59.893728, "chord_str": "E:maj"},
+            {"start_time": 59.893728, "end_time": 62.022868, "chord_str": "D:maj/2"},
+            {"start_time": 62.022868, "end_time": 76.26493500000001, "chord_str": "E:maj"},
+            {"start_time": 76.264934999, "end_time": 96.71347999900001, "chord_str": "E:maj"},
+            {"start_time": 96.71348, "end_time": 97.94413800000001, "chord_str": "F#:maj"},
+            {"start_time": 97.94413800000001, "end_time": 99.16318600000001, "chord_str": "B:maj"},
+            {"start_time": 99.16318600000001, "end_time": 100.393843, "chord_str": "E:maj"},
+            {"start_time": 100.393843, "end_time": 101.578061, "chord_str": "C#:maj"},
+            {"start_time": 101.578061, "end_time": 102.80871900000001, "chord_str": "F#:maj"},
+            {"start_time": 102.80871900000001, "end_time": 103.969716, "chord_str": "B:maj"},
+            {"start_time": 103.969716, "end_time": 104.27789100000001, "chord_str": "E:maj"},
+            {
+                "start_time": 104.27789100000001,
+                "end_time": 106.45425100000001,
+                "chord_str": "D:maj/2",
+            },
+            {
+                "start_time": 106.45425100000001,
+                "end_time": 114.15805800000001,
+                "chord_str": "E:maj",
+            },
+            {"start_time": 114.15805800000001, "end_time": 118.987755, "chord_str": "N"},
+        ],
+        "duration": 119.01387755102041,
+        "sample_rate": 44100,
+        "num_samples": 5248512,
+        "bit_depth": 0,
+        "channels": 1,
+    }
 
     def __init__(
         self,
@@ -109,18 +149,21 @@ class _Chords1217AudioBase(Dataset):
             raise ValueError(f"Unknown channel_mode: {self.channel_mode}")
 
         # Load metadata entries from JSONL file
-        with open(jsonl, 'r') as f:
-            self.meta: List[dict] = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(jsonl)
 
         # Pre-extract chord annotations per track
         # Each entry in chords_meta is a list of tuples (start_time, chord_idx)
-        self.chords_meta: List[List[Tuple[float, int]]] = []
+        self.chords_meta: list[list[tuple[float, int]]] = []
         for info in self.meta:
-            chord_list = info.get('label', [])
-            annotated: List[Tuple[float, int]] = []
+            chord_list = info.get("label", [])
+            annotated: list[tuple[float, int]] = []
             for segment in chord_list:
-                t0 = float(segment['start_time'])
-                chord_str = segment['chord_str']
+                t0 = float(segment["start_time"])
+                chord_str = segment["chord_str"]
                 idx = chord_to_majmin(chord_str)
                 annotated.append((t0, idx))
             # Ensure the chord list is sorted by start_time
@@ -130,16 +173,16 @@ class _Chords1217AudioBase(Dataset):
         # Pre-create resamplers for any original sample rate != target sample_rate
         self.resamplers = {}
         for info in self.meta:
-            orig_sr = int(info['sample_rate'])
+            orig_sr = int(info["sample_rate"])
             if orig_sr != self.sample_rate:
                 self.resamplers[orig_sr] = torchaudio.transforms.Resample(orig_sr, self.sample_rate)
 
         # Build an index map: for each file, compute how many clips can be extracted
         # and store tuples of (file_idx, slice_idx, orig_sr, orig_clip_frames)
-        self.index_map: List[Tuple[int, int, int, int]] = []
+        self.index_map: list[tuple[int, int, int, int]] = []
         for file_idx, info in enumerate(self.meta):
-            orig_sr = int(info['sample_rate'])
-            total_samples = int(info['num_samples'])
+            orig_sr = int(info["sample_rate"])
+            total_samples = int(info["num_samples"])
             orig_clip_frames = int(self.clip_seconds * orig_sr)
             if orig_clip_frames <= 0:
                 continue  # skip invalid
@@ -165,14 +208,11 @@ class _Chords1217AudioBase(Dataset):
         """
         file_idx, slice_idx, orig_sr, orig_clip_frames = self.index_map[idx]
         info = self.meta[file_idx]
-        audio_path = info['audio_path']
+        audio_path = info["audio_path"]
 
         # 1. Load and preprocess waveform
         waveform = self._load_and_preprocess(
-            path=audio_path,
-            slice_idx=slice_idx,
-            orig_sr=orig_sr,
-            orig_clip_frames=orig_clip_frames
+            path=audio_path, slice_idx=slice_idx, orig_sr=orig_sr, orig_clip_frames=orig_clip_frames
         )
         # waveform.shape == (self.channels, self.clip_len_target)
 
@@ -192,8 +232,8 @@ class _Chords1217AudioBase(Dataset):
         else:
             # Build a list of segment boundaries and labels based on start times
             # Append a sentinel at end with "no chord"
-            segments: List[Tuple[float, int]] = []
-            for (t0, cidx) in chord_annotations:
+            segments: list[tuple[float, int]] = []
+            for t0, cidx in chord_annotations:
                 # Only keep annotations that intersect this clip by start time
                 if t0 >= clip_end_time:
                     break
@@ -207,11 +247,11 @@ class _Chords1217AudioBase(Dataset):
                 # Check if there's a previous chord that lasts into this clip
                 # For the very first segment, use the last chord of the previous clip if its end_time hasn't passed
                 prev_chord = None
-                for (prev_start_time, prev_chord_label) in reversed(self.chords_meta[file_idx]):
+                for prev_start_time, prev_chord_label in reversed(self.chords_meta[file_idx]):
                     if prev_start_time < clip_start_time:
                         prev_chord = prev_chord_label
                         break
-                
+
                 if prev_chord is not None:
                     # If the previous chord is still ongoing, carry it over
                     segments.insert(0, (clip_start_time, prev_chord))
@@ -232,11 +272,15 @@ class _Chords1217AudioBase(Dataset):
                 while t >= next_change_time and seg_ptr + 1 < len(segments) - 1:
                     seg_ptr += 1
                     current_label = segments[seg_ptr][1]
-                    next_change_time = segments[seg_ptr + 1][0] if seg_ptr + 1 < len(segments) else clip_end_time
+                    next_change_time = (
+                        segments[seg_ptr + 1][0] if seg_ptr + 1 < len(segments) else clip_end_time
+                    )
 
                 # Handle 'no chord' case: use the previous segment's chord label
                 if current_label == 24 and seg_ptr > 0:
-                    current_label = segments[seg_ptr - 1][1]  # Inherit previous chord if 'no chord' is encountered
+                    current_label = segments[seg_ptr - 1][
+                        1
+                    ]  # Inherit previous chord if 'no chord' is encountered
                 chord_seq[frame_idx] = current_label
 
         chord_tensor = torch.from_numpy(chord_seq)
@@ -244,11 +288,7 @@ class _Chords1217AudioBase(Dataset):
         return waveform, targets, audio_path
 
     def _load_and_preprocess(
-        self,
-        path: str,
-        slice_idx: int,
-        orig_sr: int,
-        orig_clip_frames: int
+        self, path: str, slice_idx: int, orig_sr: int, orig_clip_frames: int
     ) -> torch.Tensor:
         """
         Load a slice of audio from disk and apply:
@@ -261,9 +301,7 @@ class _Chords1217AudioBase(Dataset):
         """
         offset = slice_idx * orig_clip_frames
         waveform, _ = torchaudio.load(
-            path,
-            frame_offset=offset,
-            num_frames=orig_clip_frames
+            path, frame_offset=offset, num_frames=orig_clip_frames
         )  # waveform.shape == (orig_ch, actual_frames)
 
         orig_ch = waveform.size(0)
@@ -282,7 +320,7 @@ class _Chords1217AudioBase(Dataset):
                         waveform = waveform.mean(dim=0, keepdim=True)
                     else:
                         idx = torch.randint(0, orig_ch, ())
-                        waveform = waveform[idx:idx+1, :]
+                        waveform = waveform[idx : idx + 1, :]
                 else:
                     raise ValueError(f"Unknown channel_mode: {self.channel_mode}")
             else:
@@ -302,7 +340,7 @@ class _Chords1217AudioBase(Dataset):
         cur_len = waveform.size(1)
         if cur_len < self.clip_len_target:
             pad_amt = self.clip_len_target - cur_len
-            waveform = F.pad(waveform, (0, pad_amt), mode='constant', value=0.0)
+            waveform = F.pad(waveform, (0, pad_amt), mode="constant", value=0.0)
         elif cur_len > self.clip_len_target:
             waveform = waveform[:, : self.clip_len_target]
 
@@ -311,17 +349,21 @@ class _Chords1217AudioBase(Dataset):
 
 class Chords1217AudioTrain(_Chords1217AudioBase):
     """Training split: shuffle in DataLoader."""
+
     pass
 
 
 class Chords1217AudioVal(_Chords1217AudioBase):
     """Validation split: no shuffling."""
+
     pass
 
 
 class Chords1217AudioTest(Chords1217AudioVal):
     """Test split: same behavior as validation."""
+
     pass
+
 
 class Chords1217DataModule(BaseDataModule):
     pass

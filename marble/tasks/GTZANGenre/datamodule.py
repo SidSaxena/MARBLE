@@ -1,6 +1,5 @@
 # marble/tasks/GTZANGenre/datamodule.py
 
-import json
 
 import torch
 import torch.nn.functional as F
@@ -58,8 +57,11 @@ class _GTZANGenreAudioBase(Dataset):
         self.min_clip_ratio = min_clip_ratio
 
         # 读取元数据
-        with open(jsonl) as f:
-            self.meta = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta = load_jsonl(jsonl)
 
         # Build index map: (file_idx, slice_idx, orig_sr, orig_clip_frames, orig_channels)
         self.index_map: list[tuple[int, int, int, int, int]] = []

@@ -27,8 +27,6 @@ JSONL format (one line per track):
 Download:  python scripts/data/download_shs100k.py
 """
 
-import json
-
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -81,8 +79,11 @@ class _SHS100KAudioBase(Dataset):
         # cache is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
         self.cache_check_fn = None
 
-        with open(jsonl, encoding="utf-8") as f:
-            self.meta: list[dict] = [json.loads(line) for line in f]
+        # Cross-OS JSONL load (Windows backslash audio_paths → POSIX).
+        # See marble/utils/path_compat.py.
+        from marble.utils.path_compat import load_jsonl
+
+        self.meta: list[dict] = load_jsonl(jsonl)
 
         # Build resamplers for any non-target sample rates in the dataset
         self.resamplers: dict[int, torchaudio.transforms.Resample] = {}
