@@ -1,4 +1,15 @@
-# Optimization uniformity audit (2026-05-24)
+# Optimization uniformity audit (2026-05-24) — SNAPSHOT, superseded
+
+> **NOTE**: This doc is a point-in-time audit from the middle of the
+> optimisation rollout. The current canonical reference (with all
+> post-audit changes — OMARRQ compile bug fix, OMARRQ + MuQ rollout to
+> all configs, NSynth Modal infra, etc.) is
+> **[docs/performance_optimizations.md](performance_optimizations.md)**.
+>
+> Kept for traceability.
+
+---
+
 
 Captures the state of all optimisations applied across MARBLE
 encoders × tasks during the recent HookTheoryMelody + NSynth rollout, and
