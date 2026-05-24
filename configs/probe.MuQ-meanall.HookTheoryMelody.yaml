@@ -66,6 +66,15 @@ model:
 
     encoder:
       class_path: marble.encoders.MuQ.model.MuQ_Encoder
+      init_args:
+        # A/B test point: torch.compile the frozen encoder forward.
+        # 'default' is the safe first try (no CUDA Graphs); upgrade to
+        # 'reduce-overhead' only after smoke A/B validates. Capability-gated
+        # on Triton + CUDA; falls back to eager with a warning otherwise.
+        # NOTE: MuQ's Conformer has attention_mask-dependent branching;
+        # MARBLE always passes attention_mask=None which keeps the trace
+        # consistent. Don't override that without re-running the A/B.
+        compile_mode: default
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:

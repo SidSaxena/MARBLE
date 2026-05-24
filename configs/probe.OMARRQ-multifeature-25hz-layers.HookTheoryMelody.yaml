@@ -62,6 +62,11 @@ model:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
       init_args:
         model_id: "mtg-upf/omar-rq-multifeature-25hz"
+        # A/B test point: torch.compile the frozen encoder forward.
+        # 'default' is the safe first try (no CUDA Graphs); upgrade to
+        # 'reduce-overhead' only after smoke A/B validates. Capability-gated
+        # on Triton + CUDA; falls back to eager with a warning otherwise.
+        compile_mode: default
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
