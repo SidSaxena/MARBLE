@@ -56,6 +56,10 @@ model:
         train_mode: freeze  # also supports lora, or full
         force_half: false
         preprocess_in_forward: false
+        # torch.compile the frozen encoder forward. `default` mode is
+        # safe with drop_last=False (no CUDA Graphs); falls back to eager
+        # on capability failure (Triton missing / non-CUDA) with a warning.
+        compile_mode: default
 
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
