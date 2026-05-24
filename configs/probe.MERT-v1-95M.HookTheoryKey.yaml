@@ -107,7 +107,7 @@ data:
   class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyDataModule
   init_args:
     batch_size: 8
-    num_workers: 16
+    num_workers: 8
 
     audio_transforms:
       train:
@@ -134,7 +134,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.8 # at least 80% of the clip length
         channel_mode: random # first, random, mix
-        jsonl: data/HookTheory/HookTheoryKey.train.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.train.wav.jsonl
         maj_minor_only: true # only use major and minor keys
     val:
       class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioVal
@@ -144,7 +144,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.8
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryKey.val.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.val.wav.jsonl
         maj_minor_only: true # only use major and minor keys
     test:
       class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioTest
@@ -154,7 +154,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.8
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryKey.test.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.test.wav.jsonl
         maj_minor_only: true # only use major and minor keys
 
 optimizer:

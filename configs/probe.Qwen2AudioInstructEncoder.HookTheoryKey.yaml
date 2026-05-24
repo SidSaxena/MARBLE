@@ -132,7 +132,7 @@ data:
         clip_seconds: 30
         min_clip_ratio: 0.8 # at least 80% of the clip length
         channel_mode: first # first, random, mix
-        jsonl: data/HookTheory/HookTheoryKey.train.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.train.wav.jsonl
     val:
       class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioVal
       init_args:
@@ -141,7 +141,7 @@ data:
         clip_seconds: 30
         min_clip_ratio: 0.8
         channel_mode: first
-        jsonl: data/HookTheory/HookTheoryKey.val.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.val.wav.jsonl
     test:
       class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioTest
       init_args:
@@ -150,7 +150,7 @@ data:
         clip_seconds: 30
         min_clip_ratio: 0.8
         channel_mode: first
-        jsonl: data/HookTheory/HookTheoryKey.test.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.test.wav.jsonl
 
 optimizer:
   class_path: torch.optim.Adam

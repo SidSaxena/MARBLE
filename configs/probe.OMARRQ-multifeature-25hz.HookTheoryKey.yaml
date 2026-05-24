@@ -122,7 +122,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.8
         channel_mode: random
-        jsonl: data/HookTheory/HookTheoryKey.train.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.train.wav.jsonl
         maj_minor_only: true
     val:
       class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioVal
@@ -132,7 +132,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.8
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryKey.val.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.val.wav.jsonl
         maj_minor_only: true
     test:
       class_path: marble.tasks.HookTheoryKey.datamodule.HookTheoryKeyAudioTest
@@ -142,7 +142,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.8
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryKey.test.jsonl
+        jsonl: data/HookTheory/HookTheoryKey.test.wav.jsonl
         maj_minor_only: true
 
 optimizer:

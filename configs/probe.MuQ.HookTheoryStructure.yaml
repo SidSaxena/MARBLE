@@ -99,7 +99,7 @@ data:
   class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureDataModule
   init_args:
     batch_size: 16
-    num_workers: 16
+    num_workers: 8
 
     train:
       class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioTrain
@@ -109,7 +109,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.1 # at least 80% of the clip length
         channel_mode: random # first, random, mix
-        jsonl: data/HookTheory/HookTheoryStructure.train.jsonl
+        jsonl: data/HookTheory/HookTheoryStructure.train.wav.jsonl
     val:
       class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioVal
       init_args:
@@ -118,7 +118,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.1
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryStructure.val.jsonl
+        jsonl: data/HookTheory/HookTheoryStructure.val.wav.jsonl
     test:
       class_path: marble.tasks.HookTheoryStructure.datamodule.HookTheoryStructureAudioTest
       init_args:
@@ -127,7 +127,7 @@ data:
         clip_seconds: 15
         min_clip_ratio: 0.1
         channel_mode: mix
-        jsonl: data/HookTheory/HookTheoryStructure.test.jsonl
+        jsonl: data/HookTheory/HookTheoryStructure.test.wav.jsonl
 
 optimizer:
   class_path: torch.optim.Adam
