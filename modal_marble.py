@@ -2086,6 +2086,125 @@ def sweep_musicfm_hooktheorymelody():
     )
 
 
+# ──────────────────────────────────────────────
+# NSynth — instrument pitch classification (88-way).
+# Source is already WAV (no MP3 → WAV conversion needed).
+# ~289 k train clips, configs subsample to 50 k via max_samples.
+# Audio dir layout: data/NSynth/nsynth-{train,val,test}/audio/<key>.wav
+# (download_nsynth.py downloads + extracts the Magenta GCS archives.)
+# ──────────────────────────────────────────────
+
+_NSYNTH_AUDIO_DIRS = [
+    f"{WORK_DIR}/data/NSynth/nsynth-train/audio",
+    f"{WORK_DIR}/data/NSynth/nsynth-val/audio",
+    f"{WORK_DIR}/data/NSynth/nsynth-test/audio",
+]
+_NSYNTH_CLI_OVERRIDES = ["--data.init_args.num_workers=16"]
+
+
+@app.function(
+    image=image,
+    volumes=VOL,
+    timeout=4 * 60 * 60,  # 4 h — ~20 GB compressed download + extract
+)
+def setup_nsynth(splits: list[str] | None = None):
+    """One-time setup for NSynth: download train+val+test from Magenta GCS,
+    extract into ``data/NSynth/nsynth-{split}/``, build NSynth.{split}.jsonl.
+
+    NSynth is from the Magenta GCS public bucket (NOT m-a-p), so the
+    standard ``_download_marble_datasets`` doesn't cover it. This wraps
+    ``scripts/data/download_nsynth.py``.
+
+    Splits default to all three (train, valid, test) — the script handles
+    the valid→val rename in the output JSONL paths. Pass ``splits=["valid",
+    "test"]`` for a quick eval-only setup (~1.2 GB total, skips the 19 GB
+    train download).
+
+    Disk on volume: ~20 GB compressed archives + ~50 GB extracted WAVs.
+    """
+    _chdir()
+    data_vol.reload()
+    cmd = ["python", "scripts/data/download_nsynth.py", "--data-dir", f"{WORK_DIR}/data"]
+    if splits:
+        cmd += ["--splits", *splits]
+    _run(cmd)
+    data_vol.commit()
+    print("NSynth ready on marble-data:/NSynth/")
+
+
+@app.function(
+    image=base_image,
+    volumes=VOL,
+    timeout=60 * 60,  # 1 h cap — typical warmup of all 3 splits ≈ 5-15 min
+)
+def warmup_nsynth_audio(workers: int = 32):
+    """Pre-fetch every NSynth WAV (train+val+test) into the container's local
+    FS cache. Mirrors warmup_hooktheory_audio_wav for NSynth.
+
+    WAVs are small (~256 KB each at 16 kHz mono 4 s); total pull is ~50 GB
+    across all three splits, ~5-10 min at typical Modal volume bandwidth.
+    """
+    _chdir()
+    data_vol.reload()
+    for d in _NSYNTH_AUDIO_DIRS:
+        if Path(d).exists():
+            _warmup_audio_dir(d, workers=workers)
+        else:
+            print(f"  ! missing {d}; skipping", file=sys.stderr)
+
+
+@app.local_entrypoint()
+def sweep_omarrq_nsynth():
+    """OMARRQ-multifeature-25hz layer sweep on NSynth (24 layers)."""
+    run_sweep.remote(
+        base_config="configs/probe.OMARRQ-multifeature-25hz.NSynth.yaml",
+        num_layers=24,
+        model_tag="OMARRQ-multifeature-25hz",
+        task_tag="NSynth",
+        warmup_audio_dir=_NSYNTH_AUDIO_DIRS[0],  # train is the hot dir
+        cli_overrides=_NSYNTH_CLI_OVERRIDES,
+    )
+
+
+@app.local_entrypoint()
+def sweep_mert95m_nsynth():
+    """MERT-v1-95M layer sweep on NSynth (13 layers)."""
+    run_sweep.remote(
+        base_config="configs/probe.MERT-v1-95M-layers.NSynth.yaml",
+        num_layers=13,
+        model_tag="MERT-v1-95M",
+        task_tag="NSynth",
+        warmup_audio_dir=_NSYNTH_AUDIO_DIRS[0],
+        cli_overrides=_NSYNTH_CLI_OVERRIDES,
+    )
+
+
+@app.local_entrypoint()
+def sweep_mert330m_nsynth():
+    """MERT-v1-330M layer sweep on NSynth (25 layers)."""
+    run_sweep.remote(
+        base_config="configs/probe.MERT-v1-330M-layers.NSynth.yaml",
+        num_layers=25,
+        model_tag="MERT-v1-330M",
+        task_tag="NSynth",
+        warmup_audio_dir=_NSYNTH_AUDIO_DIRS[0],
+        cli_overrides=_NSYNTH_CLI_OVERRIDES,
+    )
+
+
+@app.local_entrypoint()
+def sweep_clamp3_nsynth():
+    """CLaMP3 audio layer sweep on NSynth (13 layers)."""
+    run_sweep.remote(
+        base_config="configs/probe.CLaMP3-layers.NSynth.yaml",
+        num_layers=13,
+        model_tag="CLaMP3",
+        task_tag="NSynth",
+        warmup_audio_dir=_NSYNTH_AUDIO_DIRS[0],
+        cli_overrides=_NSYNTH_CLI_OVERRIDES,
+    )
+
+
 @app.local_entrypoint()
 def run_existing_baselines():
     """
