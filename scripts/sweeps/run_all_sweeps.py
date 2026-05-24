@@ -56,11 +56,12 @@ Speed order (calibrated to OMARRQ × GS = 16 h / 24 layers ≈ 40 min/layer)
   19. OMARRQ  × Chords1217         (24 layers, ~35–50 h — frame-level, 25 Hz)
 
   ── LONG (large dataset, 50K train cap) ───────────────────────────────────
-  20. CLaMP3  × NSynth             (13 layers, ~25–35 h)
+  20. MuQ     × NSynth             (13 layers, ~25–35 h)
   21. MERT    × NSynth             (13 layers, ~25–35 h)
   22. OMARRQ  × NSynth             (24 layers, ~50–70 h)
+  23. CLaMP3  × NSynth             (13 layers, ~25–35 h)
 
-Total wall-time estimate (all 22 sweeps sequential): ~320–460 h ≈ 13–19 days.
+Total wall-time estimate (all 23 sweeps sequential): ~345–495 h ≈ 14–21 days.
 Run with --models MERT to run only MERT sweeps in parallel with ongoing OMARRQ/CLaMP3.
 
 Notes
@@ -452,27 +453,35 @@ SWEEPS: list[SweepDef] = [
     ),
     # ══════════════════════════════════════════════════════════════════════════
     # LONG — NSynth pitch classification (50K train cap, still multi-hour/layer)
+    # Same priority order as HookTheoryMelody: MuQ → MERT → OMARRQ → CLaMP3.
     # ══════════════════════════════════════════════════════════════════════════
     SweepDef(
-        model="CLaMP3",
+        model="MuQ",
         task="NSynth",
-        base_config="configs/probe.CLaMP3-layers.NSynth.yaml",
+        base_config="configs/probe.MuQ-layers.NSynth.yaml",
         num_layers=13,
-        note="Pitch class.   | 88 MIDI   | 50K cap | CLaMP3 13 layers",
+        note="Pitch class.   | 88 MIDI   | 50K cap | MuQ 13 layers + meanall",
     ),
     SweepDef(
         model="MERT-v1-95M",
         task="NSynth",
         base_config="configs/probe.MERT-v1-95M-layers.NSynth.yaml",
         num_layers=13,
-        note="Pitch class.   | 88 MIDI   | 50K cap | MERT 13 layers",
+        note="Pitch class.   | 88 MIDI   | 50K cap | MERT 13 layers + meanall",
     ),
     SweepDef(
         model="OMARRQ-multifeature-25hz",
         task="NSynth",
         base_config="configs/probe.OMARRQ-multifeature-25hz.NSynth.yaml",
         num_layers=24,
-        note="Pitch class.   | 88 MIDI   | 50K cap | OMARRQ 24 layers",
+        note="Pitch class.   | 88 MIDI   | 50K cap | OMARRQ 24 layers + meanall",
+    ),
+    SweepDef(
+        model="CLaMP3",
+        task="NSynth",
+        base_config="configs/probe.CLaMP3-layers.NSynth.yaml",
+        num_layers=13,
+        note="Pitch class.   | 88 MIDI   | 50K cap | CLaMP3 13 layers + meanall",
     ),
     # ══════════════════════════════════════════════════════════════════════════
     # MERT-v1-330M — DECOMMISSIONED 2026-05-16.

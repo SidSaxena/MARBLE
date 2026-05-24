@@ -1,9 +1,13 @@
 seed_everything: 1234
 ckpt_path: null
 
-# NSynth pitch classification — MuQ mean-of-all-layers baseline.
-# Mirrors MERT-v1-95M-meanall.NSynth.yaml structure with MuQ-specific
-# hidden_size (1024) and layer count (12).
+# NSynth pitch classification — MuQ per-layer sweep.
+# Mirrors probe.MERT-v1-95M-layers.NSynth.yaml structure with MuQ-specific
+# hidden_size (1024) and layer count (13 = 1 input + 12 transformer blocks).
+# Train capped at 50K samples (same cap as the MERT/OMARRQ/CLaMP3 NSynth
+# sweeps) to keep wall-clock tractable.
+# The meanall sibling is configs/probe.MuQ-meanall.NSynth.yaml; the sweep
+# runner picks it up automatically via _meanall_config_for.
 
 trainer:
   fast_dev_run: false
@@ -20,7 +24,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.NSynth.MuQ-meanall/checkpoints/"
+        dirpath: "./output/probe.NSynth.MuQ-layers/checkpoints/"
         filename: "best"
         save_top_k: 1
         save_last: true   # always write last.ckpt so a killed run resumes
@@ -39,11 +43,13 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
+      # Same group as the meanall sibling so wandb stitches per-layer +
+      # meanall under one umbrella (matches the HookTheory* convention).
       group: "MuQ / NSynth"
-      tags: ["MuQ", "NSynth", "layer-sweep", "probe", "mean-all"]
+      tags: ["MuQ", "NSynth", "layer-sweep", "probe"]
       job_type: "probe"
-      name: "layer-meanall-fit"
-      save_dir: "./output/probe.NSynth.MuQ-meanall/"
+      name: "MuQ-layers"
+      save_dir: "./output/probe.NSynth.MuQ-layers/"
 
 
 model:
@@ -64,14 +70,13 @@ model:
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          layers: ["0..12"]   # 13 hidden states (1 input + 12 transformer)
-          mode: mean
+          layers: [6]   # sweep replaces this
       - class_path: marble.modules.transforms.TimeAvgPool
 
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
-          in_dim: 1024   # MuQ hidden size (NUM_FEATURES at encoder class level)
+          in_dim: 1024   # MuQ hidden size
           out_dim: 88    # MIDI pitches 21–108 → 88 classes
           hidden_layers: [256]
           activation_fn:
