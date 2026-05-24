@@ -61,6 +61,13 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
         test_ds = instantiate_from_config(self.test_config)
         self.test_dataset = self._wrap(test_ds, "test")
 
+    # prefetch_factor=4: each worker keeps 4 batches queued (vs torch default
+    # 2). On Modal volumes where per-file I/O latency dominates (HookTheory
+    # MP3s ≈ 50-200 ms first-open), a deeper queue hides bursty fetch latency
+    # so the GPU doesn't starve between batches. Cheap memory cost — 4 ×
+    # num_workers × batch_size waveform tensors.
+    _PREFETCH_FACTOR = 4
+
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
@@ -68,7 +75,7 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=2 if self.num_workers > 0 else None,
+            prefetch_factor=self._PREFETCH_FACTOR if self.num_workers > 0 else None,
             persistent_workers=self.num_workers > 0,
         )
 
@@ -79,7 +86,7 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=2 if self.num_workers > 0 else None,
+            prefetch_factor=self._PREFETCH_FACTOR if self.num_workers > 0 else None,
             persistent_workers=self.num_workers > 0,
         )
 
@@ -90,7 +97,7 @@ class BaseDataModule(pl.LightningDataModule, metaclass=ABCMeta):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            prefetch_factor=2 if self.num_workers > 0 else None,
+            prefetch_factor=self._PREFETCH_FACTOR if self.num_workers > 0 else None,
             persistent_workers=self.num_workers > 0,
         )
 

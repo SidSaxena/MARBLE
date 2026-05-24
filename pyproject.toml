@@ -117,6 +117,7 @@ analysis = [
 dev = [
     "ruff>=0.13",
     "pre-commit>=4.0",
+    "pytest>=8.0",
 ]
 
 [tool.setuptools.packages.find]
