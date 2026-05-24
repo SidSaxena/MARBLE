@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-wandb_checkpoint_audit.py
+scripts/maintenance/wandb_checkpoint_audit.py
 
 Cross-references local checkpoint directories against WandB to determine
 which are safe to delete (test phase completed and metrics logged to WandB).
 
-Usage:
-    python wandb_checkpoint_audit.py               # show safe-to-delete list
-    python wandb_checkpoint_audit.py --delete      # actually delete safe ones
-    python wandb_checkpoint_audit.py --encoder MERT-v1-330M  # filter by encoder
+Run from the repo root (paths are cwd-relative — scans ``output/``).
 
-Run from the root of your MARBLE repo.
+Usage:
+    uv run python scripts/maintenance/wandb_checkpoint_audit.py               # show safe-to-delete list
+    uv run python scripts/maintenance/wandb_checkpoint_audit.py --delete      # actually delete safe ones
+    uv run python scripts/maintenance/wandb_checkpoint_audit.py --encoder MERT-v1-330M  # filter by encoder
 """
 
 import argparse
@@ -36,7 +36,12 @@ def parse_probe_dir(d: Path):
     name = d.name
     m = re.match(r"^probe\.(.+)\.(.+)\.layer(\d+)$", name)
     if m:
-        return {"task": m.group(1), "encoder": m.group(2), "layer": int(m.group(3)), "meanall": False}
+        return {
+            "task": m.group(1),
+            "encoder": m.group(2),
+            "layer": int(m.group(3)),
+            "meanall": False,
+        }
     m = re.match(r"^probe\.(.+)\.(.+)-meanall$", name)
     if m:
         return {"task": m.group(1), "encoder": m.group(2), "layer": None, "meanall": True}
@@ -45,7 +50,7 @@ def parse_probe_dir(d: Path):
 
 def has_test_metrics(run) -> bool:
     try:
-        return any(k.startswith("test/") for k in run.summary.keys())
+        return any(k.startswith("test/") for k in run.summary)
     except Exception:
         return False
 
@@ -126,7 +131,9 @@ def main():
         sys.exit(1)
 
     completed_runs = [r for r in all_runs if has_test_metrics(r)]
-    print(f"Total runs: {len(all_runs)}  |  Completed (have test/* metrics): {len(completed_runs)}\n")
+    print(
+        f"Total runs: {len(all_runs)}  |  Completed (have test/* metrics): {len(completed_runs)}\n"
+    )
 
     # ─────────────────────────────────────────────────────────────────────────
     # 3. Cross-reference each local dir against WandB
@@ -138,7 +145,11 @@ def main():
     for entry in probe_dirs:
         layer_name = "layer-meanall-test" if entry["meanall"] else f"layer-{entry['layer']}-test"
         match = next(
-            (r for r in completed_runs if run_matches(r, entry["encoder"], entry["task"], layer_name)),
+            (
+                r
+                for r in completed_runs
+                if run_matches(r, entry["encoder"], entry["task"], layer_name)
+            ),
             None,
         )
         size_mb = dir_size_mb(entry["ckpt_dir"])
@@ -155,7 +166,7 @@ def main():
 
     print("=" * 72)
     print(f"  SAFE TO DELETE  —  {len(safe)} dirs")
-    print(f"  (test completed and logged to WandB)")
+    print("  (test completed and logged to WandB)")
     print("=" * 72)
     total_safe_mb = 0.0
     for e in safe:
@@ -169,10 +180,12 @@ def main():
     print()
     print("=" * 72)
     print(f"  INCOMPLETE / NOT IN WANDB  —  {len(incomplete)} dirs")
-    print(f"  (no matching completed WandB run — do NOT delete)")
+    print("  (no matching completed WandB run — do NOT delete)")
     print("=" * 72)
     for e in incomplete:
-        print(f"  ⚠️   {e['ckpt_dir'].parent.name:<58}  {e['size_mb']:>7.0f} MB  (looking for: '{e['expected_run']}')")
+        print(
+            f"  ⚠️   {e['ckpt_dir'].parent.name:<58}  {e['size_mb']:>7.0f} MB  (looking for: '{e['expected_run']}')"
+        )
 
     print()
 
@@ -183,9 +196,9 @@ def main():
     if not args.delete:
         print("Dry run — nothing deleted.")
         if safe:
-            cmd = "python wandb_checkpoint_audit.py --delete"
+            cmd = "uv run python scripts/maintenance/wandb_checkpoint_audit.py --delete"
             if args.encoder:
-                cmd += f" --encoder \"{args.encoder}\""
+                cmd += f' --encoder "{args.encoder}"'
             print(f"To delete the safe ones: {cmd}")
         return
 

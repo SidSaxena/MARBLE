@@ -1,10 +1,11 @@
 #!/bin/bash
-# cleanup_mert330m.sh
+# scripts/maintenance/cleanup_mert330m.sh
 # Delete checkpoints and embedding cache for MERT-v1-330M while preserving logs
+# Run from the repo root (paths are cwd-relative: ./output/ and ./output/.emb_cache/).
 #
 # Usage:
-#   bash cleanup_mert330m.sh                  # dry-run (show what would be deleted)
-#   bash cleanup_mert330m.sh --apply          # actually delete
+#   bash scripts/maintenance/cleanup_mert330m.sh                  # dry-run (show what would be deleted)
+#   bash scripts/maintenance/cleanup_mert330m.sh --apply          # actually delete
 
 ENCODER_PATTERN="MERT-v1-330M"
 MODE="${1:---dry-run}"
@@ -87,7 +88,7 @@ if [ "$MODE" = "--dry-run" ]; then
   echo "✓ DRY RUN — nothing deleted"
   echo ""
   echo "To actually delete, run:"
-  echo "  bash cleanup_mert330m.sh --apply"
+  echo "  bash scripts/maintenance/cleanup_mert330m.sh --apply"
   echo ""
   exit 0
 fi

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-cleanup_mert330m.py
+scripts/maintenance/cleanup_mert330m.py
 
 Delete MERT-v1-330M checkpoints and embedding cache while preserving logs.
 
+Run from the repo root (paths are cwd-relative: ``output/`` and
+``output/.emb_cache/``).
+
 Usage:
-    python cleanup_mert330m.py              # dry-run (show what would be deleted)
-    python cleanup_mert330m.py --apply      # actually delete
+    uv run python scripts/maintenance/cleanup_mert330m.py              # dry-run (show what would be deleted)
+    uv run python scripts/maintenance/cleanup_mert330m.py --apply      # actually delete
 """
 
 import argparse
@@ -42,8 +45,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python cleanup_mert330m.py              # dry-run
-    python cleanup_mert330m.py --apply      # actually delete
+    uv run python scripts/maintenance/cleanup_mert330m.py              # dry-run
+    uv run python scripts/maintenance/cleanup_mert330m.py --apply      # actually delete
         """,
     )
     parser.add_argument(
@@ -59,7 +62,7 @@ Examples:
     cache_root = output_dir / ".emb_cache"
 
     print("=" * 72)
-    print(f"  MERT-v1-330M Cleanup")
+    print("  MERT-v1-330M Cleanup")
     print("=" * 72)
     print(f"Pattern: {encoder_pattern}")
     print(f"Mode:    {'--apply (DESTRUCTIVE)' if args.apply else 'dry-run'}")
@@ -120,9 +123,7 @@ Examples:
     # Summary
     # ─────────────────────────────────────────────────────────────────────────
 
-    total_size = sum(get_dir_size(d) for d in ckpt_dirs) + sum(
-        get_dir_size(d) for d in cache_dirs
-    )
+    total_size = sum(get_dir_size(d) for d in ckpt_dirs) + sum(get_dir_size(d) for d in cache_dirs)
 
     print()
     print("=" * 72)
@@ -134,7 +135,7 @@ Examples:
         print("✓ DRY RUN — nothing deleted")
         print()
         print("To actually delete, run:")
-        print("  python cleanup_mert330m.py --apply")
+        print("  uv run python scripts/maintenance/cleanup_mert330m.py --apply")
         print()
         return
 
