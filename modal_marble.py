@@ -497,6 +497,7 @@ def _run_meanall_first(
     task_tag: str,
     skip_if_done: bool = True,
     continue_on_failure: bool = False,
+    cli_overrides: list[str] | None = None,
 ) -> bool:
     """Run the mean-of-all-layers baseline before the per-layer sweep.
 
@@ -522,6 +523,7 @@ def _run_meanall_first(
         f"[{model_tag} | {task_tag}]\n{'=' * 60}",
         flush=True,
     )
+    extra = list(cli_overrides or [])
     for stage in ("fit", "test"):
         cmd = [
             "python",
@@ -531,6 +533,7 @@ def _run_meanall_first(
             str(cfg),
             f"--trainer.logger.init_args.name=layer-meanall-{stage}",
             f"--trainer.logger.init_args.job_type={stage}",
+            *extra,
         ]
         if stage == "fit":
             cmd += _resume_args_for_config(cfg)
@@ -1462,7 +1465,12 @@ def setup_bps_motif(max_movements: int | None = None):
         modal.Secret.from_name("wandb-secret"),
     ],
 )
-def run_probe(config: str, skip_if_done: bool = True, warmup_audio_dir: str | None = None):
+def run_probe(
+    config: str,
+    skip_if_done: bool = True,
+    warmup_audio_dir: str | None = None,
+    cli_overrides: list[str] | None = None,
+):
     """
     Fit + test a single MARBLE probe from a YAML config path (relative to WORK_DIR).
     Returns the test output as a string.
@@ -1483,6 +1491,8 @@ def run_probe(config: str, skip_if_done: bool = True, warmup_audio_dir: str | No
     if os.environ.get("WANDB_API_KEY"):
         os.environ.pop("WANDB_MODE", None)  # unset offline flag
 
+    extra = list(cli_overrides or [])
+
     # Quick skip if checkpoint already exists
     if skip_if_done:
         cfg_tag = Path(config).stem
@@ -1490,12 +1500,12 @@ def run_probe(config: str, skip_if_done: bool = True, warmup_audio_dir: str | No
         if (ckpt_dir / "best.ckpt").exists():
             print(f"Checkpoint found at {ckpt_dir}/best.ckpt — skipping fit.")
         else:
-            _run(["python", "cli.py", "fit", "-c", config])
+            _run(["python", "cli.py", "fit", "-c", config, *extra])
     else:
-        _run(["python", "cli.py", "fit", "-c", config])
+        _run(["python", "cli.py", "fit", "-c", config, *extra])
 
     result = subprocess.run(
-        ["python", "cli.py", "test", "-c", config],
+        ["python", "cli.py", "test", "-c", config, *extra],
         capture_output=True,
         text=True,
         cwd=WORK_DIR,
@@ -1532,6 +1542,7 @@ def run_sweep(
     skip_meanall: bool = False,
     continue_on_meanall_failure: bool = False,
     warmup_audio_dir: str | None = None,
+    cli_overrides: list[str] | None = None,
 ):
     """
     Generate per-layer YAML configs and run fit+test for each layer sequentially.
@@ -1561,12 +1572,15 @@ def run_sweep(
     if os.environ.get("WANDB_API_KEY"):
         os.environ.pop("WANDB_MODE", None)
 
+    extra = list(cli_overrides or [])
+
     if not skip_meanall:
         _run_meanall_first(
             base_config,
             model_tag,
             task_tag,
             continue_on_failure=continue_on_meanall_failure,
+            cli_overrides=extra,
         )
         output_vol.commit()
 
@@ -1592,7 +1606,7 @@ def run_sweep(
         ]
 
         # fit — resume from last.ckpt if present (e.g. previous container timed out)
-        fit_cmd = ["python", "cli.py", "fit", "-c", cfg, *fit_overrides]
+        fit_cmd = ["python", "cli.py", "fit", "-c", cfg, *fit_overrides, *extra]
         fit_cmd += _resume_args_for_config(cfg)
         _run(fit_cmd)
         # Fit succeeded → drop last.ckpt; best.ckpt remains for the test stage.
@@ -1600,7 +1614,7 @@ def run_sweep(
 
         # test
         res = subprocess.run(
-            ["python", "cli.py", "test", "-c", cfg, *test_overrides],
+            ["python", "cli.py", "test", "-c", cfg, *test_overrides, *extra],
             capture_output=True,
             text=True,
             cwd=WORK_DIR,
@@ -1646,6 +1660,7 @@ def run_one_layer(
     layer: int,
     retest_only: bool = False,
     warmup_audio_dir: str | None = None,
+    cli_overrides: list[str] | None = None,
 ) -> dict:
     """Run fit+test for a single layer of a sweep — designed to be invoked
     via `.starmap()` N times in parallel by `run_parallel_sweep`.
@@ -1685,16 +1700,17 @@ def run_one_layer(
         "--trainer.logger.init_args.job_type=test",
     ]
 
+    extra = list(cli_overrides or [])
     if not retest_only:
         # Resume from last.ckpt if a previous container died mid-fit before
         # writing the wandb-summary completion marker.
-        fit_cmd = ["python", "cli.py", "fit", "-c", cfg, *name_overrides_fit]
+        fit_cmd = ["python", "cli.py", "fit", "-c", cfg, *name_overrides_fit, *extra]
         fit_cmd += _resume_args_for_config(cfg)
         _run(fit_cmd)
         _delete_last_ckpt(cfg)
 
     res = subprocess.run(
-        ["python", "cli.py", "test", "-c", cfg, *name_overrides_test],
+        ["python", "cli.py", "test", "-c", cfg, *name_overrides_test, *extra],
         capture_output=True,
         text=True,
         cwd=WORK_DIR,
@@ -1722,6 +1738,7 @@ def run_parallel_sweep(
     layers: list[int] | None = None,
     retest_only: bool = False,
     warmup_audio_dir: str | None = None,
+    cli_overrides: list[str] | None = None,
 ) -> list[dict]:
     """Spawn N parallel `run_one_layer` containers via `.starmap()`.
 
@@ -1732,7 +1749,16 @@ def run_parallel_sweep(
     print(f"Spawning {len(targets)} parallel layer jobs for {model_tag} × {task_tag} ...")
 
     args = [
-        (base_config, model_tag, task_tag, num_layers, lyr, retest_only, warmup_audio_dir)
+        (
+            base_config,
+            model_tag,
+            task_tag,
+            num_layers,
+            lyr,
+            retest_only,
+            warmup_audio_dir,
+            cli_overrides,
+        )
         for lyr in targets
     ]
     results = list(run_one_layer.starmap(args))
@@ -1870,9 +1896,15 @@ def sweep_clamp3_emo():
 # These bake in warmup_audio_dir so each container pre-fetches the audio
 # corpus into its local FS cache before training (avoids ~1.2 s/batch
 # stalls on Modal volume opens — see profiler notes in commit history).
+#
+# num_workers override: configs default to 8 (local-safe — workstation CPUs
+# typically have 8-16 cores). Modal A10G/A100 containers expose more
+# threads, so the sweep entrypoints bump num_workers to 16 via CLI override
+# to get the dataloader parallelism we measured the speedup at.
 # ──────────────────────────────────────────────
 
 _HOOKTHEORY_AUDIO = f"{WORK_DIR}/data/HookTheory/audio_wav"
+_HOOKTHEORY_CLI_OVERRIDES = ["--data.init_args.num_workers=16"]
 
 
 @app.local_entrypoint()
@@ -1884,6 +1916,7 @@ def sweep_omarrq_hooktheorymelody():
         model_tag="OMARRQ-multifeature-25hz",
         task_tag="HookTheoryMelody",
         warmup_audio_dir=_HOOKTHEORY_AUDIO,
+        cli_overrides=_HOOKTHEORY_CLI_OVERRIDES,
     )
 
 
@@ -1896,6 +1929,7 @@ def sweep_mert95m_hooktheorymelody():
         model_tag="MERT-v1-95M",
         task_tag="HookTheoryMelody",
         warmup_audio_dir=_HOOKTHEORY_AUDIO,
+        cli_overrides=_HOOKTHEORY_CLI_OVERRIDES,
     )
 
 
@@ -1908,6 +1942,7 @@ def sweep_mert330m_hooktheorymelody():
         model_tag="MERT-v1-330M",
         task_tag="HookTheoryMelody",
         warmup_audio_dir=_HOOKTHEORY_AUDIO,
+        cli_overrides=_HOOKTHEORY_CLI_OVERRIDES,
     )
 
 
@@ -1920,6 +1955,7 @@ def sweep_muq_hooktheorymelody():
         model_tag="MuQ",
         task_tag="HookTheoryMelody",
         warmup_audio_dir=_HOOKTHEORY_AUDIO,
+        cli_overrides=_HOOKTHEORY_CLI_OVERRIDES,
     )
 
 
@@ -1932,6 +1968,7 @@ def sweep_musicfm_hooktheorymelody():
         model_tag="MusicFM",
         task_tag="HookTheoryMelody",
         warmup_audio_dir=_HOOKTHEORY_AUDIO,
+        cli_overrides=_HOOKTHEORY_CLI_OVERRIDES,
     )
 
 
