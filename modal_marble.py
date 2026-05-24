@@ -2090,13 +2090,16 @@ def sweep_musicfm_hooktheorymelody():
 # NSynth — instrument pitch classification (88-way).
 # Source is already WAV (no MP3 → WAV conversion needed).
 # ~289 k train clips, configs subsample to 50 k via max_samples.
-# Audio dir layout: data/NSynth/nsynth-{train,val,test}/audio/<key>.wav
+# Audio dir layout: data/NSynth/nsynth-{train,valid,test}/audio/<key>.wav
+# Note: the on-disk directory for the validation split is ``nsynth-valid``
+# (matches the Magenta GCS archive name); only the MARBLE JSONL is renamed
+# to ``NSynth.val.jsonl`` (download_nsynth.py:193 name_map).
 # (download_nsynth.py downloads + extracts the Magenta GCS archives.)
 # ──────────────────────────────────────────────
 
 _NSYNTH_AUDIO_DIRS = [
     f"{WORK_DIR}/data/NSynth/nsynth-train/audio",
-    f"{WORK_DIR}/data/NSynth/nsynth-val/audio",
+    f"{WORK_DIR}/data/NSynth/nsynth-valid/audio",
     f"{WORK_DIR}/data/NSynth/nsynth-test/audio",
 ]
 _NSYNTH_CLI_OVERRIDES = ["--data.init_args.num_workers=16"]
