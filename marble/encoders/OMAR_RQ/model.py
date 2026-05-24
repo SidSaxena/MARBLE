@@ -154,11 +154,24 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
                 "OMARRQ_Multifeature25hz_Encoder. Only 'freeze' is available."
             )
 
-        # Optional torch.compile wrap. Same capability gate as MERT — Triton +
-        # CUDA required; falls back to eager with a warning otherwise. The
-        # OMAR-RQ upstream forward is a clean pass-through to extract_embeddings
-        # (no Python-side data-dependent control flow), so compile is expected
-        # to work cleanly with both 'default' and 'reduce-overhead' modes.
+        # Optional torch.compile wrap.
+        #
+        # Subtle: OMARRQ's forward calls ``self.model.extract_embeddings(...)``,
+        # NOT ``self.model(x)``. torch.compile wraps the ``__call__`` of the
+        # module it's applied to — wrapping ``self.model`` would leave the
+        # extract_embeddings code path running eager because that path doesn't
+        # go through __call__. Empirically confirmed in a 3-way smoke A/B on
+        # 5060 Ti: wrapping self.model gave 0% speedup AND bit-identical
+        # val/acc_rpa across eager/default/reduce-overhead — the compiled
+        # graph was never invoked.
+        #
+        # Fix: compile ``self.model.net`` (the transformer backbone) instead.
+        # extract_embeddings runs the layers via self.net under the hood, so
+        # compiling the backbone catches the hot path even when the call
+        # entry-point is a method on the parent module.
+        #
+        # Same capability gate as MERT (Triton + CUDA); falls back to eager
+        # on missing prereqs or compile failure.
         if compile_mode is not None:
             skip_reason = None
             try:
@@ -177,10 +190,12 @@ class OMARRQ_Multifeature25hz_Encoder(BaseEncoder):
                 )
             else:
                 try:
-                    self.model = torch.compile(self.model, mode=compile_mode)
+                    # Compile the backbone, NOT self.model — see comment above.
+                    self.model.net = torch.compile(self.model.net, mode=compile_mode)
                     print(
-                        f"[OMARRQ-multifeature-25hz] torch.compile(mode={compile_mode!r}) applied. "
-                        f"First forward will trigger compilation (30-90s typically)."
+                        f"[OMARRQ-multifeature-25hz] torch.compile(mode={compile_mode!r}) applied "
+                        f"to self.model.net (transformer backbone). First forward will trigger "
+                        f"compilation (30-90s typically)."
                     )
                 except Exception as e:  # pragma: no cover — defensive
                     print(
