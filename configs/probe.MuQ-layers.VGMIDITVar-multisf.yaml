@@ -39,6 +39,11 @@ model:
 
     encoder:
       class_path: marble.encoders.MuQ.model.MuQ_Encoder
+      init_args:
+        # torch.compile the frozen encoder forward. 'default' is the
+        # safe mode. 'reduce-overhead' is verified ~2% faster for MuQ
+        # specifically (mind the CUDA Graphs shape sensitivity if you opt in).
+        compile_mode: default
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:

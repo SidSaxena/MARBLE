@@ -37,6 +37,11 @@ model:
       class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
       init_args:
         model_id: "mtg-upf/omar-rq-multifeature-25hz"
+        # torch.compile the frozen encoder forward. 'default' is the
+        # safe mode (no CUDA Graphs). DO NOT switch to 'reduce-overhead'
+        # for OMARRQ — known to error on RoPE einops.repeat due to
+        # CUDA Graphs storage aliasing.
+        compile_mode: default
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
