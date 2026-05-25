@@ -207,7 +207,9 @@ def main():
 
         out_path = out_dir / f"sweep.{args.model_tag}.{args.task_tag}.layer{layer}.yaml"
         out_path.write_text(text)
-        print(f"  layer {layer:2d} → {out_path}")
+        # ASCII arrow (not Unicode →) so the print works on Windows cp1252
+        # without requiring PYTHONIOENCODING=utf-8.
+        print(f"  layer {layer:2d} -> {out_path}")
 
     print(f"\nGenerated {len(layers)} configs in {out_dir}/")
 

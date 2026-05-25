@@ -131,13 +131,23 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         self._test_embeddings: list[torch.Tensor] = []
         self._test_work_ids: list[torch.Tensor] = []
         self._test_paths: list[str] = []
+        # Per-condition metadata for cross-condition MAP (cross-instrument
+        # for VGMIDITVar-leitmotif, cross-soundfont for VGMIDITVar-multisf).
+        # Stays empty for 4-tuple datamodules (Covers80, SHS100K) — the
+        # per-condition log block is gated on the list being non-empty.
+        self._test_conditions: list[torch.Tensor] = []
 
     def test_step(self, batch, batch_idx):
-        # batch is either the legacy 3-tuple (waveform, work_ids, paths)
-        # or the new 4-tuple (..., clip_ids). The retrieval datamodules
-        # in this repo now always emit the 4-tuple; older external
-        # datamodules still work via the unpack fallback.
-        if len(batch) == 4:
+        # batch is one of:
+        #   3-tuple (waveform, work_ids, paths)             — legacy
+        #   4-tuple (..., clip_ids)                         — Covers80, SHS100K
+        #   5-tuple (..., clip_ids, conditions)             — VGMIDITVar variants
+        # ``conditions`` carries gm_program (leitmotif) OR soundfont_id
+        # (multisf) OR -1 (base VGMIDITVar). See VGMIDITVar/datamodule.py.
+        conditions = None
+        if len(batch) == 5:
+            x, work_ids, paths, clip_ids, conditions = batch
+        elif len(batch) == 4:
             x, work_ids, paths, clip_ids = batch
         else:
             x, work_ids, paths = batch
@@ -148,27 +158,46 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             work_ids.cpu() if isinstance(work_ids, torch.Tensor) else torch.tensor(work_ids)
         )
         self._test_paths.extend(paths)
+        if conditions is not None:
+            self._test_conditions.append(
+                conditions.cpu()
+                if isinstance(conditions, torch.Tensor)
+                else torch.tensor(conditions)
+            )
 
     def on_test_epoch_end(self) -> None:
         all_embs = torch.cat(self._test_embeddings)  # (N_clips, H)
         all_work_ids = torch.cat(self._test_work_ids)  # (N_clips,)
         all_paths = self._test_paths
 
+        # Conditions are per-clip; aggregate to per-file by first-seen
+        # (every clip from a single file shares the same condition).
+        has_conditions = bool(self._test_conditions)
+        all_conditions = torch.cat(self._test_conditions).tolist() if has_conditions else None
+
         # ── per-file mean-pool (aggregates clips from the same track) ────────
         path2work: dict[str, int] = {}
         path2embs: dict[str, list] = {}
-        for emb, wid, path in zip(all_embs, all_work_ids.tolist(), all_paths, strict=True):
+        path2cond: dict[str, int] = {}
+        for idx, (emb, wid, path) in enumerate(
+            zip(all_embs, all_work_ids.tolist(), all_paths, strict=True)
+        ):
             path2work.setdefault(path, wid)
             path2embs.setdefault(path, []).append(emb)
+            if has_conditions:
+                path2cond.setdefault(path, all_conditions[idx])
 
         file_embs: list[torch.Tensor] = []
         file_work_ids: list[int] = []
+        file_conditions: list[int] = []
         for path, embs_list in path2embs.items():
             stacked = torch.stack(embs_list)  # (n_clips, H)
             mean_emb = stacked.mean(0)
             mean_emb = F.normalize(mean_emb, dim=-1)  # re-normalise
             file_embs.append(mean_emb)
             file_work_ids.append(path2work[path])
+            if has_conditions:
+                file_conditions.append(path2cond[path])
 
         embs = torch.stack(file_embs)  # (N, H)
         work_ids = torch.tensor(file_work_ids)  # (N,)
@@ -210,6 +239,94 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         self.log("test/map@1_centered", self._map_at_k(sim_c, work_ids, k=1), rank_zero_only=True)
         self.log("test/mrr", self._mrr(sim, work_ids), rank_zero_only=True)
         self.log("test/mrr_centered", self._mrr(sim_c, work_ids), rank_zero_only=True)
+
+        # ── Recall / Hit Rate / median rank / R-Precision ────────────────────
+        # Headline metrics for review-budget-K-aware retrieval evaluation
+        # (leitmotif workflow). See marble/utils/retrieval_metrics.py and
+        # docs/benchmarking_methodology.md for rationale. Both raw and
+        # centered variants logged. K values that exceed corpus size are
+        # silently skipped — small smoke runs don't pollute the log with
+        # NaN keys.
+        from marble.utils.retrieval_metrics import (
+            hit_rate_at_k,
+            median_rank_first_hit,
+            r_precision,
+            recall_at_k,
+        )
+
+        K_RECALL = [k for k in (1, 5, 10, 50, 100) if k < N]
+        K_HIT = [k for k in (1, 5, 10) if k < N]
+        for suffix, S in (("", sim), ("_centered", sim_c)):
+            for k in K_RECALL:
+                self.log(
+                    f"test/recall@{k}{suffix}", recall_at_k(S, work_ids, k), rank_zero_only=True
+                )
+            for k in K_HIT:
+                self.log(
+                    f"test/hit_rate@{k}{suffix}", hit_rate_at_k(S, work_ids, k), rank_zero_only=True
+                )
+            self.log(
+                f"test/median_rank{suffix}", median_rank_first_hit(S, work_ids), rank_zero_only=True
+            )
+            self.log(f"test/r_precision{suffix}", r_precision(S, work_ids), rank_zero_only=True)
+
+        # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
+        # Only meaningful when the dataset carries a per-item condition
+        # field (VGMIDITVar-leitmotif: gm_program; VGMIDITVar-multisf:
+        # soundfont_id). Covers80 / SHS100K skip silently because their
+        # datamodules emit 4-tuples → has_conditions=False.
+        #
+        # Cross-condition MAP (off-diagonal mean of the (q,t) grid) is THE
+        # leitmotif-relevant metric per docs/leitmotif_findings.md: it
+        # measures retrieval performance specifically when the relevant
+        # peer is in a different timbre/instrument than the query, which
+        # is the actual operational scenario for cross-orchestration
+        # leitmotif retrieval.
+        if has_conditions and any(c != -1 for c in file_conditions):
+            from marble.utils.retrieval_metrics import compute_perpair_map
+
+            unique_conds = sorted({c for c in file_conditions if c != -1})
+            same_aps: list[float] = []
+            cross_aps: list[float] = []
+            # Use the centered similarity matrix for cross-condition MAP —
+            # consistent with offline analysis in
+            # scripts/analysis/vgmiditvar_leitmotif_breakdown.py, which
+            # subtracts the corpus mean before per-pair MAP to remove
+            # cone-effect anisotropy (relevant for OMARRQ esp.).
+            for q in unique_conds:
+                for t in unique_conds:
+                    ap, n = compute_perpair_map(sim_c, file_work_ids, file_conditions, q, t)
+                    if n == 0:
+                        continue
+                    (same_aps if q == t else cross_aps).append(ap)
+            if same_aps:
+                same_mean = float(sum(same_aps) / len(same_aps))
+                self.log("test/map_same_condition", same_mean, rank_zero_only=True)
+                print(f"[CoverRetrieval] MAP same-condition  = {same_mean:.4f}")
+            if cross_aps:
+                cross_mean = float(sum(cross_aps) / len(cross_aps))
+                self.log("test/map_cross_condition", cross_mean, rank_zero_only=True)
+                print(f"[CoverRetrieval] MAP cross-condition = {cross_mean:.4f}")
+            if same_aps and cross_aps:
+                gap = float(sum(same_aps) / len(same_aps) - sum(cross_aps) / len(cross_aps))
+                self.log("test/condition_gap", gap, rank_zero_only=True)
+
+        # ── Anisotropy diagnostics ───────────────────────────────────────────
+        # Cone-effect / rank-collapse measurements on the per-file embedding
+        # matrix (pre-centering, since centering itself is what we're
+        # diagnosing). High mean_vec_norm → ``map_centered`` is the trustworthy
+        # number for this encoder. See marble/utils/retrieval_metrics.py.
+        from marble.utils.retrieval_metrics import anisotropy_metrics
+
+        ani = anisotropy_metrics(embs)
+        for key, val in ani.items():
+            self.log(f"test/anisotropy/{key}", float(val), rank_zero_only=True)
+        print(
+            f"[CoverRetrieval] Anisotropy: mean_vec_norm={ani['mean_vec_norm']:.3f}  "
+            f"avg_pair_cos={ani['avg_pair_cos']:.3f}  "
+            f"top1_sv={ani['top1_sv_share']:.3f}  "
+            f"eff_rank={ani['effective_rank']:.1f}"
+        )
 
     @staticmethod
     def _compute_map(sim: torch.Tensor, work_ids: torch.Tensor) -> float:

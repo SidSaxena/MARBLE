@@ -149,6 +149,18 @@ class _VGMIDITVarAudioBase(Dataset):
         path = info["audio_path"]
         work_id = int(info["work_id"])
         clip_id = make_clip_id(path, slice_idx)
+        # ``condition`` carries per-item metadata for cross-condition MAP
+        # in CoverRetrievalTask: gm_program (VGMIDITVar-leitmotif) OR
+        # soundfont_id (VGMIDITVar-multisf) OR -1 sentinel (base
+        # VGMIDITVar — no cross-condition info available; probe skips
+        # the per-condition MAP block).
+        # Robust to explicit JSON null (``dict.get(key, default)`` returns
+        # None when key is *present* with null value — NOT the default):
+        # walk the fallback chain manually so int(None) doesn't crash.
+        _cond_raw = info.get("gm_program")
+        if _cond_raw is None:
+            _cond_raw = info.get("soundfont_id")
+        condition = int(_cond_raw) if _cond_raw is not None else -1
 
         cache_check = getattr(self, "cache_check_fn", None)
         if cache_check is not None and cache_check(clip_id):
@@ -156,7 +168,7 @@ class _VGMIDITVarAudioBase(Dataset):
             # ignores ``x`` on cache hits and uses the cached (L, H) tensor.
             target_len = int(self.clip_seconds * self.sample_rate)
             waveform = torch.zeros(self.channels, target_len)
-            return waveform, work_id, path, clip_id
+            return waveform, work_id, path, clip_id, condition
 
         offset = slice_idx * orig_clip_frames
         waveform, _ = torchaudio.load(
@@ -199,7 +211,7 @@ class _VGMIDITVarAudioBase(Dataset):
         elif self.clip_len_target < T:
             waveform = waveform[:, : self.clip_len_target]
 
-        return waveform, work_id, path, clip_id
+        return waveform, work_id, path, clip_id, condition
 
 
 class VGMIDITVarAudioAll(_VGMIDITVarAudioBase):

@@ -230,6 +230,26 @@ def _pick_soundfont(stem: str, soundfonts: list[Path]) -> Path:
     return soundfonts[int(md5(stem.encode("utf-8")).hexdigest()[:8], 16) % len(soundfonts)]
 
 
+def _stable_soundfont_id(sf_path: Path) -> int:
+    """Order-independent deterministic int ID for a soundfont.
+
+    Hashes the file STEM (basename without extension) so the same
+    SF gets the same int across runs regardless of:
+      - Where in the --soundfont CLI list it appeared
+      - Which directory the .sf2 file lives in
+      - Whether you pass --soundfont X Y or --soundfont Y X
+
+    Required for ``--skip-render`` JSONL regeneration: if the user
+    reordered the SF list between the original render and the JSONL
+    rewrite, a positional index would silently mismatch the rendered
+    audio's actual SF and corrupt cross-soundfont MAP labels. A
+    content-based hash is stable across such reorderings.
+
+    Returns a 32-bit unsigned int (md5[:8] hex → int).
+    """
+    return int(md5(sf_path.stem.encode("utf-8")).hexdigest()[:8], 16)
+
+
 # ── metadata via ffprobe ─────────────────────────────────────────────────────
 
 
@@ -304,8 +324,23 @@ def _process_one(
         return None
 
     audio_path = audio_dir / f"{midi_path.stem}.wav"
-    if not skip_render:
+    # Determine soundfont up front so the JSONL record can carry a stable
+    # identifier (used by CoverRetrievalTask for cross-soundfont MAP on the
+    # multisf variant). Even with --skip-render we know which SF was picked
+    # because _pick_soundfont is a deterministic hash on the file stem.
+    # Both names are initialised unconditionally to avoid UnboundLocalError
+    # when soundfonts=[] reaches the render branch.
+    sf: Path | None = None
+    sf_id: int | None = None
+    if soundfonts:
         sf = _pick_soundfont(midi_path.stem, soundfonts)
+        # Content-based hash, NOT positional index — survives reordering of
+        # --soundfont CLI args between the original render and a later
+        # --skip-render JSONL regen. See _stable_soundfont_id docstring.
+        sf_id = _stable_soundfont_id(sf)
+    if not skip_render:
+        if sf is None:  # no soundfonts configured (shouldn't happen in render mode)
+            return None
         ok = _render_midi(midi_path, audio_path, sf)
         if not ok:
             return None
@@ -337,6 +372,11 @@ def _process_one(
         # Mirror the rewriter's cycling behaviour: idx ≥ len(schedule) cycles
         # modulo len(schedule).
         record["gm_program"] = instrument_schedule[idx % len(instrument_schedule)]
+    # Only write soundfont_id in true multi-SF mode (where it's a
+    # meaningful per-item axis). Single-SF datasets get no field —
+    # CoverRetrievalTask's per-condition block then skips silently.
+    if sf_id is not None and len(soundfonts) > 1:
+        record["soundfont_id"] = sf_id
     return record
 
 
