@@ -709,6 +709,15 @@ def main():
         "flag only when you have a specific reason to believe the failure is "
         "meanall-specific.",
     )
+    parser.add_argument(
+        "--extra-tag",
+        default=None,
+        help="Append a wandb tag to every per-layer test (and meanall) run "
+        "in this sweep. Used to mark backfill runs (e.g. --extra-tag "
+        "backfill-recall) so the dashboard can filter / group them apart "
+        "from the original layer-N-test runs. Stacks with the tags in the "
+        "base config — the new tag is appended, not replacing.",
+    )
     args = parser.parse_args()
 
     if args.concurrency < 1:
@@ -768,6 +777,12 @@ def main():
         common_overrides.append(f"--trainer.precision={precision_override}")
     if num_workers_override is not None:
         common_overrides.append(f"--data.init_args.num_workers={num_workers_override}")
+    if args.extra_tag:
+        # Lightning CLI accepts list-typed overrides via --foo+=value (the
+        # `+=` operator appends to the existing list rather than replacing
+        # it). The config's tags list is preserved; the extra tag is
+        # appended. Used by the backfill orchestrator to mark re-runs.
+        common_overrides.append(f"--trainer.logger.init_args.tags+={args.extra_tag}")
 
     # ── 2b. Meanall baseline (runs FIRST so you get an early reference) ─────
     if not args.skip_meanall:
