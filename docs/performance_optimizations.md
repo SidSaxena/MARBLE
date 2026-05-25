@@ -65,7 +65,7 @@ Tasks listed by what optimisations affect their throughput when run on Modal.
 | Script | Purpose |
 |---|---|
 | `cache_audio_info_in_jsonl.py` | Pre-populate `num_samples`/`sample_rate` per record so datamodule init doesn't hit `torchaudio.info()` per-file |
-| `convert_audio_to_wav.py` | ffmpeg-driven MP3→WAV converter (24 kHz mono int16). Supports `--from-jsonl` for smoke subsets |
+| `convert_audio_format.py` | Universal ffmpeg-driven audio format converter (any→wav/flac/mp3/ogg, optional resample/downmix). Supports `--from-jsonl` for smoke subsets and `--jsonl` rewriting |
 | `rewrite_jsonl_audio_paths.py` | Swap `audio_path` strings in JSONLs (e.g. `.mp3`→`.wav`, dir swap). Used for HookTheoryKey/Structure WAV migration |
 | `build_smoke_jsonl.py` | Deterministic first-N record JSONL subsetter |
 | `download_nsynth.py` | Magenta GCS NSynth download + JSONL build (not m-a-p) |

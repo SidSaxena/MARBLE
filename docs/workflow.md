@@ -68,7 +68,10 @@ uv run python scripts/data/download_shs100k.py --browser firefox
 
 # Convert to FLAC (recommended on Mac/Windows where torchaudio's ffmpeg
 # backend may be missing — libsndfile handles FLAC natively)
-uv run python scripts/data/convert_shs100k_to_flac.py
+uv run python scripts/data/convert_audio_format.py \
+    --src data/SHS100K/audio --in-place \
+    --input-ext .m4a --to flac \
+    --jsonl data/SHS100K/SHS100K.test.jsonl
 ```
 
 See [data/shs100k.md](data/shs100k.md) for details on the FLAC

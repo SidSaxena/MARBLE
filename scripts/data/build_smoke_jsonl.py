@@ -24,7 +24,7 @@ Properties
 - **No schema munging**: each line is copied byte-for-byte (after the
   initial whitespace strip), so the smoke JSONL has the same record
   structure as the parent and works with every downstream consumer
-  (datamodule, cache_audio_info_in_jsonl.py, convert_audio_to_wav.py).
+  (datamodule, cache_audio_info_in_jsonl.py, convert_audio_format.py).
 
 Usage
 ─────

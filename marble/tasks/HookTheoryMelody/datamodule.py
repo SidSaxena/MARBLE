@@ -49,7 +49,7 @@ class _HookTheoryMelodyDataset(Dataset):
         self.min_clip_ratio = min_clip_ratio
         # Filename extension for audio lookup. Default ".mp3" matches the raw
         # m-a-p/HookTheory dump; set to ".wav" after running
-        # scripts/data/convert_audio_to_wav.py to skip MP3 decode entirely.
+        # scripts/data/convert_audio_format.py (--to wav) to skip MP3 decode entirely.
         self.audio_ext = audio_ext if audio_ext.startswith(".") else f".{audio_ext}"
         self.precompute_labels = precompute_labels
 
