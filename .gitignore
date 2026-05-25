@@ -439,3 +439,4 @@ configs/sweeps/
 # Local pre-commit / ruff caches
 .ruff_cache/
 .pre-commit-cache/
+.claude/

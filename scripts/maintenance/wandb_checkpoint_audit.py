@@ -7,10 +7,27 @@ which are safe to delete (test phase completed and metrics logged to WandB).
 
 Run from the repo root (paths are cwd-relative — scans ``output/``).
 
+Filters (all substring matches, case-insensitive, AND-combined):
+    --encoder <s>   substring of the encoder slug (e.g. ``MuQ``, ``MERT-v1-95M``)
+    --task <s>      substring of the task slug    (e.g. ``Covers80``, ``VGMIDITVar``)
+
 Usage:
-    uv run python scripts/maintenance/wandb_checkpoint_audit.py               # show safe-to-delete list
-    uv run python scripts/maintenance/wandb_checkpoint_audit.py --delete      # actually delete safe ones
-    uv run python scripts/maintenance/wandb_checkpoint_audit.py --encoder MERT-v1-330M  # filter by encoder
+    # Audit everything (dry-run with totals):
+    uv run python scripts/maintenance/wandb_checkpoint_audit.py
+
+    # Delete safe checkpoints for one specific (encoder, task) pair:
+    uv run python scripts/maintenance/wandb_checkpoint_audit.py \\
+        --encoder MERT-v1-330M --task SHS100K --delete
+
+    # Filter to all MERT runs across all tasks:
+    uv run python scripts/maintenance/wandb_checkpoint_audit.py --encoder MERT
+
+    # Group the summary by (encoder, task) instead of listing every dir:
+    uv run python scripts/maintenance/wandb_checkpoint_audit.py --by-pair
+
+The ``--delete`` flag is opt-in; without it the script is a dry-run.
+``--by-pair`` is a presentation toggle (compact summary by encoder×task
+totals), independent of ``--delete``.
 """
 
 import argparse
@@ -85,7 +102,26 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--delete", action="store_true", help="Actually delete safe checkpoints")
-    parser.add_argument("--encoder", default=None, help="Only check this encoder (substring match)")
+    parser.add_argument(
+        "--encoder",
+        default=None,
+        help="Filter to this encoder (case-insensitive substring match on the "
+        "encoder slug parsed from the output dir name). Combines with --task "
+        "via AND.",
+    )
+    parser.add_argument(
+        "--task",
+        default=None,
+        help="Filter to this task (case-insensitive substring match on the "
+        "task slug parsed from the output dir name, e.g. 'Covers80', "
+        "'VGMIDITVar'). Combines with --encoder via AND.",
+    )
+    parser.add_argument(
+        "--by-pair",
+        action="store_true",
+        help="Print a compact (encoder × task) summary table instead of "
+        "listing every directory. Useful when scoping a bulk cleanup.",
+    )
     parser.add_argument("--project", default="marble", help="WandB project name (default: marble)")
     args = parser.parse_args()
 
@@ -104,7 +140,11 @@ def main():
         parsed = parse_probe_dir(ckpt_dir.parent)
         if parsed is None:
             continue
+        # AND-combined filters: a dir is included only if ALL active filters
+        # accept it. ``None`` means "no filter".
         if args.encoder and args.encoder.lower() not in parsed["encoder"].lower():
+            continue
+        if args.task and args.task.lower() not in parsed["task"].lower():
             continue
         parsed["ckpt_dir"] = ckpt_dir
         probe_dirs.append(parsed)
@@ -164,30 +204,59 @@ def main():
     # 4. Report
     # ─────────────────────────────────────────────────────────────────────────
 
-    print("=" * 72)
-    print(f"  SAFE TO DELETE  —  {len(safe)} dirs")
-    print("  (test completed and logged to WandB)")
-    print("=" * 72)
-    total_safe_mb = 0.0
-    for e in safe:
-        print(f"  ✅  {e['ckpt_dir'].parent.name:<58}  {e['size_mb']:>7.0f} MB")
-        total_safe_mb += e["size_mb"]
-    if safe:
-        print(f"\n  Recoverable: {total_safe_mb / 1024:.2f} GB")
+    if args.by_pair:
+        # Group safe + incomplete by (encoder, task) tuple and print
+        # totals only. Use case: "what's the size + completion split per
+        # encoder × task before I decide what to filter on?"
+        from collections import defaultdict
+
+        pair_stats = defaultdict(lambda: {"safe_n": 0, "safe_mb": 0.0, "inc_n": 0, "inc_mb": 0.0})
+        for e in safe:
+            key = (e["encoder"], e["task"])
+            pair_stats[key]["safe_n"] += 1
+            pair_stats[key]["safe_mb"] += e["size_mb"]
+        for e in incomplete:
+            key = (e["encoder"], e["task"])
+            pair_stats[key]["inc_n"] += 1
+            pair_stats[key]["inc_mb"] += e["size_mb"]
+
+        print("=" * 84)
+        print(f"  {'Encoder':<28}  {'Task':<22}  {'Safe':>10}  {'Incomplete':>12}")
+        print("=" * 84)
+        total_safe_mb = 0.0
+        for (encoder, task), s in sorted(pair_stats.items()):
+            safe_str = f"{s['safe_n']:>2} ({s['safe_mb'] / 1024:.2f}G)"
+            inc_str = f"{s['inc_n']:>2} ({s['inc_mb'] / 1024:.2f}G)" if s["inc_n"] else "—"
+            print(f"  {encoder:<28}  {task:<22}  {safe_str:>10}  {inc_str:>12}")
+            total_safe_mb += s["safe_mb"]
+        print("=" * 84)
+        print(f"  Total recoverable across all pairs: {total_safe_mb / 1024:.2f} GB")
+        print()
     else:
-        print("  (none)")
+        print("=" * 72)
+        print(f"  SAFE TO DELETE  —  {len(safe)} dirs")
+        print("  (test completed and logged to WandB)")
+        print("=" * 72)
+        total_safe_mb = 0.0
+        for e in safe:
+            print(f"  ✅  {e['ckpt_dir'].parent.name:<58}  {e['size_mb']:>7.0f} MB")
+            total_safe_mb += e["size_mb"]
+        if safe:
+            print(f"\n  Recoverable: {total_safe_mb / 1024:.2f} GB")
+        else:
+            print("  (none)")
 
-    print()
-    print("=" * 72)
-    print(f"  INCOMPLETE / NOT IN WANDB  —  {len(incomplete)} dirs")
-    print("  (no matching completed WandB run — do NOT delete)")
-    print("=" * 72)
-    for e in incomplete:
-        print(
-            f"  ⚠️   {e['ckpt_dir'].parent.name:<58}  {e['size_mb']:>7.0f} MB  (looking for: '{e['expected_run']}')"
-        )
+        print()
+        print("=" * 72)
+        print(f"  INCOMPLETE / NOT IN WANDB  —  {len(incomplete)} dirs")
+        print("  (no matching completed WandB run — do NOT delete)")
+        print("=" * 72)
+        for e in incomplete:
+            print(
+                f"  ⚠️   {e['ckpt_dir'].parent.name:<58}  {e['size_mb']:>7.0f} MB  (looking for: '{e['expected_run']}')"
+            )
 
-    print()
+        print()
 
     # ─────────────────────────────────────────────────────────────────────────
     # 5. Delete (if --delete passed)
@@ -199,6 +268,8 @@ def main():
             cmd = "uv run python scripts/maintenance/wandb_checkpoint_audit.py --delete"
             if args.encoder:
                 cmd += f' --encoder "{args.encoder}"'
+            if args.task:
+                cmd += f' --task "{args.task}"'
             print(f"To delete the safe ones: {cmd}")
         return
 
