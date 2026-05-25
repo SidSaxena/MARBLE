@@ -81,6 +81,13 @@ atomically (via ``<jsonl>.tmp``). Other fields and records without a
 matching extension are passed through unchanged. Uses
 ``marble.utils.path_compat.load_jsonl`` so Windows-generated JSONLs
 with backslash paths are normalised on the read side.
+
+ONLY ``audio_path`` is rewritten — cached metadata fields
+(``sample_rate``, ``num_samples``, ``duration``, ``channels``) are NOT
+refreshed. If your JSONL carries those fields (HookTheory, NSynth,
+VGMIDITVar, …) and you've changed sample rate / channels / bit depth
+during conversion, re-run ``scripts/data/cache_audio_info_in_jsonl.py
+--force`` afterwards.
 """
 
 from __future__ import annotations
@@ -130,6 +137,13 @@ def _build_ffmpeg_cmd(
         "-y",  # overwrite (we'll have already checked dst doesn't exist)
         "-i",
         str(src),
+        # Drop any non-audio streams (SHS100K m4a often carries an album-art
+        # video track; without -vn ffmpeg complains it can't write video to
+        # an audio-only container). No-op on streams without video.
+        "-vn",
+        # Strip source metadata for deterministic, smaller outputs.
+        "-map_metadata",
+        "-1",
     ]
     # Optional resample / downmix — apply BEFORE codec flags so ffmpeg
     # encodes the resampled stream.
