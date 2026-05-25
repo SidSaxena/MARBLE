@@ -572,14 +572,24 @@ def _run_one_layer(
             _delete_last_ckpt(cfg)
 
         # ── Test ─────────────────────────────────────────────────────────────
+        # When --extra-tag is set (e.g. "backfill-recall"), suffix the wandb
+        # run name AND the job_type so the run is identifiable on the
+        # dashboard. Filter via name regex (e.g. "layer-.+-test-backfill-recall")
+        # or by job_type ("test-backfill-recall").
+        extra_tag = getattr(args, "extra_tag", None)
+        test_name = f"layer-{layer}-test"
+        test_job_type = "test"
+        if extra_tag:
+            test_name = f"{test_name}-{extra_tag}"
+            test_job_type = f"test-{extra_tag}"
         test_cmd = [
             PYTHON,
             "cli.py",
             "test",
             "-c",
             cfg,
-            f"--trainer.logger.init_args.name=layer-{layer}-test",
-            "--trainer.logger.init_args.job_type=test",
+            f"--trainer.logger.init_args.name={test_name}",
+            f"--trainer.logger.init_args.job_type={test_job_type}",
         ] + common_overrides
 
         if stream_fit:
@@ -786,12 +796,13 @@ def main():
         common_overrides.append(f"--trainer.precision={precision_override}")
     if num_workers_override is not None:
         common_overrides.append(f"--data.init_args.num_workers={num_workers_override}")
-    if args.extra_tag:
-        # Lightning CLI accepts list-typed overrides via --foo+=value (the
-        # `+=` operator appends to the existing list rather than replacing
-        # it). The config's tags list is preserved; the extra tag is
-        # appended. Used by the backfill orchestrator to mark re-runs.
-        common_overrides.append(f"--trainer.logger.init_args.tags+={args.extra_tag}")
+    # NB: ``args.extra_tag`` doesn't apply via --trainer.logger.init_args.tags
+    # — Lightning CLI's list-append syntax (+=) silently no-ops on at least
+    # some lightning versions, leaving config tags unchanged. Instead we
+    # plumb extra_tag through to (a) the wandb run NAME suffix (filterable
+    # by name regex on the dashboard) and (b) the wandb job_type (filterable
+    # natively). See _run_meanall_first + the test_cmd construction below
+    # for the actual injection.
 
     # ── 2b. Meanall baseline (runs FIRST so you get an early reference) ─────
     if not args.skip_meanall:
