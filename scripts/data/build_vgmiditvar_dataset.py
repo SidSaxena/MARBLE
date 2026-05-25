@@ -85,9 +85,17 @@ log = logging.getLogger(__name__)
 #   POP909-TVar:  052_A_0.mid                   piece=052, section=A, idx=0
 #   VGMIDI-TVar:  e0_real_Other games_NES_Monster Party_Title Screen_A_1.mid
 #                 piece="e0_real_Other games_NES_Monster Party_Title Screen", section=A, idx=1
-# The trailing  _<section>_<idx>.mid  is what identifies the variation; everything
-# before that (including underscores, spaces, slashes) is the piece identifier.
-_FILENAME_RE = re.compile(r"^(?P<piece>.+)_(?P<section>[A-Z]+)_(?P<idx>\d+)\.mid$")
+#   VGMIDITVar-timbre (cross-product):
+#                  052_A_0_p48.mid               piece=052, section=A, idx=0, program=48
+# The trailing  _<section>_<idx>(_p<program>)?.mid  is what identifies the
+# variation. The optional `_p<program>` suffix is the cross-product extension —
+# when present, the program is written to the JSONL's `gm_program` field; when
+# absent, the program is determined by other means (--instrument-map JSON
+# loaded sidecar, or omitted entirely for the single-SF baseline variant).
+# Everything before the structural tail is the piece identifier.
+_FILENAME_RE = re.compile(
+    r"^(?P<piece>.+)_(?P<section>[A-Z]+)_(?P<idx>\d+)(?:_p(?P<program>\d+))?\.mid$"
+)
 
 
 # ── MIDI extraction ──────────────────────────────────────────────────────────
@@ -163,15 +171,26 @@ def _extract_midi_zip(zip_path: Path, dest: Path) -> dict[str, list[Path]]:
 
 
 def _parse_filename(stem: str) -> dict | None:
-    """Parse  '052_A_0'  →  {'piece': '052', 'section': 'A', 'idx': 0}."""
+    """Parse  '052_A_0'  →  {'piece': '052', 'section': 'A', 'idx': 0}.
+
+    Cross-product timbre stems (with ``_p<program>`` suffix) yield an
+    additional ``program`` key:
+      '052_A_0_p48' →  {'piece': '052', 'section': 'A', 'idx': 0, 'program': 48}
+
+    The ``program`` key is None (not in dict) on stems without a suffix.
+    """
     m = _FILENAME_RE.match(stem + ".mid")
     if not m:
         return None
-    return {
+    out = {
         "piece": m.group("piece"),
         "section": m.group("section"),
         "idx": int(m.group("idx")),
     }
+    prog = m.group("program")
+    if prog is not None:
+        out["program"] = int(prog)
+    return out
 
 
 def _work_id_for(piece: str, section: str) -> int:
@@ -367,7 +386,16 @@ def _process_one(
         "channels": channels,
         "duration": round(n_samples / sr, 3),
     }
-    if instrument_schedule:
+    # gm_program selection priority:
+    #   1. Filename-encoded program (e.g. ``foo_A_0_p48.mid``) — used by
+    #      the cross-product timbre variant where each (MIDI, program) pair
+    #      is its own file. This is the most explicit + reliable source.
+    #   2. --instrument-map JSON via ``instrument_schedule`` — legacy
+    #      leitmotif variant, program inferred from variation idx.
+    #   3. Neither → no ``gm_program`` field (single-SF baseline).
+    if "program" in parsed:
+        record["gm_program"] = int(parsed["program"])
+    elif instrument_schedule:
         idx = parsed["idx"]
         # Mirror the rewriter's cycling behaviour: idx ≥ len(schedule) cycles
         # modulo len(schedule).

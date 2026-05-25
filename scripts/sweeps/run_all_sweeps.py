@@ -624,58 +624,17 @@ SWEEPS: list[SweepDef] = [
     #     note="Cover retrieval | MAP | zero-shot | 80 songs | MusicFM 13 layers",
     # ),
     # ══════════════════════════════════════════════════════════════════════════
-    # VGMIDI-TVar  ·  MULTI-SOUNDFONT variant
-    # Same MIDIs, but rendered with rotating {FluidR3_GM, Shan SGM-Pro 14, ...}
-    # SoundFonts per piece so theme/variation pairs span multiple timbres.
-    # Tests whether the encoder's theme-variation invariance survives genuine
-    # timbral variation (the single-SF VGMIDITVar baseline may overstate it).
-    # Requires `data/VGMIDITVar-multisf/` to exist — re-run the renderer with
-    # multiple --soundfont flags first.  CLaMP3-symbolic is intentionally
-    # excluded (MIDI-native path, unaffected by SoundFont choice).
+    # VGMIDI-TVar  ·  MULTI-SOUNDFONT variant — DECOMMISSIONED 2026-05-25
+    # Removed: the same-piano-from-two-SoundFonts comparison tests
+    # SoundFont fingerprinting (synthesis artifacts, sample-level reverb)
+    # rather than cross-instrument timbre — a marginal control study at
+    # best, and strictly weaker than the LEITMOTIF variant below which
+    # tests actual cross-INSTRUMENT retrieval. JSONL + audio purged from
+    # disk; previous wandb runs (per-layer × 4 encoders) preserved on the
+    # dashboard for historical reference. Re-enable if a reviewer asks
+    # for an SF-fingerprint control study; ~6 min re-render + ~38 min
+    # backfill.
     # ══════════════════════════════════════════════════════════════════════════
-    SweepDef(
-        model="CLaMP3",
-        task="VGMIDITVar-multisf",
-        base_config="configs/probe.CLaMP3-layers.VGMIDITVar-multisf.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | multi-SF render | CLaMP3 13 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-95M",
-        task="VGMIDITVar-multisf",
-        base_config="configs/probe.MERT-v1-95M-layers.VGMIDITVar-multisf.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | multi-SF render | MERT 13 layers",
-    ),
-    # MERT-v1-330M + MusicFM commented out per decommission note above.
-    # SweepDef(
-    #     model="MERT-v1-330M",
-    #     task="VGMIDITVar-multisf",
-    #     base_config="configs/probe.MERT-v1-330M-layers.VGMIDITVar-multisf.yaml",
-    #     num_layers=25,
-    #     note="Theme→variation | MAP | zero-shot | multi-SF render | MERT-330M 25 layers",
-    # ),
-    # SweepDef(
-    #     model="MusicFM",
-    #     task="VGMIDITVar-multisf",
-    #     base_config="configs/probe.MusicFM-layers.VGMIDITVar-multisf.yaml",
-    #     num_layers=13,
-    #     note="Theme→variation | MAP | zero-shot | multi-SF render | MusicFM 13 layers",
-    # ),
-    SweepDef(
-        model="MuQ",
-        task="VGMIDITVar-multisf",
-        base_config="configs/probe.MuQ-layers.VGMIDITVar-multisf.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | multi-SF render | MuQ 13 layers",
-    ),
-    SweepDef(
-        model="OMARRQ-multifeature-25hz",
-        task="VGMIDITVar-multisf",
-        base_config="configs/probe.OMARRQ-multifeature-25hz.VGMIDITVar-multisf.yaml",
-        num_layers=24,
-        note="Theme→variation | MAP | zero-shot | multi-SF render | OMARRQ 24 layers",
-    ),
     # ══════════════════════════════════════════════════════════════════════════
     # VGMIDI-TVar  ·  LEITMOTIF variant (cross-instrument)
     # Same MIDIs but program_change events rewritten so theme/variation pairs
@@ -718,6 +677,56 @@ SWEEPS: list[SweepDef] = [
         model="CLaMP3-symbolic",
         task="VGMIDITVar-leitmotif",
         base_config="configs/probe.CLaMP3-symbolic-layers.VGMIDITVar-leitmotif.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | MIDI-native (program-aware) | CLaMP3-symbolic 13 layers",
+    ),
+    # ══════════════════════════════════════════════════════════════════════════
+    # VGMIDI-TVar  ·  TIMBRE variant (cross-product cross-instrument)
+    # Each source MIDI is rendered with EVERY GM program in the set
+    # [0 Piano, 24 Acoustic Guitar (Nylon), 48 Strings, 52 Choir Aahs,
+    # 60 French Horn, 73 Flute, 80 Square Lead, 89 Warm Pad].
+    # 12,870 MIDIs × 8 programs = 103K audio files (~250-320 GB).
+    # The leitmotif variant tested cross-instrument retrieval but confounded
+    # variation idx with instrument identity (idx→program schedule). This
+    # variant disentangles those axes:
+    #   - pure cross-instrument MAP: same work, same variation, different program
+    #   - pure cross-variation MAP:  same work, same program, different variation
+    #   - combined cross-everything MAP: same work, different both
+    # See scripts/data/rewrite_vgmidi_programs.py --mode cross-product.
+    # Requires data/VGMIDITVar-timbre/{midi,audio} + VGMIDITVar.jsonl.
+    # ══════════════════════════════════════════════════════════════════════════
+    SweepDef(
+        model="CLaMP3",
+        task="VGMIDITVar-timbre",
+        base_config="configs/probe.CLaMP3-layers.VGMIDITVar-timbre.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | 8-program cross-product | CLaMP3 13 layers",
+    ),
+    SweepDef(
+        model="MERT-v1-95M",
+        task="VGMIDITVar-timbre",
+        base_config="configs/probe.MERT-v1-95M-layers.VGMIDITVar-timbre.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | 8-program cross-product | MERT 13 layers",
+    ),
+    SweepDef(
+        model="MuQ",
+        task="VGMIDITVar-timbre",
+        base_config="configs/probe.MuQ-layers.VGMIDITVar-timbre.yaml",
+        num_layers=13,
+        note="Theme→variation | MAP | zero-shot | 8-program cross-product | MuQ 13 layers",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature-25hz",
+        task="VGMIDITVar-timbre",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.VGMIDITVar-timbre.yaml",
+        num_layers=24,
+        note="Theme→variation | MAP | zero-shot | 8-program cross-product | OMARRQ 24 layers",
+    ),
+    SweepDef(
+        model="CLaMP3-symbolic",
+        task="VGMIDITVar-timbre",
+        base_config="configs/probe.CLaMP3-symbolic-layers.VGMIDITVar-timbre.yaml",
         num_layers=13,
         note="Theme→variation | MAP | zero-shot | MIDI-native (program-aware) | CLaMP3-symbolic 13 layers",
     ),
@@ -773,11 +782,13 @@ def _data_present(task: str) -> bool:
         # VGMIDITVar: built from MIDI zip via scripts/data/build_vgmiditvar_dataset.py
         # (single JSONL covering both train + test splits; no .train/.test variant).
         "VGMIDITVar": "data/VGMIDITVar/VGMIDITVar.jsonl",
-        # Multi-SoundFont VGMIDITVar variant. Re-render with multiple --soundfont
-        # flags into a separate audio dir so theme/variation pairs span multiple
-        # timbres.  Separate from VGMIDITVar so the FluidR3-only baseline is
-        # preserved and WandB comparisons are unambiguous.
-        "VGMIDITVar-multisf": "data/VGMIDITVar-multisf/VGMIDITVar.jsonl",
+        # VGMIDITVar-multisf removed (decommissioned 2026-05-25). See the
+        # VGMIDITVar-multisf comment block in the SWEEPS list for context.
+        # Timbre variant: cross-product render of every (MIDI, GM program)
+        # pair. Disentangles cross-instrument from cross-variation. Produced
+        # by scripts/data/rewrite_vgmidi_programs.py --mode cross-product +
+        # scripts/data/build_vgmiditvar_dataset.py --skip-extract.
+        "VGMIDITVar-timbre": "data/VGMIDITVar-timbre/VGMIDITVar.jsonl",
         # Leitmotif variant: re-rewritten MIDIs (per-idx GM program rotation)
         # rendered with a single high-quality SoundFont (Shan SGM-Pro 14).
         # Produced by scripts/data/rewrite_vgmidi_programs.py +
