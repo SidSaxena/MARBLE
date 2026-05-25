@@ -211,6 +211,36 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         self.log("test/mrr", self._mrr(sim, work_ids), rank_zero_only=True)
         self.log("test/mrr_centered", self._mrr(sim_c, work_ids), rank_zero_only=True)
 
+        # ── Recall / Hit Rate / median rank / R-Precision ────────────────────
+        # Headline metrics for review-budget-K-aware retrieval evaluation
+        # (leitmotif workflow). See marble/utils/retrieval_metrics.py and
+        # docs/benchmarking_methodology.md for rationale. Both raw and
+        # centered variants logged. K values that exceed corpus size are
+        # silently skipped — small smoke runs don't pollute the log with
+        # NaN keys.
+        from marble.utils.retrieval_metrics import (
+            hit_rate_at_k,
+            median_rank_first_hit,
+            r_precision,
+            recall_at_k,
+        )
+
+        K_RECALL = [k for k in (1, 5, 10, 50, 100) if k < N]
+        K_HIT = [k for k in (1, 5, 10) if k < N]
+        for suffix, S in (("", sim), ("_centered", sim_c)):
+            for k in K_RECALL:
+                self.log(
+                    f"test/recall@{k}{suffix}", recall_at_k(S, work_ids, k), rank_zero_only=True
+                )
+            for k in K_HIT:
+                self.log(
+                    f"test/hit_rate@{k}{suffix}", hit_rate_at_k(S, work_ids, k), rank_zero_only=True
+                )
+            self.log(
+                f"test/median_rank{suffix}", median_rank_first_hit(S, work_ids), rank_zero_only=True
+            )
+            self.log(f"test/r_precision{suffix}", r_precision(S, work_ids), rank_zero_only=True)
+
     @staticmethod
     def _compute_map(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
         """Standard MAP from a similarity matrix and work_id labels."""
