@@ -223,6 +223,30 @@ idempotency. Disk cost: ~80 MB (MIDIs are tiny).
 
 ### Step 2 — Render audio
 
+Two storage choices:
+
+**Storage-conscious (recommended, ~145 GB on disk):**
+
+```bash
+uv run python scripts/data/build_vgmiditvar_dataset.py \
+    --skip-extract \
+    --midi-extract-dir data/VGMIDITVar-timbre/midi \
+    --soundfont /path/to/SGM-V2.01.sf2 \
+    --data-dir data/VGMIDITVar-timbre \
+    --audio-dir data/VGMIDITVar-timbre/audio \
+    --audio-format flac \
+    --workers 8
+```
+
+The `--audio-format flac` flag converts each WAV to FLAC immediately
+after fluidsynth renders it, then deletes the WAV. Peak per-worker disk
+stays at one in-flight WAV (~4 MB). Net dataset size: ~145 GB instead
+of ~312 GB. **Lossless** — torchaudio decodes FLAC bit-perfectly, so
+the encoder sees identical samples to a WAV render. Zero impact on
+retrieval-MAP. Requires `ffmpeg` on PATH.
+
+**Raw WAV (~312 GB on disk):**
+
 ```bash
 uv run python scripts/data/build_vgmiditvar_dataset.py \
     --skip-extract \
@@ -233,12 +257,13 @@ uv run python scripts/data/build_vgmiditvar_dataset.py \
     --workers 8
 ```
 
-The builder's `_FILENAME_RE` recognises the `_p<program>` suffix and
-writes the program directly to the JSONL's `gm_program` field
-(no `--instrument-map` needed — the program is encoded in the filename).
+(Omit `--audio-format` → defaults to `wav`.)
 
-Disk: ~200-320 GB at stereo 44.1 kHz WAV. Time: ~15-25 min on a
-modern CPU with 8 workers.
+Either way, the builder's `_FILENAME_RE` recognises the `_p<program>`
+suffix and writes the program directly to the JSONL's `gm_program`
+field (no `--instrument-map` needed — the program is encoded in the
+filename). Time: ~15-25 min on a modern CPU with 8 workers; FLAC adds
+~2-3 minutes for the in-line conversion.
 
 ### Step 3 — Run layer sweeps
 
