@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from marble.utils.retrieval_metrics import (
+    compute_perpair_map,
     hit_rate_at_k,
     median_rank_first_hit,
     r_precision,
@@ -245,6 +246,133 @@ def test_r_precision_partial_credit():
     # Don't pin to a specific value — just assert it's in (0, 1.0).
     rp = r_precision(sim, work_ids)
     assert 0.0 < rp < 1.0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# General invariants
+# ──────────────────────────────────────────────────────────────────────
+
+
+# ──────────────────────────────────────────────────────────────────────
+# compute_perpair_map (cross-instrument / cross-soundfont)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _perpair_8file_sim() -> tuple[torch.Tensor, list[int], list[int]]:
+    """8 files, 4 works × 2 conditions. Each work has one item in
+    condition 0 and one in condition 1.
+
+    Layout:
+       work_id:    [0, 0, 1, 1, 2, 2, 3, 3]
+       condition:  [0, 1, 0, 1, 0, 1, 0, 1]
+       item idx:    0  1  2  3  4  5  6  7
+
+    Sim matrix designed so EACH query's relevant cross-condition peer
+    ranks #1 among its condition (i.e. (0,1) cell = perfect cross-cond
+    retrieval). Within-condition queries (0,0) have no relevant pair
+    (the only same-work item is in the OTHER condition), so cell n=0.
+
+    Expected:
+      perpair(0,1) — query in cond 0, target in cond 1: perfect MAP=1.0
+      perpair(1,0) — query in cond 1, target in cond 0: perfect MAP=1.0
+      perpair(0,0) — within cond 0: every query has 0 same-work peers
+                      in cond 0 → MAP=0.0, n_queries=0.
+      perpair(1,1) — same, MAP=0.0, n_queries=0.
+    """
+    n = 8
+    sim = torch.zeros(n, n)
+    work_ids = [0, 0, 1, 1, 2, 2, 3, 3]
+    conditions = [0, 1, 0, 1, 0, 1, 0, 1]
+    for i in range(n):
+        sim[i, i] = 1.0
+        for j in range(n):
+            if i == j:
+                continue
+            same_work = work_ids[i] == work_ids[j]
+            same_cond = conditions[i] == conditions[j]
+            # Strong: same-work cross-cond peer.
+            # Weak: same-work same-cond (impossible here).
+            # Noise: cross-work, any cond.
+            if same_work and not same_cond:
+                sim[i, j] = 0.95
+            elif same_work and same_cond:
+                sim[i, j] = 0.5  # unreachable in this layout
+            else:
+                sim[i, j] = 0.1
+    return sim, work_ids, conditions
+
+
+def test_compute_perpair_map_cross_condition_perfect():
+    """Cross-condition cell (0,1) and (1,0) should both be 1.0."""
+    sim, work_ids, conditions = _perpair_8file_sim()
+    map_01, n_01 = compute_perpair_map(sim, work_ids, conditions, 0, 1)
+    assert map_01 == pytest.approx(1.0), f"got {map_01}"
+    assert n_01 == 4  # 4 queries in condition 0
+
+    map_10, n_10 = compute_perpair_map(sim, work_ids, conditions, 1, 0)
+    assert map_10 == pytest.approx(1.0), f"got {map_10}"
+    assert n_10 == 4
+
+
+def test_compute_perpair_map_within_condition_empty():
+    """Within-condition cells (0,0) and (1,1) have zero relevant pairs
+    by construction → MAP=0, n_queries=0."""
+    sim, work_ids, conditions = _perpair_8file_sim()
+    map_00, n_00 = compute_perpair_map(sim, work_ids, conditions, 0, 0)
+    assert map_00 == 0.0
+    assert n_00 == 0
+    map_11, n_11 = compute_perpair_map(sim, work_ids, conditions, 1, 1)
+    assert map_11 == 0.0
+    assert n_11 == 0
+
+
+def test_compute_perpair_map_none_means_any():
+    """``query_condition=None`` and/or ``target_condition=None``
+    accept all queries / candidates."""
+    sim, work_ids, conditions = _perpair_8file_sim()
+    # All queries → any target: equivalent to the "aggregate MAP" but
+    # computed via the perpair helper.
+    map_all, n_all = compute_perpair_map(sim, work_ids, conditions, None, None)
+    assert n_all == 8  # every query contributes
+    # Cross-cond pair always ranks first; same-work means MAP=1.0
+    assert map_all == pytest.approx(1.0)
+
+
+def test_compute_perpair_map_off_diag_mean_matches_cross_instrument():
+    """The 'cross-instrument MAP' in docs/leitmotif_findings.md is
+    defined as the off-diagonal mean of the (q,t) grid where both
+    q,t are not-None. Verify the mean of off-diagonal cells matches
+    the average of perpair MAPs computed individually."""
+    sim, work_ids, conditions = _perpair_8file_sim()
+    map_01, _ = compute_perpair_map(sim, work_ids, conditions, 0, 1)
+    map_10, _ = compute_perpair_map(sim, work_ids, conditions, 1, 0)
+    expected_off_diag = (map_01 + map_10) / 2
+    assert expected_off_diag == pytest.approx(1.0)
+
+
+def test_compute_perpair_map_partial():
+    """A condition cell where SOME queries get rank-1 hits and others
+    don't — verify partial MAP."""
+    n = 4
+    work_ids = [0, 0, 1, 1]
+    conditions = [0, 1, 0, 1]
+    # Query 0 (cond 0, work 0) prefers item 1 (cond 1, work 0) → rank 1 ✓
+    # Query 2 (cond 0, work 1) prefers item 1 (cond 1, work 0) → wrong! Relevant=3 at rank 2.
+    sim = torch.tensor(
+        [
+            [1.0, 0.9, 0.1, 0.0],  # 0 prefers 1 (right cross-cond)
+            [0.9, 1.0, 0.0, 0.1],  # 1's view (not tested here)
+            [0.1, 0.7, 1.0, 0.5],  # 2 prefers 1 (wrong), then 3 (right)
+            [0.0, 0.1, 0.5, 1.0],  # 3's view
+        ]
+    )
+    # Cell (q=0, t=1): queries 0 and 2, candidates 1 and 3 (others excluded).
+    # Query 0 → top in cond 1: item 1 (relevant). AP = 1/1 = 1.0
+    # Query 2 → top in cond 1: item 1 (NOT relevant), then 3 (relevant at rank 2). AP = 1/2 = 0.5
+    # MAP = (1.0 + 0.5) / 2 = 0.75
+    map_01, n_01 = compute_perpair_map(sim, work_ids, conditions, 0, 1)
+    assert n_01 == 2
+    assert map_01 == pytest.approx(0.75)
 
 
 # ──────────────────────────────────────────────────────────────────────

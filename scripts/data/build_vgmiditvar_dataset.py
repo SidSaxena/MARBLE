@@ -304,8 +304,17 @@ def _process_one(
         return None
 
     audio_path = audio_dir / f"{midi_path.stem}.wav"
-    if not skip_render:
+    # Determine soundfont index up front so the JSONL record can carry it
+    # (used by CoverRetrievalTask for cross-soundfont MAP on the multisf
+    # variant). Even with --skip-render we know which SF was picked because
+    # _pick_soundfont is a deterministic hash on the file stem.
+    sf_idx = None
+    if soundfonts:
         sf = _pick_soundfont(midi_path.stem, soundfonts)
+        sf_idx = soundfonts.index(sf)
+    if not skip_render:
+        if sf is None:  # no soundfonts configured (shouldn't happen in render mode)
+            return None
         ok = _render_midi(midi_path, audio_path, sf)
         if not ok:
             return None
@@ -337,6 +346,11 @@ def _process_one(
         # Mirror the rewriter's cycling behaviour: idx ≥ len(schedule) cycles
         # modulo len(schedule).
         record["gm_program"] = instrument_schedule[idx % len(instrument_schedule)]
+    # Only write soundfont_id in true multi-SF mode (where it's a
+    # meaningful per-item axis). Single-SF datasets get no field —
+    # CoverRetrievalTask's per-condition block then skips silently.
+    if sf_idx is not None and len(soundfonts) > 1:
+        record["soundfont_id"] = sf_idx
     return record
 
 

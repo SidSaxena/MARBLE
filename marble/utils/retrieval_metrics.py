@@ -176,3 +176,95 @@ def r_precision(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
         hits = int(is_rel[:r].sum().item())
         rps.append(hits / r)
     return float(sum(rps) / len(rps)) if rps else float("nan")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Per-condition (cross-instrument / cross-soundfont) MAP
+# ──────────────────────────────────────────────────────────────────────
+
+
+def compute_perpair_map(
+    sim: torch.Tensor,
+    work_ids: list[int] | torch.Tensor,
+    conditions: list[int] | torch.Tensor,
+    query_condition: int | None,
+    target_condition: int | None,
+) -> tuple[float, int]:
+    """Per-(query_condition, target_condition) MAP for cross-condition retrieval.
+
+    Compute MAP restricted to queries whose ``conditions[i] ==
+    query_condition`` against candidates whose ``conditions[j] ==
+    target_condition``. ``None`` for either means "any condition".
+
+    The "condition" axis is dataset-specific:
+      - VGMIDITVar-leitmotif: ``conditions = gm_program`` (GM
+        instrument code, e.g. 0=piano, 48=strings, 60=horn, 73=flute,
+        56=trumpet). Diagonal cells (same instrument) measure
+        within-timbre retrieval; off-diagonal cells measure
+        cross-instrument retrieval — the operationally-relevant
+        metric for leitmotif systems.
+      - VGMIDITVar-multisf: ``conditions = soundfont_id`` (which
+        SoundFont rendered this audio). Same intuition: off-diagonal
+        = cross-soundfont retrieval, the timbre-invariance measure.
+
+    Lifted from ``scripts/analysis/vgmiditvar_leitmotif_breakdown.py``
+    to enable both (a) live wandb logging via
+    ``CoverRetrievalTask.on_test_epoch_end`` and (b) re-use by the
+    offline analysis script (which now imports from here — single
+    source of truth).
+
+    Args:
+        sim: ``(N, N)`` similarity matrix.
+        work_ids: ``(N,)`` group labels (same as :func:`recall_at_k`).
+        conditions: ``(N,)`` per-item condition labels (gm_program OR
+                    soundfont_id OR similar).
+        query_condition: filter queries to this condition value.
+                        ``None`` accepts any query.
+        target_condition: filter candidates to this condition value.
+                         ``None`` accepts any candidate.
+
+    Returns:
+        ``(map_value, n_queries)`` — float MAP and the number of
+        queries that contributed to it. ``map_value`` is 0.0 if no
+        queries match (callers should also check ``n_queries`` to
+        distinguish "empty cell" from "all-wrong cell").
+    """
+    n = sim.size(0)
+    wids = work_ids if isinstance(work_ids, torch.Tensor) else torch.tensor(work_ids)
+    prog_t = conditions if isinstance(conditions, torch.Tensor) else torch.tensor(conditions)
+
+    query_mask = (
+        torch.ones(n, dtype=torch.bool) if query_condition is None else (prog_t == query_condition)
+    )
+    target_mask = (
+        torch.ones(n, dtype=torch.bool)
+        if target_condition is None
+        else (prog_t == target_condition)
+    )
+
+    aps: list[float] = []
+    for i in range(n):
+        if not query_mask[i]:
+            continue
+        # Allowed candidates: target_mask, excluding self
+        allowed = target_mask.clone()
+        allowed[i] = False
+        if allowed.sum() == 0:
+            continue
+        sims_i = sim[i].clone()
+        sims_i[~allowed] = -2.0
+        order = sims_i.argsort(descending=True)
+        order = order[: int(allowed.sum())]
+        is_rel = (wids[order] == wids[i]) & allowed[order]
+        n_rel = int(is_rel.sum().item())
+        if n_rel == 0:
+            continue
+        hits = 0
+        ap = 0.0
+        for rank, rel in enumerate(is_rel.tolist(), start=1):
+            if rel:
+                hits += 1
+                ap += hits / rank
+        ap /= n_rel
+        aps.append(ap)
+    return (float(torch.tensor(aps).mean().item()) if aps else 0.0, len(aps))

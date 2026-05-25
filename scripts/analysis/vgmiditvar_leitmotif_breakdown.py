@@ -209,56 +209,11 @@ def _aggregate_per_path(
     return torch.stack(embs), work_ids, programs
 
 
-def _map_for_subset(
-    sim: torch.Tensor,
-    work_ids: list[int],
-    programs: list[int],
-    query_program: int | None,
-    target_program: int | None,
-) -> tuple[float, int]:
-    """Compute MAP for queries with `query_program` against candidates with
-    `target_program`. None means "any program". Returns (MAP, N_queries)."""
-    n = sim.size(0)
-    wids = torch.tensor(work_ids)
-    prog_t = torch.tensor(programs)
-
-    if query_program is None:
-        query_mask = torch.ones(n, dtype=torch.bool)
-    else:
-        query_mask = prog_t == query_program
-
-    if target_program is None:
-        target_mask = torch.ones(n, dtype=torch.bool)
-    else:
-        target_mask = prog_t == target_program
-
-    aps: list[float] = []
-    for i in range(n):
-        if not query_mask[i]:
-            continue
-        # Allowed candidates: target_mask, excluding self
-        allowed = target_mask.clone()
-        allowed[i] = False
-        if allowed.sum() == 0:
-            continue
-        sims_i = sim[i].clone()
-        sims_i[~allowed] = -2.0
-        order = sims_i.argsort(descending=True)
-        order = order[: int(allowed.sum())]
-        is_rel = (wids[order] == wids[i]) & allowed[order]
-        n_rel = int(is_rel.sum().item())
-        if n_rel == 0:
-            continue
-        hits = 0
-        ap = 0.0
-        for rank, rel in enumerate(is_rel.tolist(), start=1):
-            if rel:
-                hits += 1
-                ap += hits / rank
-        ap /= n_rel
-        aps.append(ap)
-    return (float(torch.tensor(aps).mean().item()) if aps else 0.0, len(aps))
-
+# Per-pair MAP — now lives in marble.utils.retrieval_metrics so the
+# offline analysis here and the live wandb logging in CoverRetrievalTask
+# share a single source of truth. Re-export with the legacy name so
+# downstream call sites in this script keep working.
+from marble.utils.retrieval_metrics import compute_perpair_map as _map_for_subset  # noqa: E402
 
 # GM program → human label, just for the table headers
 GM_LABELS = {
