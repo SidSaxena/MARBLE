@@ -324,7 +324,7 @@ the run continues normally — cache failures are non-fatal.
   sweep config uses. A mismatch produces a different `<config_hash>`
   → different directory → cache miss as expected.
 - If you renamed `audio_path` for any clip (e.g. `.m4a` → `.flac` via
-  `convert_shs100k_to_flac.py`), the `clip_id` hash changes too —
+  `convert_audio_format.py`), the `clip_id` hash changes too —
   this is correct behavior; the cache was keyed to the old paths.
 
 **"My cache directory is much bigger / smaller than predicted."**

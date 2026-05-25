@@ -54,27 +54,33 @@ libsndfile-native, so it works on every platform with zero
 ffmpeg-version drama.
 
 ```bash
-uv run python scripts/data/convert_shs100k_to_flac.py
+uv run python scripts/data/convert_audio_format.py \
+    --src data/SHS100K/audio --in-place \
+    --input-ext .m4a --to flac \
+    --jsonl data/SHS100K/SHS100K.test.jsonl
 ```
 
 What it does:
 
-- Reads `data/SHS100K/SHS100K.test.jsonl`.
-- Converts each `<ytid>.m4a` → `<ytid>.flac` via parallel ffmpeg CLI.
-- Refreshes `sample_rate / num_samples / duration` from `ffprobe`.
-- Rewrites the JSONL in place to point at the FLAC files.
-- Optionally deletes the originals (`--keep-originals` to keep both).
+- Walks `data/SHS100K/audio/` for `.m4a` files.
+- Converts each `<ytid>.m4a` → `<ytid>.flac` via parallel ffmpeg CLI
+  (in-place; deletes the original `.m4a` after each successful conversion).
+- Rewrites the JSONL's `audio_path` extension `.m4a` → `.flac`.
+- Idempotent: re-running skips files whose `.flac` already exists.
+
+Refresh `sample_rate / num_samples / duration` afterwards with:
+
+```bash
+uv run python scripts/data/cache_audio_info_in_jsonl.py \
+    --jsonl data/SHS100K/SHS100K.test.jsonl \
+    --audio-dir data/SHS100K/audio --audio-suffix .flac --force
+```
 
 Disk: ~30 GB FLAC vs ~21 GB M4A (lossless is bigger).
 Time: ~30–60 min at `--workers 8` on a modern CPU.
 
-Skip if the source audio is moved to a different drive:
-
-```bash
-uv run python scripts/data/convert_shs100k_to_flac.py \
-    --audio-dir "D:/datasets/SHS100K" \
-    --out-dir "D:/datasets/SHS100K"
-```
+To keep originals, pass `--keep-source`. To convert from a different
+audio root, just point `--src` (and the matching `--jsonl`) elsewhere.
 
 ## Modal volume layout
 

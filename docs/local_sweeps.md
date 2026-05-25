@@ -191,7 +191,10 @@ dir C:\ffmpeg\bin\*.dll
 ### Fix path B — convert audio to FLAC (universal)
 
 ```bash
-uv run python scripts/data/convert_shs100k_to_flac.py
+uv run python scripts/data/convert_audio_format.py \
+    --src data/SHS100K/audio --in-place \
+    --input-ext .m4a --to flac \
+    --jsonl data/SHS100K/SHS100K.train.jsonl,data/SHS100K/SHS100K.val.jsonl,data/SHS100K/SHS100K.test.jsonl
 ```
 
 ~30–60 min for SHS100K (6905 files), produces ~30 GB FLAC. After this,

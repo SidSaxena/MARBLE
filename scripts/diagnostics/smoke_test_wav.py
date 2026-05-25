@@ -286,14 +286,16 @@ def main():
         _run(
             [
                 sys.executable,
-                "scripts/data/convert_audio_to_wav.py",
-                "--src-dir",
+                "scripts/data/convert_audio_format.py",
+                "--src",
                 str(args.audio_src_dir),
-                "--dst-dir",
+                "--dst",
                 str(args.audio_wav_dir),
-                "--src-ext",
+                "--input-ext",
                 ".mp3",
-                "--target-sr",
+                "--to",
+                "wav",
+                "--sample-rate",
                 "24000",
                 "--channels",
                 "1",
@@ -305,7 +307,7 @@ def main():
             ]
         )
     else:
-        print("[skip] convert_audio_to_wav")
+        print("[skip] convert_audio_format")
 
     # 3. Copy smoke JSONLs → *.smoke.wav.jsonl and refresh num_samples/sample_rate
     if not args.skip_cache_info:
