@@ -17,6 +17,11 @@ recommendation).
 For implementation details on caching / extracting, see
 [`embedding_cache.md`](embedding_cache.md).
 
+For "what do the probe accuracy numbers in this doc actually measure?"
+(short version: MLP probe of frozen features — standard
+representation-evaluation methodology, not zero-shot), see
+[`benchmarking_methodology.md`](benchmarking_methodology.md).
+
 **For the deep-dive on cross-instrument leitmotif retrieval (the headline
 deployment scenario): see [`leitmotif_findings.md`](leitmotif_findings.md).**
 That doc covers the per-instrument-pair MAP analysis, the
