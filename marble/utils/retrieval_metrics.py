@@ -38,6 +38,9 @@ metric.
 
 from __future__ import annotations
 
+import math
+
+import numpy as np
 import torch
 
 # ──────────────────────────────────────────────────────────────────────
@@ -268,3 +271,86 @@ def compute_perpair_map(
         ap /= n_rel
         aps.append(ap)
     return (float(torch.tensor(aps).mean().item()) if aps else 0.0, len(aps))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Anisotropy diagnostics
+# ──────────────────────────────────────────────────────────────────────
+
+
+def anisotropy_metrics(
+    embs: torch.Tensor,
+    n_pairs: int = 5000,
+    seed: int = 0,
+) -> dict[str, float]:
+    """Embedding-space anisotropy diagnostics for a (N, H) matrix.
+
+    Lifted from ``scripts/diagnostics/anisotropy_diag.py:_isotropy_metrics``
+    so the same numbers that motivated MARBLE's centered-MAP variant are
+    available as live wandb metrics rather than post-hoc diagnostics.
+
+    Returns a dict with four numbers, all computed on L2-normalised input:
+      - ``mean_vec_norm`` (float in [0, 1]): norm of the corpus mean.
+        Near 0 ⇒ isotropic; near 1 ⇒ all embeddings live in a thin cone.
+        OMARRQ historically registers ~0.5 on retrieval tasks; that
+        anisotropy is what motivates ``test/map_centered``.
+      - ``avg_pair_cos`` (float in [-1, 1]): mean cosine similarity over
+        ``n_pairs`` random off-diagonal pairs. Should be ≈ 0 for isotropic
+        embeddings; > 0 indicates the cone-effect inflates all similarities.
+      - ``top1_sv_share`` (float in [0, 1]): leading singular value² as a
+        fraction of total variance (post-centering). > 0.3 = significant
+        rank collapse on the top direction.
+      - ``effective_rank`` (float in [1, min(N, H)]): exp(entropy of
+        normalised SV² spectrum). Lower ⇒ more anisotropic / lower-rank.
+        Noisy at small N (e.g. Covers80 with N=160).
+
+    Notes
+    -----
+    SVD is capped at 4096 samples for speed (matches the offline script);
+    larger corpora subsample randomly with ``seed`` for reproducibility.
+    """
+    e = embs.detach().cpu().float().numpy()
+    n, c = e.shape
+    rng = np.random.default_rng(seed)
+
+    # L2-normalise for cosine-based stats
+    norms = np.linalg.norm(e, axis=1, keepdims=True)
+    normed = e / np.clip(norms, 1e-8, None)
+
+    # avg pair cosine — sample off-diagonal pairs with replacement
+    n_pairs_eff = min(n_pairs, n * (n - 1) // 2)
+    a = rng.choice(n, size=n_pairs_eff, replace=True)
+    b = rng.choice(n, size=n_pairs_eff, replace=True)
+    same = a == b
+    b[same] = (b[same] + 1) % n
+    sims = (normed[a] * normed[b]).sum(axis=1)
+
+    # mean-vector norm — cone effect proxy
+    mean_vec = normed.mean(axis=0)
+    mean_norm = float(np.linalg.norm(mean_vec))
+
+    # Rank collapse via SVD of centered embeddings (sample-capped for cost)
+    n_svd = min(n, 4096)
+    sub_idx = rng.choice(n, size=n_svd, replace=False) if n_svd < n else np.arange(n)
+    sub = e[sub_idx] - e[sub_idx].mean(axis=0, keepdims=True)
+    try:
+        sv = np.linalg.svd(sub, compute_uv=False)
+    except np.linalg.LinAlgError:
+        sv = np.zeros(min(n_svd, c))
+    sv2 = sv * sv
+    if sv2.sum() > 0:
+        share = sv2 / sv2.sum()
+        top1 = float(share[0])
+        # Entropy in nats → effective rank = exp(H)
+        h_entropy = -float(np.sum(share * np.log(share + 1e-12)))
+        eff_rank = float(math.exp(h_entropy))
+    else:
+        top1 = float("nan")
+        eff_rank = float("nan")
+
+    return {
+        "mean_vec_norm": mean_norm,
+        "avg_pair_cos": float(sims.mean()),
+        "top1_sv_share": top1,
+        "effective_rank": eff_rank,
+    }

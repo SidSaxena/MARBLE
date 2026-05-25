@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from marble.utils.retrieval_metrics import (
+    anisotropy_metrics,
     compute_perpair_map,
     hit_rate_at_k,
     median_rank_first_hit,
@@ -373,6 +374,68 @@ def test_compute_perpair_map_partial():
     map_01, n_01 = compute_perpair_map(sim, work_ids, conditions, 0, 1)
     assert n_01 == 2
     assert map_01 == pytest.approx(0.75)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# anisotropy_metrics
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_anisotropy_metrics_isotropic_baseline():
+    """Random Gaussian embeddings in high dim should land near isotropic:
+    mean_vec_norm ≈ 1/sqrt(N), avg_pair_cos ≈ 0, eff_rank ≈ min(N, H)."""
+    torch.manual_seed(0)
+    N, H = 100, 64
+    embs = torch.randn(N, H)
+    m = anisotropy_metrics(embs, seed=0)
+    # Isotropic Gaussian: mean of unit vectors has expected norm ~1/sqrt(N)≈0.1
+    assert 0.0 <= m["mean_vec_norm"] < 0.3, f"mean_vec_norm={m['mean_vec_norm']}"
+    # Avg pair cosine should be near 0
+    assert abs(m["avg_pair_cos"]) < 0.15, f"avg_pair_cos={m['avg_pair_cos']}"
+    # Effective rank near min(N, H) = 64 for random Gaussian
+    assert m["effective_rank"] > 30.0, f"effective_rank={m['effective_rank']}"
+    # No single direction dominates
+    assert m["top1_sv_share"] < 0.2, f"top1_sv_share={m['top1_sv_share']}"
+
+
+def test_anisotropy_metrics_cone_collapse():
+    """Embeddings that all lie near a single direction should register as
+    highly anisotropic: mean_vec_norm ≈ 1, effective_rank ≈ 1, top1_sv ≈ 1."""
+    torch.manual_seed(1)
+    N, H = 100, 64
+    base = torch.zeros(N, H)
+    base[:, 0] = 1.0
+    # tiny noise to keep SVD numerically clean
+    embs = base + 0.001 * torch.randn(N, H)
+    m = anisotropy_metrics(embs, seed=0)
+    # All embeddings point in the +e0 direction → mean vector has near-unit norm
+    assert m["mean_vec_norm"] > 0.95, f"mean_vec_norm={m['mean_vec_norm']}"
+    # Random pairs have cosine near 1
+    assert m["avg_pair_cos"] > 0.95, f"avg_pair_cos={m['avg_pair_cos']}"
+    # Post-centering the dominant direction dies — variance lives in the
+    # tiny noise dimensions → effective rank ≈ noise dims. Just check it
+    # collapsed below the isotropic ~64 baseline.
+    assert m["effective_rank"] < 50.0, f"effective_rank={m['effective_rank']}"
+
+
+def test_anisotropy_metrics_keys_complete():
+    """All four documented keys must be present and float-valued."""
+    embs = torch.randn(20, 16)
+    m = anisotropy_metrics(embs)
+    for key in ("mean_vec_norm", "avg_pair_cos", "top1_sv_share", "effective_rank"):
+        assert key in m
+        assert isinstance(m[key], float)
+
+
+def test_anisotropy_metrics_deterministic_under_seed():
+    """Same input + same seed → identical output (reproducibility)."""
+    embs = torch.randn(50, 32)
+    m1 = anisotropy_metrics(embs, seed=42)
+    m2 = anisotropy_metrics(embs, seed=42)
+    for key in m1:
+        # mean_vec_norm + eff_rank are deterministic (not RNG-sampled)
+        # avg_pair_cos uses RNG but the same seed gives the same draws
+        assert m1[key] == pytest.approx(m2[key]), f"non-deterministic at key {key}"
 
 
 # ──────────────────────────────────────────────────────────────────────

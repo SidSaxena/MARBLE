@@ -311,6 +311,23 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                 gap = float(sum(same_aps) / len(same_aps) - sum(cross_aps) / len(cross_aps))
                 self.log("test/condition_gap", gap, rank_zero_only=True)
 
+        # ── Anisotropy diagnostics ───────────────────────────────────────────
+        # Cone-effect / rank-collapse measurements on the per-file embedding
+        # matrix (pre-centering, since centering itself is what we're
+        # diagnosing). High mean_vec_norm → ``map_centered`` is the trustworthy
+        # number for this encoder. See marble/utils/retrieval_metrics.py.
+        from marble.utils.retrieval_metrics import anisotropy_metrics
+
+        ani = anisotropy_metrics(embs)
+        for key, val in ani.items():
+            self.log(f"test/anisotropy/{key}", float(val), rank_zero_only=True)
+        print(
+            f"[CoverRetrieval] Anisotropy: mean_vec_norm={ani['mean_vec_norm']:.3f}  "
+            f"avg_pair_cos={ani['avg_pair_cos']:.3f}  "
+            f"top1_sv={ani['top1_sv_share']:.3f}  "
+            f"eff_rank={ani['effective_rank']:.1f}"
+        )
+
     @staticmethod
     def _compute_map(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
         """Standard MAP from a similarity matrix and work_id labels."""
