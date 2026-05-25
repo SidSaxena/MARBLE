@@ -427,6 +427,21 @@ def test_anisotropy_metrics_keys_complete():
         assert isinstance(m[key], float)
 
 
+def test_anisotropy_metrics_degenerate_returns_nan():
+    """N < 2 corpora can't define pairwise cosine or rank statistics —
+    function must return NaN dict, not raise / emit NumPy warnings."""
+    # N=0: empty corpus
+    embs_empty = torch.zeros(0, 16)
+    m_empty = anisotropy_metrics(embs_empty)
+    for key in ("mean_vec_norm", "avg_pair_cos", "top1_sv_share", "effective_rank"):
+        assert math.isnan(m_empty[key]), f"expected NaN for empty corpus key {key}"
+    # N=1: single point — pair sampling and SVD both ill-defined
+    embs_single = torch.randn(1, 16)
+    m_single = anisotropy_metrics(embs_single)
+    for key in ("mean_vec_norm", "avg_pair_cos", "top1_sv_share", "effective_rank"):
+        assert math.isnan(m_single[key]), f"expected NaN for single-point corpus key {key}"
+
+
 def test_anisotropy_metrics_deterministic_under_seed():
     """Same input + same seed → identical output (reproducibility)."""
     embs = torch.randn(50, 32)

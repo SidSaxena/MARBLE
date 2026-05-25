@@ -154,7 +154,13 @@ class _VGMIDITVarAudioBase(Dataset):
         # soundfont_id (VGMIDITVar-multisf) OR -1 sentinel (base
         # VGMIDITVar — no cross-condition info available; probe skips
         # the per-condition MAP block).
-        condition = int(info.get("gm_program", info.get("soundfont_id", -1)))
+        # Robust to explicit JSON null (``dict.get(key, default)`` returns
+        # None when key is *present* with null value — NOT the default):
+        # walk the fallback chain manually so int(None) doesn't crash.
+        _cond_raw = info.get("gm_program")
+        if _cond_raw is None:
+            _cond_raw = info.get("soundfont_id")
+        condition = int(_cond_raw) if _cond_raw is not None else -1
 
         cache_check = getattr(self, "cache_check_fn", None)
         if cache_check is not None and cache_check(clip_id):

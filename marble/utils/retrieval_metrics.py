@@ -306,11 +306,30 @@ def anisotropy_metrics(
 
     Notes
     -----
-    SVD is capped at 4096 samples for speed (matches the offline script);
-    larger corpora subsample randomly with ``seed`` for reproducibility.
+    - SVD is capped at 4096 samples for speed (matches the offline script);
+      larger corpora subsample randomly with ``seed`` for reproducibility.
+    - The function operates on whatever scale the caller passes in. When
+      called from ``CoverRetrievalTask.on_test_epoch_end`` the input is
+      already L2-normalised per-file mean-pooled embeddings — so the SVD
+      below measures variance of unit vectors on the sphere, which is
+      arguably MORE relevant for cosine retrieval than the raw-embedding
+      SVD used by ``scripts/diagnostics/anisotropy_diag.py``. The two
+      numbers are mathematically distinct; ``mean_vec_norm`` and
+      ``avg_pair_cos`` are scale-invariant and agree across both inputs.
+    - Returns NaN-filled dict on degenerate input (N < 2) — single-point
+      corpora can't define pairwise cosine or SVD; the probe still logs
+      these values and downstream wandb filters can drop them.
     """
     e = embs.detach().cpu().float().numpy()
     n, c = e.shape
+    # Degenerate input — no pairs to sample, SVD ill-defined.
+    if n < 2:
+        return {
+            "mean_vec_norm": float("nan"),
+            "avg_pair_cos": float("nan"),
+            "top1_sv_share": float("nan"),
+            "effective_rank": float("nan"),
+        }
     rng = np.random.default_rng(seed)
 
     # L2-normalise for cosine-based stats
