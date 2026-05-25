@@ -58,6 +58,15 @@ from pathlib import Path
 
 import yaml
 
+# Force UTF-8 stdout/stderr on Windows so the script's Unicode characters
+# (✓ ✗ → in progress prints) don't trip the default cp1252 encoder. Without
+# this, prints with non-ASCII content raise UnicodeEncodeError on Windows.
+# The reconfigure() method is available on Python 3.7+; safe no-op on POSIX
+# where stdout is already UTF-8 by default.
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 # Serializes prefixed-line writes from multiple concurrent _run_one_layer
 # threads so one layer's output doesn't tear another's.
 _CONSOLE_LOCK = threading.Lock()
