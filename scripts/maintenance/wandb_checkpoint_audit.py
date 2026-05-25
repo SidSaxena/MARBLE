@@ -12,10 +12,15 @@ Filters (all substring matches, case-insensitive, AND-combined):
     --task <s>      substring of the task slug    (e.g. ``Covers80``, ``VGMIDITVar``)
 
 Usage:
+    # Interactive (recommended): pick which (encoder, task) pairs to
+    # delete from a numbered table; safe by default — confirms before
+    # deleting:
+    uv run python scripts/maintenance/wandb_checkpoint_audit.py -i
+
     # Audit everything (dry-run with totals):
     uv run python scripts/maintenance/wandb_checkpoint_audit.py
 
-    # Delete safe checkpoints for one specific (encoder, task) pair:
+    # Scripted: delete safe checkpoints for one specific (encoder, task) pair:
     uv run python scripts/maintenance/wandb_checkpoint_audit.py \\
         --encoder MERT-v1-330M --task SHS100K --delete
 
@@ -27,7 +32,9 @@ Usage:
 
 The ``--delete`` flag is opt-in; without it the script is a dry-run.
 ``--by-pair`` is a presentation toggle (compact summary by encoder×task
-totals), independent of ``--delete``.
+totals), independent of ``--delete``. ``-i / --interactive`` overrides
+both: it always shows the per-pair table, prompts for a selection,
+and confirms before deleting.
 """
 
 import argparse
@@ -96,6 +103,56 @@ def dir_size_mb(path: Path) -> float:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / 1024 / 1024
 
 
+def parse_selection(spec: str, n_items: int) -> set[int]:
+    """Parse an interactive selection string into a set of 1-indexed item IDs.
+
+    Accepts:
+      - ``"all"`` → every item (1..n_items)
+      - ``"1,3,5"`` → discrete IDs
+      - ``"1-3"`` → inclusive range
+      - ``"1-3,5,7-9"`` → mixed
+      - empty / ``"none"`` / ``"0"`` → empty set
+      - ``"q"`` → returns ``None`` (signal: cancel)
+
+    Out-of-range IDs are silently dropped (no error, since the prompt
+    will show the valid range right above). Whitespace-tolerant.
+
+    Used by the interactive cleanup flow to convert the user's
+    free-form selection into a concrete set of pair indices to delete.
+    """
+    spec = (spec or "").strip().lower()
+    if spec in ("", "none", "0"):
+        return set()
+    if spec in ("q", "quit", "exit", "cancel"):
+        return None  # type: ignore[return-value]  # sentinel = cancel
+    if spec == "all":
+        return set(range(1, n_items + 1))
+    out: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, _, b = part.partition("-")
+            try:
+                lo, hi = int(a), int(b)
+            except ValueError:
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            for i in range(lo, hi + 1):
+                if 1 <= i <= n_items:
+                    out.add(i)
+        else:
+            try:
+                i = int(part)
+            except ValueError:
+                continue
+            if 1 <= i <= n_items:
+                out.add(i)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Audit checkpoints vs WandB; delete completed ones",
@@ -121,6 +178,15 @@ def main():
         action="store_true",
         help="Print a compact (encoder × task) summary table instead of "
         "listing every directory. Useful when scoping a bulk cleanup.",
+    )
+    parser.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help="Interactive cleanup: show numbered (encoder × task) pairs, "
+        "prompt for which to delete (e.g. '1,3,5' or '1-3' or 'all'), "
+        "confirm before deleting. Overrides --by-pair (the table is "
+        "always shown) and ignores --delete (confirmation is the gate).",
     )
     parser.add_argument("--project", default="marble", help="WandB project name (default: marble)")
     args = parser.parse_args()
@@ -204,32 +270,35 @@ def main():
     # 4. Report
     # ─────────────────────────────────────────────────────────────────────────
 
-    if args.by_pair:
-        # Group safe + incomplete by (encoder, task) tuple and print
-        # totals only. Use case: "what's the size + completion split per
-        # encoder × task before I decide what to filter on?"
-        from collections import defaultdict
+    # Always compute pair_stats — used by both --by-pair and --interactive.
+    from collections import defaultdict
 
-        pair_stats = defaultdict(lambda: {"safe_n": 0, "safe_mb": 0.0, "inc_n": 0, "inc_mb": 0.0})
-        for e in safe:
-            key = (e["encoder"], e["task"])
-            pair_stats[key]["safe_n"] += 1
-            pair_stats[key]["safe_mb"] += e["size_mb"]
-        for e in incomplete:
-            key = (e["encoder"], e["task"])
-            pair_stats[key]["inc_n"] += 1
-            pair_stats[key]["inc_mb"] += e["size_mb"]
+    pair_stats = defaultdict(lambda: {"safe_n": 0, "safe_mb": 0.0, "inc_n": 0, "inc_mb": 0.0})
+    for e in safe:
+        pair_stats[(e["encoder"], e["task"])]["safe_n"] += 1
+        pair_stats[(e["encoder"], e["task"])]["safe_mb"] += e["size_mb"]
+    for e in incomplete:
+        pair_stats[(e["encoder"], e["task"])]["inc_n"] += 1
+        pair_stats[(e["encoder"], e["task"])]["inc_mb"] += e["size_mb"]
 
-        print("=" * 84)
-        print(f"  {'Encoder':<28}  {'Task':<22}  {'Safe':>10}  {'Incomplete':>12}")
-        print("=" * 84)
+    if args.by_pair or args.interactive:
+        # Show the (encoder × task) summary. In interactive mode, prefix each
+        # row with a 1-indexed ID so the user can pick by number.
+        # Pairs with zero safe dirs are STILL shown (so the user sees the
+        # "incomplete only" state) but can't be selected for deletion.
+        sorted_pairs = sorted(pair_stats.items())
+        print("=" * 92)
+        idx_h = "ID" if args.interactive else "  "
+        print(f"  {idx_h:>3}  {'Encoder':<28}  {'Task':<22}  {'Safe':>10}  {'Incomplete':>12}")
+        print("=" * 92)
         total_safe_mb = 0.0
-        for (encoder, task), s in sorted(pair_stats.items()):
+        for i, ((encoder, task), s) in enumerate(sorted_pairs, start=1):
             safe_str = f"{s['safe_n']:>2} ({s['safe_mb'] / 1024:.2f}G)"
             inc_str = f"{s['inc_n']:>2} ({s['inc_mb'] / 1024:.2f}G)" if s["inc_n"] else "—"
-            print(f"  {encoder:<28}  {task:<22}  {safe_str:>10}  {inc_str:>12}")
+            id_col = f"{i:>3}" if args.interactive else "   "
+            print(f"  {id_col}  {encoder:<28}  {task:<22}  {safe_str:>10}  {inc_str:>12}")
             total_safe_mb += s["safe_mb"]
-        print("=" * 84)
+        print("=" * 92)
         print(f"  Total recoverable across all pairs: {total_safe_mb / 1024:.2f} GB")
         print()
     else:
@@ -259,8 +328,69 @@ def main():
         print()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 5. Delete (if --delete passed)
+    # 5. Delete
     # ─────────────────────────────────────────────────────────────────────────
+
+    if args.interactive:
+        # Interactive mode: prompt for which pair IDs to delete from the
+        # table above, confirm with a summary, then delete. Pair IDs map
+        # 1:1 with the `sorted_pairs` enumeration in the report block
+        # above (they're the same `sorted(pair_stats.items())`).
+        if not safe:
+            print("Nothing safe to delete.")
+            return
+        sorted_pairs = sorted(pair_stats.items())
+        print(
+            "Select pairs to delete by ID (e.g. '1,3,5' or '1-3' or "
+            "'1-3,7' or 'all', empty/'q' to cancel)."
+        )
+        try:
+            selection_raw = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+        selection = parse_selection(selection_raw, len(sorted_pairs))
+        if selection is None:
+            print("Cancelled.")
+            return
+        if not selection:
+            print("Nothing selected.")
+            return
+
+        # Build the concrete list of (encoder, task) pairs to delete and the
+        # set of safe dirs that belong to them.
+        chosen_pairs = {sorted_pairs[i - 1][0] for i in selection}
+        to_delete = [e for e in safe if (e["encoder"], e["task"]) in chosen_pairs]
+        to_delete_mb = sum(e["size_mb"] for e in to_delete)
+
+        print(
+            f"\nAbout to delete {len(to_delete)} checkpoint directories "
+            f"across {len(chosen_pairs)} pair(s), freeing "
+            f"{to_delete_mb / 1024:.2f} GB:"
+        )
+        for encoder, task in sorted(chosen_pairs):
+            s = pair_stats[(encoder, task)]
+            print(
+                f"  - {encoder:<28}  {task:<22}  "
+                f"{s['safe_n']:>2} dirs  ({s['safe_mb'] / 1024:.2f} GB)"
+            )
+        try:
+            confirm = input("\nProceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+        if confirm not in ("y", "yes"):
+            print("Cancelled.")
+            return
+
+        print(f"\nDeleting {len(to_delete)} checkpoint directories...")
+        freed = 0.0
+        for e in to_delete:
+            print(f"  🗑️   rm -rf {e['ckpt_dir']}")
+            shutil.rmtree(e["ckpt_dir"])
+            freed += e["size_mb"]
+        print(f"\n✅  Done. Freed {freed / 1024:.2f} GB.")
+        return
 
     if not args.delete:
         print("Dry run — nothing deleted.")
@@ -271,6 +401,10 @@ def main():
             if args.task:
                 cmd += f' --task "{args.task}"'
             print(f"To delete the safe ones: {cmd}")
+            print(
+                "Or use -i / --interactive to pick which (encoder × task) "
+                "pairs to delete from a numbered table."
+            )
         return
 
     if not safe:
