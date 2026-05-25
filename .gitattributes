@@ -1,0 +1,15 @@
+# Force LF line endings for shell scripts even on Windows checkouts.
+# Without this, Windows users (autocrlf=true by default) get CRLF
+# scripts that bash refuses to run with "$'\r': command not found".
+*.sh text eol=lf
+
+# Same for Python scripts — defensive; should already be LF but be
+# explicit so the line-endings are predictable across all platforms.
+*.py text eol=lf
+
+# YAML configs and JSON / JSONL data — must be LF for predictable
+# tooling behaviour (e.g. yq, jq, MARBLE's own JSONL readers).
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
