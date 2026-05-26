@@ -79,6 +79,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from hashlib import md5
 from pathlib import Path
 
+from tqdm.auto import tqdm
+
 log = logging.getLogger(__name__)
 
 # Filename pattern handles both POP909-TVar and VGMIDI-TVar conventions:
@@ -744,14 +746,21 @@ def main():
                         args.audio_format,
                     )
                 ] = (midi_path, split)
-        for fut in as_completed(futs):
+        # Show file-level progress with ETA. smoothing=0.05 averages over a
+        # longer window so the rate is stable for the long-running render.
+        pbar = tqdm(
+            as_completed(futs),
+            total=total,
+            desc="render",
+            unit="midi",
+            smoothing=0.05,
+        )
+        for fut in pbar:
             n_done += 1
             rec = fut.result()
             if rec is not None:
                 records.append(rec)
-            if n_done % 100 == 0 or n_done == total:
-                pct = 100 * n_done // total
-                log.info(f"  [{pct:3d}%] {n_done:>5}/{total}  ok={len(records):>5}")
+            pbar.set_postfix(ok=len(records), refresh=False)
 
     if not records:
         log.error("No records — nothing to write")

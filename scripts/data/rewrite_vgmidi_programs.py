@@ -82,6 +82,7 @@ import sys
 from pathlib import Path
 
 import mido
+from tqdm.auto import tqdm
 
 # Import filename parsing utility from the renderer so we agree on the
 # canonical {piece_id}_{section}_{idx}.mid convention.
@@ -455,52 +456,48 @@ def main() -> None:
         log.info("  max-files    : %d (pilot mode)", args.max_files)
     log.info("─" * 60)
 
-    n_done = 0
-    n_skipped = 0
-    n_failed = 0
+    # Precompute the full work plan so tqdm can show an accurate total +
+    # ETA. The (src, prog, dst) tuples are also useful for the cross-product
+    # case where one src expands into N outputs.
+    plan: list[tuple[Path, int, Path]] = []
     for split in ("train", "test"):
         d = src_root / split
         if not d.exists():
             log.warning("split missing in source: %s", d)
             continue
-        midis = sorted(d.glob("*.mid"))
-        for src in midis:
-            if args.max_files is not None and n_done >= args.max_files:
-                break
+        for src in sorted(d.glob("*.mid")):
             parsed = _parse_filename(src.stem)
             if parsed is None:
                 log.warning("skip unrecognised filename: %s", src.name)
-                n_failed += 1
                 continue
-
-            # Build (program, dst_filename) targets for this source MIDI.
-            # Schedule mode: one target by idx → original filename.
-            # Cross-product mode: N targets, one per program → filename
-            # with _p<program> suffix.
+            # Schedule mode: one target per src by idx → original filename.
+            # Cross-product mode: N targets per src, one per program →
+            # filename with _p<program> suffix.
             if cross_product_programs:
-                targets = [(p, f"{src.stem}_p{p}.mid") for p in cross_product_programs]
+                for p in cross_product_programs:
+                    plan.append((src, p, dst_root / split / f"{src.stem}_p{p}.mid"))
             else:
                 target = target_program_for_idx(parsed["idx"])
-                targets = [(target, src.name)]
-
-            for prog, dst_name in targets:
-                if args.max_files is not None and n_done >= args.max_files:
-                    break
-                dst = dst_root / split / dst_name
-                if dst.exists():
-                    n_skipped += 1
-                    continue
-                try:
-                    rewrite_midi(src, dst, prog)
-                except Exception as e:
-                    log.warning("rewrite failed for %s (prog=%d): %s", src.name, prog, e)
-                    n_failed += 1
-                    continue
-                n_done += 1
-                if n_done % 500 == 0:
-                    log.info("  rewritten: %d", n_done)
-        if args.max_files is not None and n_done >= args.max_files:
+                plan.append((src, target, dst_root / split / src.name))
+            if args.max_files is not None and len(plan) >= args.max_files:
+                break
+        if args.max_files is not None and len(plan) >= args.max_files:
             break
+
+    n_done = 0
+    n_skipped = 0
+    n_failed = 0
+    for src, prog, dst in tqdm(plan, desc="rewrite", unit="midi", smoothing=0.05):
+        if dst.exists():
+            n_skipped += 1
+            continue
+        try:
+            rewrite_midi(src, dst, prog)
+        except Exception as e:
+            log.warning("rewrite failed for %s (prog=%d): %s", src.name, prog, e)
+            n_failed += 1
+            continue
+        n_done += 1
 
     log.info("")
     log.info("=" * 60)
