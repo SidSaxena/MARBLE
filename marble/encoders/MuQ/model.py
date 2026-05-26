@@ -30,7 +30,7 @@ class MuQ_Encoder(BaseEncoder):
         compile_mode: str | None = None,
     ) -> None:
         """
-        Initialize the MERT HuBERT encoder.
+        Initialize the MuQ Conformer encoder.
 
         Args:
             pre_trained_folder (str, optional): Path or HF identifier of the pretrained model.

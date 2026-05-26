@@ -28,7 +28,7 @@ class MuQMuLan_Encoder(BaseEncoder):
         lora_target_modules: Sequence[str] = ["q_proj", "v_proj"],
     ) -> None:
         """
-        Initialize the MERT HuBERT encoder.
+        Initialize the MuQ-MuLan contrastive music-language encoder.
 
         Args:
             pre_trained_folder (str, optional): Path or HF identifier of the pretrained model.

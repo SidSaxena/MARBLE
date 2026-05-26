@@ -30,7 +30,7 @@ class MusicFM_Encoder(BaseEncoder):
         lora_target_modules: Sequence[str] = ["q_proj", "v_proj"],
     ) -> None:
         """
-        Initialize the MERT HuBERT encoder.
+        Initialize the MusicFM masked-denoising encoder.
 
         Args:
             pre_trained_folder (str, optional): Path or HF identifier of the pretrained model.
