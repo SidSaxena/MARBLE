@@ -5,7 +5,7 @@ structure or melody analysis on video-game soundtracks, depending
 on what you have (audio, MIDI, both). Practical deployment guide,
 not an experimental writeup — for the underlying results see
 [`supermario_findings.md`](supermario_findings.md),
-[`leitmotif_findings.md`](leitmotif_findings.md), and the canonical
+*VGMIDITVar-leitmotif findings (deprecated, variant dropped)*, and the canonical
 cross-encoder tables in [`layer_analysis.md`](layer_analysis.md).
 
 **Caveat upfront:** every "audio + VGM + structure" recommendation in
@@ -377,7 +377,7 @@ script consumes. One short script away from a one-command pipeline.
 ## See also
 
 - [`supermario_findings.md`](supermario_findings.md) — SuperMarioStructure CLaMP3-symbolic sweep results
-- [`leitmotif_findings.md`](leitmotif_findings.md) — VGMIDITVar-leitmotif cross-instrument retrieval
+- *VGMIDITVar-leitmotif findings (deprecated, variant dropped)* — VGMIDITVar-leitmotif cross-instrument retrieval
 - [`layer_analysis.md`](layer_analysis.md) — canonical cross-encoder per-task layer-selection reference
 - [`structure_datasets_survey.md`](structure_datasets_survey.md) — other structure datasets we could add
 - [`data/supermario_setup.md`](data/supermario_setup.md) — build commands + class inventory

@@ -57,7 +57,7 @@ Dry-run (print plan, no ffmpeg)::
 Apply to a different variant or alternative IR::
 
     uv run python scripts/data/postprocess_vgmiditvar.py \\
-        --src-dir data/VGMIDITVar-leitmotif/audio \\
+        --src-dir data/VGMIDITVar/audio \\
         --ir data/ir/medium_hall_1.8s.wav --target-lufs -18
 """
 

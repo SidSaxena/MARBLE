@@ -143,7 +143,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         self._test_work_ids: list[torch.Tensor] = []
         self._test_paths: list[str] = []
         # Per-condition metadata for cross-condition MAP (cross-instrument
-        # for VGMIDITVar-leitmotif, cross-soundfont for VGMIDITVar-multisf).
+        # for VGMIDITVar-timbre, cross-soundfont for VGMIDITVar-multisf).
         # Stays empty for 4-tuple datamodules (Covers80, SHS100K) — the
         # per-condition log block is gated on the list being non-empty.
         self._test_conditions: list[torch.Tensor] = []
@@ -264,19 +264,32 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # silently skipped — small smoke runs don't pollute the log with
         # NaN keys.
         from marble.utils.retrieval_metrics import (
+            _ranking_order,
             hit_rate_at_k,
             median_rank_first_hit,
             r_precision,
             recall_at_k,
         )
 
+        # Precompute ranking orders once for all metrics (the (N, N)
+        # argsort is the dominant cost; each metric function accepts an
+        # optional ``order`` kwarg to skip recomputation).
+        order = _ranking_order(sim)
+        order_c = _ranking_order(sim_c) if self.log_extended_retrieval_metrics else None
+
         # Default trim set: recall@10, r_precision, median_rank — all raw.
         # Centered variants of the secondary metrics are rarely flipped
         # by anisotropy and are gated behind the extended flag.
         if N > 10:
-            self.log("test/recall@10", recall_at_k(sim, work_ids, 10), rank_zero_only=True)
-        self.log("test/r_precision", r_precision(sim, work_ids), rank_zero_only=True)
-        self.log("test/median_rank", median_rank_first_hit(sim, work_ids), rank_zero_only=True)
+            self.log(
+                "test/recall@10", recall_at_k(sim, work_ids, 10, order=order), rank_zero_only=True
+            )
+        self.log("test/r_precision", r_precision(sim, work_ids, order=order), rank_zero_only=True)
+        self.log(
+            "test/median_rank",
+            median_rank_first_hit(sim, work_ids, order=order),
+            rank_zero_only=True,
+        )
 
         if self.log_extended_retrieval_metrics:
             # Full K-sweep + _centered duplicates + hit_rate. ~22 keys.
@@ -285,18 +298,24 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             K_RECALL_EXTRA = [k for k in (1, 5, 50, 100) if k < N]
             K_HIT = [k for k in (1, 5, 10) if k < N]
             for k in K_RECALL_EXTRA:
-                self.log(f"test/recall@{k}", recall_at_k(sim, work_ids, k), rank_zero_only=True)
-            for suffix, S in (("", sim), ("_centered", sim_c)):
+                self.log(
+                    f"test/recall@{k}",
+                    recall_at_k(sim, work_ids, k, order=order),
+                    rank_zero_only=True,
+                )
+            for suffix, S, O in (("", sim, order), ("_centered", sim_c, order_c)):
                 for k in K_HIT:
                     self.log(
                         f"test/hit_rate@{k}{suffix}",
-                        hit_rate_at_k(S, work_ids, k),
+                        hit_rate_at_k(S, work_ids, k, order=O),
                         rank_zero_only=True,
                     )
             # centered duplicates of the headline trim set
             if N > 10:
                 self.log(
-                    "test/recall@10_centered", recall_at_k(sim_c, work_ids, 10), rank_zero_only=True
+                    "test/recall@10_centered",
+                    recall_at_k(sim_c, work_ids, 10, order=order_c),
+                    rank_zero_only=True,
                 )
             K_RECALL_ALL_C = [k for k in (1, 5, 10, 50, 100) if k < N]
             for k in K_RECALL_ALL_C:
@@ -304,19 +323,23 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                     continue
                 self.log(
                     f"test/recall@{k}_centered",
-                    recall_at_k(sim_c, work_ids, k),
+                    recall_at_k(sim_c, work_ids, k, order=order_c),
                     rank_zero_only=True,
                 )
-            self.log("test/r_precision_centered", r_precision(sim_c, work_ids), rank_zero_only=True)
+            self.log(
+                "test/r_precision_centered",
+                r_precision(sim_c, work_ids, order=order_c),
+                rank_zero_only=True,
+            )
             self.log(
                 "test/median_rank_centered",
-                median_rank_first_hit(sim_c, work_ids),
+                median_rank_first_hit(sim_c, work_ids, order=order_c),
                 rank_zero_only=True,
             )
 
         # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
         # Only meaningful when the dataset carries a per-item condition
-        # field (VGMIDITVar-leitmotif: gm_program; VGMIDITVar-multisf:
+        # field (VGMIDITVar-timbre: gm_program; VGMIDITVar-multisf:
         # soundfont_id). Covers80 / SHS100K skip silently because their
         # datamodules emit 4-tuples → has_conditions=False.
         #

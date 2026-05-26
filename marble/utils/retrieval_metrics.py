@@ -67,11 +67,18 @@ def _ranking_order(sim: torch.Tensor) -> torch.Tensor:
     SHS100K (1 relevant per query) and ~12.5% for VGMIDITVar-timbre
     (7 relevants). See ``docs/benchmarking_methodology.md`` for the
     pre-fix vs post-fix comparability rules.
+
+    .. note::
+       Avoids cloning the full ``(N, N)`` matrix (~42 GB for VGMIDITVar-
+       timbre with N=102 960). Instead, modifies the diagonal in-place
+       to ``-inf``, runs ``argsort`` (which copies internally), then
+       restores the original diagonal values.
     """
-    sim = sim.clone()
-    N = sim.size(0)
-    sim[range(N), range(N)] = float("-inf")  # force self to the bottom
+    diag = sim.diagonal()  # view into the diagonal — modifies sim in-place
+    diag_vals = diag.clone()  # (N,) — tiny vs full (N,N) clone
+    diag.fill_(float("-inf"))
     order = sim.argsort(descending=True, dim=-1)
+    diag.copy_(diag_vals)  # restore original diagonal
     return order[:, :-1]  # drop the last column (always self)
 
 
@@ -80,7 +87,13 @@ def _ranking_order(sim: torch.Tensor) -> torch.Tensor:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def recall_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
+def recall_at_k(
+    sim: torch.Tensor,
+    work_ids: torch.Tensor,
+    k: int,
+    *,
+    order: torch.Tensor | None = None,
+) -> float:
     """Recall@K — average over queries of (# relevant in top-K) / (# relevant total).
 
     For queries with zero other-relevant items, contribute nothing
@@ -92,6 +105,9 @@ def recall_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
         work_ids: ``(N,)`` group labels.
         k: rank cutoff (1 ≤ k ≤ N − 1). Caller should skip metric
            entirely when k ≥ N.
+        order: Optional precomputed ranking order from :func:`_ranking_order`.
+               Pass to avoid recomputing when calling multiple metrics on
+               the same similarity matrix.
 
     Returns:
         Average recall as a Python float in [0, 1].
@@ -99,7 +115,8 @@ def recall_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
     N = work_ids.size(0)
     if k <= 0 or k >= N:
         raise ValueError(f"k={k} must be in [1, N-1] where N={N}")
-    order = _ranking_order(sim)
+    if order is None:
+        order = _ranking_order(sim)
     recalls: list[float] = []
     for i in range(N):
         is_rel = work_ids[order[i]] == work_ids[i]
@@ -111,7 +128,13 @@ def recall_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
     return float(sum(recalls) / len(recalls)) if recalls else float("nan")
 
 
-def hit_rate_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
+def hit_rate_at_k(
+    sim: torch.Tensor,
+    work_ids: torch.Tensor,
+    k: int,
+    *,
+    order: torch.Tensor | None = None,
+) -> float:
     """Hit Rate@K — fraction of queries with ≥1 relevant in the top-K.
 
     Binary per query; lower variance than Recall@K. "Did the system
@@ -122,7 +145,8 @@ def hit_rate_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
     N = work_ids.size(0)
     if k <= 0 or k >= N:
         raise ValueError(f"k={k} must be in [1, N-1] where N={N}")
-    order = _ranking_order(sim)
+    if order is None:
+        order = _ranking_order(sim)
     hits: list[float] = []
     for i in range(N):
         is_rel = work_ids[order[i]] == work_ids[i]
@@ -132,18 +156,29 @@ def hit_rate_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
     return float(sum(hits) / len(hits)) if hits else float("nan")
 
 
-def median_rank_first_hit(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
+def median_rank_first_hit(
+    sim: torch.Tensor,
+    work_ids: torch.Tensor,
+    *,
+    order: torch.Tensor | None = None,
+) -> float:
     """Median rank (1-indexed) of the first relevant item per query.
 
     Diagnostic — "how deep into the ranking before I see *anything*?"
     Queries with zero relevant items are skipped.
+
+    Args:
+        sim: ``(N, N)`` similarity matrix.
+        work_ids: ``(N,)`` group labels.
+        order: Optional precomputed ranking order from :func:`_ranking_order`.
 
     Returns:
         Median 1-indexed rank as float (use ``int(round(.))`` if a
         rank integer is desired downstream). NaN if no query has a hit.
     """
     N = work_ids.size(0)
-    order = _ranking_order(sim)
+    if order is None:
+        order = _ranking_order(sim)
     first_ranks: list[float] = []
     for i in range(N):
         is_rel = work_ids[order[i]] == work_ids[i]
@@ -160,17 +195,28 @@ def median_rank_first_hit(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
     return float(torch.tensor(first_ranks, dtype=torch.float).quantile(0.5).item())
 
 
-def r_precision(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
+def r_precision(
+    sim: torch.Tensor,
+    work_ids: torch.Tensor,
+    *,
+    order: torch.Tensor | None = None,
+) -> float:
     """R-Precision — precision at K = (number of relevant items for this query).
 
     Self-calibrating K per query: each query's natural cutoff is the
     size of its relevant set. Standard in IR literature; sidesteps the
     "which K?" question entirely.
 
+    Args:
+        sim: ``(N, N)`` similarity matrix.
+        work_ids: ``(N,)`` group labels.
+        order: Optional precomputed ranking order from :func:`_ranking_order`.
+
     Queries with zero relevant items are skipped.
     """
     N = work_ids.size(0)
-    order = _ranking_order(sim)
+    if order is None:
+        order = _ranking_order(sim)
     rps: list[float] = []
     for i in range(N):
         is_rel = work_ids[order[i]] == work_ids[i]
@@ -202,21 +248,15 @@ def compute_perpair_map(
     target_condition``. ``None`` for either means "any condition".
 
     The "condition" axis is dataset-specific:
-      - VGMIDITVar-leitmotif: ``conditions = gm_program`` (GM
-        instrument code, e.g. 0=piano, 48=strings, 60=horn, 73=flute,
-        56=trumpet). Diagonal cells (same instrument) measure
-        within-timbre retrieval; off-diagonal cells measure
+      - VGMIDITVar-timbre: ``conditions = gm_program`` (GM instrument
+        code, e.g. 0=piano, 24=guitar, 48=strings, 60=horn, 73=flute,
+        80=lead-square, 89=warm-pad). Diagonal cells (same instrument)
+        measure within-timbre retrieval; off-diagonal cells measure
         cross-instrument retrieval — the operationally-relevant
-        metric for leitmotif systems.
-      - VGMIDITVar-multisf: ``conditions = soundfont_id`` (which
+        leitmotif/motif-discovery metric.
+      - Legacy multisf builds: ``conditions = soundfont_id`` (which
         SoundFont rendered this audio). Same intuition: off-diagonal
-        = cross-soundfont retrieval, the timbre-invariance measure.
-
-    Lifted from ``scripts/analysis/vgmiditvar_leitmotif_breakdown.py``
-    to enable both (a) live wandb logging via
-    ``CoverRetrievalTask.on_test_epoch_end`` and (b) re-use by the
-    offline analysis script (which now imports from here — single
-    source of truth).
+        = cross-soundfont retrieval.
 
     Args:
         sim: ``(N, N)`` similarity matrix.

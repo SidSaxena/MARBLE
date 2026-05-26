@@ -209,7 +209,7 @@ details.
 - [`layer_analysis.md`](layer_analysis.md) — per-encoder, per-task layer-selection guide
 - [`embedding_cache_correctness.md`](embedding_cache_correctness.md) — when caching is and isn't safe
 - [`performance_optimizations.md`](performance_optimizations.md) — sweep wall-clock optimisation reference
-- [`leitmotif_findings.md`](leitmotif_findings.md) — applied retrieval-evaluation methodology for the headline use case
+- *VGMIDITVar-leitmotif findings (deprecated, variant dropped)* — applied retrieval-evaluation methodology for the headline use case
 
 ---
 

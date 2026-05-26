@@ -29,7 +29,6 @@ sweeps locally and on Modal. Code lives in
 |---|---|
 | [layer_analysis.md](layer_analysis.md) | **Cross-encoder, cross-task layer-selection guide** — the canonical reference for which layer of which encoder to use for which task |
 | [vgm_encoder_selection.md](vgm_encoder_selection.md) | **Deployment-decision guide for VGM** — which encoder + layer to pick when you have audio only / MIDI only / both, plus workarounds (basic-pitch transcription, MIDI rendering) and the tests needed to firm up open recommendations |
-| [leitmotif_findings.md](leitmotif_findings.md) | VGMIDITVar-leitmotif cross-instrument retrieval results — primary motif-analysis study |
 | [supermario_findings.md](supermario_findings.md) | SuperMarioStructure CLaMP3-symbolic sweep — first symbolic-classification result, two-peak L4/L11, L12 cross-modality discussion |
 | [leitmotif_clamp3.md](leitmotif_clamp3.md) | CLaMP3-based leitmotif detection — design, datasets, metrics, sweep wiring |
 | [leitmotif_swtc.md](leitmotif_swtc.md) | SWTC standalone evaluation pipeline |
