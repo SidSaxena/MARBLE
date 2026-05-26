@@ -20,8 +20,8 @@ Note:  The 'fit' command runs with max_epochs=0 (a no-op) so that the
 
 Usage
 -----
-python cli.py fit  -c configs/probe.OMARRQ-multifeature25hz.Covers80.yaml
-python cli.py test -c configs/probe.OMARRQ-multifeature25hz.Covers80.yaml
+python cli.py fit  -c configs/probe.OMARRQ-multifeature-25hz.Covers80.yaml
+python cli.py test -c configs/probe.OMARRQ-multifeature-25hz.Covers80.yaml
 """
 
 import torch

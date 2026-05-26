@@ -141,5 +141,5 @@ Per-encoder configs live at:
 
 - `configs/probe.MERT-v1-95M-layers.HookTheoryKey.yaml`
 - `configs/probe.CLaMP3-layers.HookTheoryKey.yaml`
-- `configs/probe.OMARRQ-multifeature25hz.HookTheoryKey.yaml`
+- `configs/probe.OMARRQ-multifeature-25hz.HookTheoryKey.yaml`
 - (similarly for Structure and Melody)

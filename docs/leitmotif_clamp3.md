@@ -1202,7 +1202,7 @@ expects.  Tested on synthetic MIDI; produces valid byte-level patches.
 |---|---|---|---|---|
 | Audio | `CLaMP3_Encoder` | 13 | `probe.CLaMP3-layers.VGMIDITVar.yaml` | `VGMIDITVarAudioAll` |
 | Audio | `MERT_v1_95M_Encoder` | 13 | `probe.MERT-v1-95M-layers.VGMIDITVar.yaml` | `VGMIDITVarAudioAll` |
-| Audio | `OMARRQ_Multifeature25hz_Encoder` | 24 | `probe.OMARRQ-multifeature25hz.VGMIDITVar.yaml` | `VGMIDITVarAudioAll` |
+| Audio | `OMARRQ_Multifeature25hz_Encoder` | 24 | `probe.OMARRQ-multifeature-25hz.VGMIDITVar.yaml` | `VGMIDITVarAudioAll` |
 | Symbolic | `CLaMP3_Symbolic_Encoder` | 13 | `probe.CLaMP3-symbolic-layers.VGMIDITVar.yaml` | `VGMIDITVarSymbolicAll` |
 
 Files:
@@ -1302,4 +1302,3 @@ Recommended order:
 | Path B: MARBLE `SWTCLeitmotif` task design | [`leitmotif_swtc.md`](./leitmotif_swtc.md), §5 |
 | 10 SWTC-specific workflows (detection, family map, etc.) | [`leitmotif_swtc.md`](./leitmotif_swtc.md), §6 |
 | Scientific questions worth answering | [`leitmotif_swtc.md`](./leitmotif_swtc.md), §8 |
-

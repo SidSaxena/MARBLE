@@ -144,6 +144,6 @@ Per-encoder configs already exist:
 
 - [configs/probe.MERT-v1-95M-layers.SHS100K.yaml](../../configs/probe.MERT-v1-95M-layers.SHS100K.yaml)
 - [configs/probe.CLaMP3-layers.SHS100K.yaml](../../configs/probe.CLaMP3-layers.SHS100K.yaml)
-- [configs/probe.OMARRQ-multifeature25hz.SHS100K.yaml](../../configs/probe.OMARRQ-multifeature25hz.SHS100K.yaml)
+- [configs/probe.OMARRQ-multifeature-25hz.SHS100K.yaml](../../configs/probe.OMARRQ-multifeature-25hz.SHS100K.yaml)
 
 All zero-shot (`max_epochs=0`), test-only.

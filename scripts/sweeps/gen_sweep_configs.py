@@ -29,11 +29,11 @@ automatically and runs it before the per-layer sweep (override with
 Usage
 -----
 python scripts/sweeps/gen_sweep_configs.py \\
-    --base-config configs/probe.OMARRQ-multifeature25hz.Chords1217.yaml \\
+    --base-config configs/probe.OMARRQ-multifeature-25hz.Chords1217.yaml \\
     --num-layers  12 \\
-    --model-tag   OMARRQ-multifeature25hz \\
+    --model-tag   OMARRQ-multifeature-25hz \\
     --task-tag    Chords1217 \\
-    --out-dir     configs/sweeps/OMARRQ-multifeature25hz.Chords1217
+    --out-dir     configs/sweeps/OMARRQ-multifeature-25hz.Chords1217
 """
 
 import argparse

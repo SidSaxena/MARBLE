@@ -2,7 +2,7 @@ seed_everything: 1234
 ckpt_path: null
 
 # HookTheory structure classification — MERT-v1-95M per-layer sweep.
-# Settings match probe.OMARRQ-multifeature25hz.HookTheoryStructure.yaml.
+# Settings match probe.OMARRQ-multifeature-25hz.HookTheoryStructure.yaml.
 
 trainer:
   fast_dev_run: false

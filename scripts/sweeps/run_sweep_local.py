@@ -13,27 +13,27 @@ Usage
 ─────
 # Full 24-layer OMARRQ × GiantSteps sweep
 python scripts/sweeps/run_sweep_local.py \\
-    --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
+    --base-config configs/probe.OMARRQ-multifeature-25hz.GS.yaml \\
     --num-layers  24 \\
-    --model-tag   OMARRQ-multifeature25hz \\
+    --model-tag   OMARRQ-multifeature-25hz \\
     --task-tag    GS
 
 # Resume an interrupted sweep (skips completed layers automatically)
 python scripts/sweeps/run_sweep_local.py \\
-    --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
-    --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS
+    --base-config configs/probe.OMARRQ-multifeature-25hz.GS.yaml \\
+    --num-layers  24 --model-tag OMARRQ-multifeature-25hz --task-tag GS
 
 # Run only specific layers (e.g. for debugging layer 0 and 12)
 python scripts/sweeps/run_sweep_local.py \\
-    --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
-    --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS \\
+    --base-config configs/probe.OMARRQ-multifeature-25hz.GS.yaml \\
+    --num-layers  24 --model-tag OMARRQ-multifeature-25hz --task-tag GS \\
     --layers 0 12
 
 # Override accelerator (e.g. for Apple Silicon; auto-applies precision=16-mixed
 # since MPS doesn't support bf16-mixed)
 python scripts/sweeps/run_sweep_local.py \\
-    --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
-    --num-layers  24 --model-tag OMARRQ-multifeature25hz --task-tag GS \\
+    --base-config configs/probe.OMARRQ-multifeature-25hz.GS.yaml \\
+    --num-layers  24 --model-tag OMARRQ-multifeature-25hz --task-tag GS \\
     --accelerator mps
 
 # Parallel: run 2 layers concurrently as separate subprocesses (best on 16 GB
@@ -638,7 +638,7 @@ def main():
     parser.add_argument(
         "--base-config",
         required=True,
-        help="Path to the base YAML config (e.g. configs/probe.OMARRQ-multifeature25hz.GS.yaml)",
+        help="Path to the base YAML config (e.g. configs/probe.OMARRQ-multifeature-25hz.GS.yaml)",
     )
     parser.add_argument(
         "--num-layers",
@@ -649,7 +649,7 @@ def main():
     parser.add_argument(
         "--model-tag",
         required=True,
-        help="Model identifier used in output paths (e.g. OMARRQ-multifeature25hz)",
+        help="Model identifier used in output paths (e.g. OMARRQ-multifeature-25hz)",
     )
     parser.add_argument(
         "--task-tag",
