@@ -16,25 +16,28 @@ python3 -c "import epitran.download; epitran.download.cedict()"
 import re
 import warnings
 
-# Attempt to import all libraries and provide helpful error messages
+# Attempt to import all libraries. Re-raise ImportError on failure so
+# callers can introspect / handle the missing dep without terminating
+# the host process. We use # noqa: F401 on the imports here because
+# ruff's "unused" detector can't see that the try-block IS the
+# availability check — each import is the side effect we care about.
 try:
-    import editdistance
-    import epitran
-    import langid
-    import pycantonese
-    import pyopenjtalk
-    import pypinyin
-    from phonemizer import phonemize
-    from phonemizer.separator import Separator
-    from pypinyin.style._utils import get_finals, get_initials
-    from unidecode import unidecode
+    import editdistance  # noqa: F401
+    import epitran  # noqa: F401
+    import langid  # noqa: F401
+    import pycantonese  # noqa: F401
+    import pyopenjtalk  # noqa: F401
+    import pypinyin  # noqa: F401
+    from phonemizer import phonemize  # noqa: F401
+    from phonemizer.separator import Separator  # noqa: F401
+    from pypinyin.style._utils import get_finals, get_initials  # noqa: F401
+    from unidecode import unidecode  # noqa: F401
 except ImportError as e:
-    # Re-raise so callers can introspect / handle the missing dep without
-    # terminating the host process. The original sys.exit(1) made the
-    # module impossible to import even for inspection.
-    print(f"Error: A required library is not installed: {e.name}")
-    print("Please install all required libraries from the script's docstring.")
-    raise
+    raise ImportError(
+        f"marble.utils.per requires phonemizer, epitran, langid, pycantonese, "
+        f"pyopenjtalk, pypinyin, editdistance, unidecode (missing: {e.name}). "
+        f"See the script docstring for install instructions."
+    ) from e
 
 
 # Mapping from langid codes to phonemizer/internal codes
