@@ -270,8 +270,8 @@ def main():
     print("  python scripts/sweeps/run_all_sweeps.py --tasks NSynth")
     print("  # or run a single sweep:")
     print("  python scripts/sweeps/run_sweep_local.py \\")
-    print("      --base-config configs/probe.OMARRQ-multifeature25hz.NSynth.yaml \\")
-    print("      --num-layers 24 --model-tag OMARRQ-multifeature25hz --task-tag NSynth")
+    print("      --base-config configs/probe.OMARRQ-multifeature-25hz.NSynth.yaml \\")
+    print("      --num-layers 24 --model-tag OMARRQ-multifeature-25hz --task-tag NSynth")
 
 
 if __name__ == "__main__":
