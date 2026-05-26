@@ -55,7 +55,14 @@ for src_name in \
     fi
 done
 
-# ── 3. Run the 4 configs in parallel-ish (each is fast for 16 files) ───────
+# ── 3. Clean any stale dst dirs from prior runs (safe — only iter dirs) ───
+for d in config_A_loudonly config_B_plate5 config_C_room5 config_D_chamber3; do
+    rm -rf "data/VGMIDITVar-timbre-iter/$d"
+done
+
+# ── 4. Run the 4 configs (each is fast for 16 files) ──────────────────────
+# afir's --wet and --dry are LINEAR gains [0, 10], NOT dB.
+# Mix percentage = wet / (dry + wet).
 PP="uv run python scripts/data/postprocess_vgmiditvar.py --src-dir $SUBSET --workers 4 --force"
 
 echo ""
@@ -63,18 +70,18 @@ echo "── A: no reverb, loudness only ──"
 $PP --dst-dir data/VGMIDITVar-timbre-iter/config_A_loudonly
 
 echo ""
-echo "── B: Vocal Plate, --wet-db=-3 (~5% wet) ──"
-$PP --ir data/ir/bricasti_m7_vocal_plate_mono.wav --wet-db -3 \
+echo "── B: Vocal Plate, dry=10 wet=0.5 (~5% wet) ──"
+$PP --ir data/ir/bricasti_m7_vocal_plate_mono.wav --dry 10 --wet 0.5 \
     --dst-dir data/VGMIDITVar-timbre-iter/config_B_plate5
 
 echo ""
-echo "── C: Small Room, --wet-db=-3 (~5% wet) ──"
-$PP --ir data/ir/bricasti_m7_small_room_mono.wav --wet-db -3 \
+echo "── C: Small Room, dry=10 wet=0.5 (~5% wet) ──"
+$PP --ir data/ir/bricasti_m7_small_room_mono.wav --dry 10 --wet 0.5 \
     --dst-dir data/VGMIDITVar-timbre-iter/config_C_room5
 
 echo ""
-echo "── D: Small Chamber, --wet-db=-6 (~3% wet) ──"
-$PP --ir data/ir/bricasti_m7_small_chamber_mono.wav --wet-db -6 \
+echo "── D: Small Chamber, dry=10 wet=0.3 (~3% wet) ──"
+$PP --ir data/ir/bricasti_m7_small_chamber_mono.wav --dry 10 --wet 0.3 \
     --dst-dir data/VGMIDITVar-timbre-iter/config_D_chamber3
 
 echo ""

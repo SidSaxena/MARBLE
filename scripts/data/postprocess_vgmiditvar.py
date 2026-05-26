@@ -96,8 +96,8 @@ def _build_ffmpeg_cmd(
     dst: Path,
     *,
     ir_path: Path | None,
-    wet_db: float,
-    dry_db: float,
+    wet: float,
+    dry: float,
     target_lufs: float,
     true_peak: float,
     lra: float,
@@ -109,11 +109,15 @@ def _build_ffmpeg_cmd(
     music sources (chiptune / synth / JRPG-style scoring) which are
     typically dry-mixed in their training distribution.
 
-    When ``ir_path`` is supplied, the ``afir`` filter takes the IR as a
-    SECOND input stream, so the IR file is passed via ``-i`` and the
-    dry signal + IR are wired through ``-filter_complex``. dry/wet are
-    afir's gain options in dB; e.g. dry=10, wet=3 ≈ ~15% wet, dry=10
-    wet=-3 ≈ ~5% wet.
+    When ``ir_path`` is supplied, the ``afir`` filter takes the IR as
+    SECOND input stream. ``dry`` and ``wet`` are LINEAR gains
+    in [0, 10] (NOT dB) applied to the dry and reverberated signals
+    respectively. Mix percentage = wet / (dry + wet). E.g.:
+        dry=10 wet=0.3  → ~3% wet — very subtle
+        dry=10 wet=0.5  → ~5% wet — subtle
+        dry=10 wet=1.0  → ~9% wet — modest
+        dry=10 wet=1.5  → ~13% wet — present
+        dry=1  wet=1    → 50% wet — drenched (afir default)
 
     Note: ``loudnorm`` runs single-pass here (no measure-then-apply
     two-pass). Single-pass is ~2× faster and within ±1 LU of two-pass
@@ -145,7 +149,7 @@ def _build_ffmpeg_cmd(
         ]
     # Reverb + loudness path: afir takes IR as second input.
     filter_complex = (
-        f"[0:a][1:a]afir=dry={dry_db}:wet={wet_db}[wet];"
+        f"[0:a][1:a]afir=dry={dry}:wet={wet}[wet];"
         f"[wet]loudnorm=I={target_lufs}:TP={true_peak}:LRA={lra}[out]"
     )
     return common + [
@@ -172,8 +176,8 @@ def _process_one(
     dst: Path,
     *,
     ir_path: Path | None,
-    wet_db: float,
-    dry_db: float,
+    wet: float,
+    dry: float,
     target_lufs: float,
     true_peak: float,
     lra: float,
@@ -193,8 +197,8 @@ def _process_one(
         src,
         tmp,
         ir_path=ir_path,
-        wet_db=wet_db,
-        dry_db=dry_db,
+        wet=wet,
+        dry=dry,
         target_lufs=target_lufs,
         true_peak=true_peak,
         lra=lra,
@@ -293,16 +297,19 @@ def main() -> int:
         "`ffmpeg -i in.wav -ac 1 -ar 44100 out.wav`).",
     )
     ap.add_argument(
-        "--wet-db",
+        "--wet",
         type=float,
-        default=3.0,
-        help="afir wet gain in dB (default 3 — ~15%% wet vs 10 dB dry).",
+        default=0.5,
+        help="afir wet linear gain in [0, 10]. NOT dB. Default 0.5 "
+        "(~5%% wet vs --dry 10). Examples: 0.3 (~3%% wet, very subtle), "
+        "0.5 (~5%%, subtle), 1.0 (~9%%, modest), 1.5 (~13%%, present).",
     )
     ap.add_argument(
-        "--dry-db",
+        "--dry",
         type=float,
         default=10.0,
-        help="afir dry gain in dB (default 10).",
+        help="afir dry linear gain in [0, 10]. Default 10 (keep dry "
+        "near ceiling; loudnorm rescales overall level after).",
     )
     ap.add_argument(
         "--target-lufs",
@@ -393,11 +400,12 @@ def main() -> int:
     if args.backup_sample > 0 and args.in_place:
         _backup_sample(args.src_dir, args.backup_sample)
 
-    reverb_desc = (
-        f"{args.ir.name} (dry/wet {args.dry_db:+.1f}/{args.wet_db:+.1f} dB)"
-        if args.ir is not None
-        else "<none — loudness-only>"
-    )
+    if args.ir is not None:
+        total = args.dry + args.wet
+        wet_pct = (args.wet / total) * 100 if total > 0 else 0.0
+        reverb_desc = f"{args.ir.name} (dry={args.dry:.2f} wet={args.wet:.2f} → {wet_pct:.1f}% wet)"
+    else:
+        reverb_desc = "<none — loudness-only>"
     log.info("─" * 60)
     log.info("VGMIDITVar post-processing plan")
     log.info("─" * 60)
@@ -424,8 +432,8 @@ def main() -> int:
                 src0,
                 dst0.with_name(dst0.name + ".tmp"),
                 ir_path=args.ir,
-                wet_db=args.wet_db,
-                dry_db=args.dry_db,
+                wet=args.wet,
+                dry=args.dry,
                 target_lufs=args.target_lufs,
                 true_peak=args.true_peak,
                 lra=args.lra,
@@ -445,8 +453,8 @@ def main() -> int:
                 src,
                 dst,
                 ir_path=args.ir,
-                wet_db=args.wet_db,
-                dry_db=args.dry_db,
+                wet=args.wet,
+                dry=args.dry,
                 target_lufs=args.target_lufs,
                 true_peak=args.true_peak,
                 lra=args.lra,
