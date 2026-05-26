@@ -70,12 +70,12 @@ Our benchmark coverage so far:
 
 - ✅ Cover retrieval (Covers80, SHS100K) — late-layer probe
 - ✅ Theme/variation (VGMIDITVar) — mid-layer probe
-- ⏳ Structure classification (HookTheoryStructure) — sweep configs ready, not yet run for MuQ
-- ⏳ Melody pitch transcription (HookTheoryMelody) — sweep configs ready, not yet run
+- ⚠️ Structure classification (HookTheoryStructure on MuQ) — previously run (31 wandb runs) but invalidated by audit fix #1 (MuQ config used MERT's feature extractor); needs re-run with corrected config
+- ✅ Melody pitch transcription (HookTheoryMelody) — run; results in the supervised table below
 - ❌ Beat tracking (GTZANBeatTracking) — partial data only (OMARRQ-fsq variant)
-- ❌ Chord recognition (Chords1217), Key detection (HookTheoryKey/GS) — partial coverage across encoders
+- ❌ Chord recognition (Chords1217), Key detection (HookTheoryKey/GS) — partial coverage across encoders; MuQ × HookTheoryKey also affected by audit fix #1
 
-The two missing tasks (HookTheoryStructure + HookTheoryMelody on MuQ) are the highest-priority follow-ups for verifying the recommendations below.
+The highest-priority follow-up is re-running MuQ × HookTheoryStructure and MuQ × HookTheoryKey with the corrected feature-extractor configs.
 
 ---
 
