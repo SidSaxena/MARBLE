@@ -9,7 +9,7 @@ from marble.encoders.MuQMuLan.muq_mulan import MuQMuLan
 
 class MuQMuLan_Encoder(BaseEncoder):
     """
-    A Hugging Face HuBERT-based wrapper with optional LoRA adapters, full fine-tuning, or freezing.
+    MuQ-MuLan contrastive music-language encoder wrapper with optional LoRA adapters, full fine-tuning, or freezing.
     """
 
     NAME = "MuQMuLan"

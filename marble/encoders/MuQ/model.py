@@ -9,7 +9,7 @@ from marble.core.base_encoder import BaseEncoder
 
 class MuQ_Encoder(BaseEncoder):
     """
-    A Hugging Face HuBERT-based wrapper with optional LoRA adapters, full fine-tuning, or freezing.
+    MuQ Conformer encoder wrapper with optional LoRA adapters, full fine-tuning, or freezing.
     """
 
     NAME = "MuQ"

@@ -10,7 +10,7 @@ from marble.core.base_encoder import BaseEncoder
 
 class MusicFM_Encoder(BaseEncoder):
     """
-    A Hugging Face HuBERT-based wrapper with optional LoRA adapters, full fine-tuning, or freezing.
+    MusicFM masked-denoising encoder wrapper with optional LoRA adapters, full fine-tuning, or freezing.
     """
 
     NAME = "MusicFM"
