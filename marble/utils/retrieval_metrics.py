@@ -58,13 +58,15 @@ def _ranking_order(sim: torch.Tensor) -> torch.Tensor:
     ``n_relevant`` by 1, (b) put a spurious True at rank N. We force
     self to the bottom with ``-inf`` then drop the last column.
 
-    Note: this differs subtly from ``CoverRetrievalTask._compute_map``,
-    which sets ``sim[i,i] = -2.0`` (NOT -inf) and keeps the self item
-    in ``is_rel``. The off-by-one effect is small (~1/N) on the
-    reported MAP for large corpora but visible on small unit tests.
-    Kept as-is in ``_compute_map`` for backward compatibility with
-    existing wandb numbers; the new metrics below use proper
-    self-exclusion.
+    As of audit-cleanup-2 (commit ac121f0), ``CoverRetrievalTask._compute_map``,
+    ``_map_at_k``, and ``_mrr`` use this same ``-inf`` + last-column-drop
+    pattern. Earlier those used a ``-2.0`` finite sentinel that left
+    self at rank N with ``is_rel == True``, inflating ``n_relevant`` by 1
+    and adding a spurious hit. The bias was ``1/(n_true+1)`` per query —
+    not ``~1/N`` as previously documented here — i.e. ~50% for Covers80/
+    SHS100K (1 relevant per query) and ~12.5% for VGMIDITVar-timbre
+    (7 relevants). See ``docs/benchmarking_methodology.md`` for the
+    pre-fix vs post-fix comparability rules.
     """
     sim = sim.clone()
     N = sim.size(0)

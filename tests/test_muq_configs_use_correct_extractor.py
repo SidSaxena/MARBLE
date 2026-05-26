@@ -29,8 +29,12 @@ def test_muq_configs_never_use_mert_feature_extractor():
     mono-squeeze behavior instead.
     """
     repo_root = Path(__file__).resolve().parent.parent
-    pattern = str(repo_root / "configs" / "probe.MuQ-*.yaml")
-    cfgs = glob.glob(pattern)
+    # ``probe.MuQ*.yaml`` catches both naming conventions in the repo:
+    # ``probe.MuQ-{layers,meanall}.<task>.yaml`` (the standard) AND
+    # any ``probe.MuQ.<task>.yaml`` dot-separated form. Excludes
+    # ``MuQMuLan`` (different encoder with its own audio transform).
+    pattern = str(repo_root / "configs" / "probe.MuQ*.yaml")
+    cfgs = [c for c in glob.glob(pattern) if "MuQMuLan" not in c]
     assert cfgs, f"No MuQ configs found under {pattern} — check working dir"
 
     offenders: list[str] = []

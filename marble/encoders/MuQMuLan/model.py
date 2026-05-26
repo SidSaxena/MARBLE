@@ -16,7 +16,7 @@ class MuQMuLan_Encoder(BaseEncoder):
     HUGGINGFACE_MODEL_NAME = "OpenMuQ/MuQ-MuLan-large"
     TOKEN_RATE = 1  # Number of feature frames per second of audio
     SAMPLING_RATE = 24000  # Audio sampling rate expected by the model
-    NUM_FEATURES = 512  # Hidden dimension of the HuBERT model
+    NUM_FEATURES = 512  # Hidden dimension of the MuQ-MuLan model
 
     def __init__(
         self,
@@ -45,7 +45,7 @@ class MuQMuLan_Encoder(BaseEncoder):
         # otherwise undo the .eval() applied here for train_mode='freeze'.
         self._marble_train_mode = train_mode
 
-        # Load the core MusicHuBERT model
+        # Load the core MuQ-MuLan model
         self.model = MuQMuLan.from_pretrained(pre_trained_folder or self.HUGGINGFACE_MODEL_NAME)
 
         # Configure which parameters to train
@@ -88,7 +88,7 @@ class MuQMuLan_Encoder(BaseEncoder):
         self, wavs: torch.Tensor, texts: str | list[str] | None = None, *args, **kwargs
     ) -> dict:
         """
-        Perform a forward pass through the HuBERT encoder.
+        Perform a forward pass through the MuQ-MuLan encoder.
 
         Args:
             wavs (torch.Tensor): Waveform tensor, shape (batch_size, num_samples), values in [-1, 1].

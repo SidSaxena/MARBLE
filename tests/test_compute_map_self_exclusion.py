@@ -72,9 +72,13 @@ def test_three_relevants_per_query_all_at_top():
     """4 items, 1 work — all 3 others are relevant. With perfect
     ranking (all 3 at top), AP = 1.0 per query → MAP = 1.0.
 
-    This test guards against accidentally re-introducing the n_relevant
-    inflation: with the buggy -2.0 code, n_relevant would be 4 (including
-    self), AP would be (1+1+1+4/N)/4 ≈ 0.75 + 1/N, not 1.0."""
+    Note: this test is by design NOT diagnostic of the bug on its own
+    (with OLD -2.0 code, AP also rounds to 1.0 because every position
+    in the buggy is_rel is True). It guards the perfect-case baseline.
+    The bug-discriminating tests are
+    ``test_two_works_one_misranks_to_position_2``,
+    ``test_self_not_in_is_rel_via_inf``, and
+    ``test_mrr_skips_queries_with_no_relevant``."""
     work_ids = torch.tensor([0, 0, 0, 0])
     # Identity matrix scaled so self is 1.0, others are decreasing
     sim = torch.tensor(
