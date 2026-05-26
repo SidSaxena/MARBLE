@@ -143,7 +143,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         self._test_work_ids: list[torch.Tensor] = []
         self._test_paths: list[str] = []
         # Per-condition metadata for cross-condition MAP (cross-instrument
-        # for VGMIDITVar-leitmotif, cross-soundfont for VGMIDITVar-multisf).
+        # for VGMIDITVar-timbre, cross-soundfont for VGMIDITVar-multisf).
         # Stays empty for 4-tuple datamodules (Covers80, SHS100K) — the
         # per-condition log block is gated on the list being non-empty.
         self._test_conditions: list[torch.Tensor] = []
@@ -316,7 +316,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
 
         # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
         # Only meaningful when the dataset carries a per-item condition
-        # field (VGMIDITVar-leitmotif: gm_program; VGMIDITVar-multisf:
+        # field (VGMIDITVar-timbre: gm_program; VGMIDITVar-multisf:
         # soundfont_id). Covers80 / SHS100K skip silently because their
         # datamodules emit 4-tuples → has_conditions=False.
         #

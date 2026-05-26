@@ -636,51 +636,6 @@ SWEEPS: list[SweepDef] = [
     # backfill.
     # ══════════════════════════════════════════════════════════════════════════
     # ══════════════════════════════════════════════════════════════════════════
-    # VGMIDI-TVar  ·  LEITMOTIF variant (cross-instrument)
-    # Same MIDIs but program_change events rewritten so theme/variation pairs
-    # span FIVE different GM instruments (Piano, Strings, French Horn, Flute,
-    # Trumpet — see scripts/data/rewrite_vgmidi_programs.py).  Single
-    # SoundFont (Shan SGM-Pro 14) — variation lives in the MIDI itself.
-    # Tests whether encoders that survived the (mild) multi-SoundFont
-    # variation also survive genuine cross-instrument variation, which is
-    # the real leitmotif scenario.  Requires data/VGMIDITVar-leitmotif/.
-    # ══════════════════════════════════════════════════════════════════════════
-    SweepDef(
-        model="CLaMP3",
-        task="VGMIDITVar-leitmotif",
-        base_config="configs/probe.CLaMP3-layers.VGMIDITVar-leitmotif.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | cross-instrument | CLaMP3 13 layers",
-    ),
-    SweepDef(
-        model="MERT-v1-95M",
-        task="VGMIDITVar-leitmotif",
-        base_config="configs/probe.MERT-v1-95M-layers.VGMIDITVar-leitmotif.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | cross-instrument | MERT 13 layers",
-    ),
-    SweepDef(
-        model="MuQ",
-        task="VGMIDITVar-leitmotif",
-        base_config="configs/probe.MuQ-layers.VGMIDITVar-leitmotif.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | cross-instrument | MuQ 13 layers",
-    ),
-    SweepDef(
-        model="OMARRQ-multifeature-25hz",
-        task="VGMIDITVar-leitmotif",
-        base_config="configs/probe.OMARRQ-multifeature-25hz.VGMIDITVar-leitmotif.yaml",
-        num_layers=24,
-        note="Theme→variation | MAP | zero-shot | cross-instrument | OMARRQ 24 layers",
-    ),
-    SweepDef(
-        model="CLaMP3-symbolic",
-        task="VGMIDITVar-leitmotif",
-        base_config="configs/probe.CLaMP3-symbolic-layers.VGMIDITVar-leitmotif.yaml",
-        num_layers=13,
-        note="Theme→variation | MAP | zero-shot | MIDI-native (program-aware) | CLaMP3-symbolic 13 layers",
-    ),
-    # ══════════════════════════════════════════════════════════════════════════
     # VGMIDI-TVar  ·  TIMBRE variant (cross-product cross-instrument)
     # Each source MIDI is rendered with EVERY GM program in the set
     # [0 Piano, 24 Acoustic Guitar (Nylon), 48 Strings, 52 Choir Aahs,
@@ -789,11 +744,6 @@ def _data_present(task: str) -> bool:
         # by scripts/data/rewrite_vgmidi_programs.py --mode cross-product +
         # scripts/data/build_vgmiditvar_dataset.py --skip-extract.
         "VGMIDITVar-timbre": "data/VGMIDITVar-timbre/VGMIDITVar.jsonl",
-        # Leitmotif variant: re-rewritten MIDIs (per-idx GM program rotation)
-        # rendered with a single high-quality SoundFont (Shan SGM-Pro 14).
-        # Produced by scripts/data/rewrite_vgmidi_programs.py +
-        # scripts/data/build_vgmiditvar_dataset.py --skip-extract.
-        "VGMIDITVar-leitmotif": "data/VGMIDITVar-leitmotif/VGMIDITVar.jsonl",
         # HXMSA (Harmonix Set): build via
         # `uv run python scripts/data/build_hxmsa_dataset.py`
         # which clones the upstream annotations, downloads audio via yt-dlp,

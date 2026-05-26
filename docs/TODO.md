@@ -46,7 +46,6 @@ their full per-layer + meanall runs.
 |---|---|---|---|
 | **HookTheoryStructure** | Western pop functional segments | ✅ all 4 audio encoders complete (CLaMP3, MERT-95M, MuQ, OMARRQ × 13–24 layers + meanall) | MERT-330M optional; analysis already written ([layer_analysis.md](layer_analysis.md)) |
 | **VGMIDITVar** | VGM theme-variation retrieval (cover-style baseline for game music) | ✅ all 7 audio + symbolic encoders complete | Done — first-author reference for the leitmotif story |
-| **VGMIDITVar-leitmotif** | VGM leitmotif (recurring-motif slice of VGMIDITVar) | ✅ CLaMP3 audio + symbolic + MERT-95M + MuQ + OMARRQ complete | Optional: MERT-330M, OMARRQ-fsq. Analysis: [leitmotif_findings.md](leitmotif_findings.md) |
 | **VGMIDITVar-multisf** | multi-soundfont VGM (timbre-invariance test for motif recognition) | ✅ CLaMP3 + MERT-95M/330M + MuQ + OMARRQ complete | Optional: OMARRQ-fsq |
 | **SuperMarioStructure** | game-music functional segments (intro/loop/bridge/stinger) — symbolic ✅, audio missing | ⚠️ CLaMP3-symbolic complete (13 layers + meanall); audio path 0/4 | Audio sweep: needs the audio_source uploaded to Modal volume + MERT-95M/MuQ/OMARRQ/CLaMP3-audio configs. See [supermario_findings.md](supermario_findings.md) |
 | **HXMSA** | Harmonix Set structure (general pop) — comparison baseline for game-music structure | 0 / 4 encoders complete | New `setup_hxmsa` on Modal — needs yt-dlp + cookies.txt on volume. Per [data/hxmsa_setup.md](data/hxmsa_setup.md). |

@@ -150,8 +150,8 @@ class _VGMIDITVarAudioBase(Dataset):
         work_id = int(info["work_id"])
         clip_id = make_clip_id(path, slice_idx)
         # ``condition`` carries per-item metadata for cross-condition MAP
-        # in CoverRetrievalTask: gm_program (VGMIDITVar-leitmotif) OR
-        # soundfont_id (VGMIDITVar-multisf) OR -1 sentinel (base
+        # in CoverRetrievalTask: gm_program (VGMIDITVar-timbre) OR
+        # soundfont_id (legacy multisf builds) OR -1 sentinel (base
         # VGMIDITVar — no cross-condition info available; probe skips
         # the per-condition MAP block).
         # Robust to explicit JSON null (``dict.get(key, default)`` returns
