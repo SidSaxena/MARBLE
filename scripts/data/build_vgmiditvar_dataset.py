@@ -429,20 +429,30 @@ def _process_one(
     if not skip_render:
         if sf is None:  # no soundfonts configured (shouldn't happen in render mode)
             return None
-        # Fluidsynth only writes WAV — render WAV first, then optionally
-        # transcode to FLAC + delete the WAV in the same worker call so
-        # peak disk only ever holds one WAV per concurrent worker.
-        ok = _render_midi(midi_path, wav_path, sf)
-        if not ok:
-            return None
-        if final_ext == "flac":
-            if not _convert_wav_to_flac(wav_path, final_path):
-                # Conversion failed; the WAV is still on disk per
-                # _convert_wav_to_flac's contract. Skip this record so
-                # we don't write a JSONL pointer to a file that may not
-                # match the final-ext promise. The orphan WAV is small;
-                # the user can rerun to retry.
+        # Skip the whole render+convert if the FINAL audio is already on
+        # disk. Without this guard, --audio-format=flac runs always re-
+        # render every file: ``_render_midi`` looks at ``wav_path`` which
+        # was deleted after the previous FLAC conversion, so the skip
+        # check there always fails. Check final_path here instead so
+        # already-converted FLACs are honoured. The 1024-byte threshold
+        # matches ``_render_midi`` — guards against half-written stubs.
+        if final_path.exists() and final_path.stat().st_size > 1024:
+            pass  # fall through to ffprobe + record build
+        else:
+            # Fluidsynth only writes WAV — render WAV first, then optionally
+            # transcode to FLAC + delete the WAV in the same worker call so
+            # peak disk only ever holds one WAV per concurrent worker.
+            ok = _render_midi(midi_path, wav_path, sf)
+            if not ok:
                 return None
+            if final_ext == "flac":
+                if not _convert_wav_to_flac(wav_path, final_path):
+                    # Conversion failed; the WAV is still on disk per
+                    # _convert_wav_to_flac's contract. Skip this record so
+                    # we don't write a JSONL pointer to a file that may not
+                    # match the final-ext promise. The orphan WAV is small;
+                    # the user can rerun to retry.
+                    return None
     elif not final_path.exists():
         # --skip-render path: the on-disk file MUST already be the
         # configured final_ext. If --audio-format=flac but only .wav
