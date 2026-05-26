@@ -95,32 +95,31 @@ def _build_ffmpeg_cmd(
     src: Path,
     dst: Path,
     *,
-    ir_path: Path,
+    ir_path: Path | None,
     wet_db: float,
     dry_db: float,
     target_lufs: float,
     true_peak: float,
     lra: float,
 ) -> list[str]:
-    """Single-pass ffmpeg: convolution reverb → loudness normalize.
+    """Single-pass ffmpeg: (optional) convolution reverb → loudness normalize.
 
-    The ``afir`` filter takes the IR as a SECOND input stream (not as
-    a filter option), so the IR file is passed via ``-i`` and the dry
-    signal + IR are wired through ``-filter_complex``. dry/wet are
-    afir's gain options in dB; we bias toward dry (10 dB vs 3 dB
-    ≈ ~15% wet mix). ``loudnorm`` then maps the wet output to a
-    uniform integrated loudness, true-peak ceiling, and loudness range
-    — the EBU R128 broadcast triplet.
+    When ``ir_path`` is None, the reverb stage is skipped — only the
+    ``loudnorm`` filter runs. This is the recommended config for game
+    music sources (chiptune / synth / JRPG-style scoring) which are
+    typically dry-mixed in their training distribution.
+
+    When ``ir_path`` is supplied, the ``afir`` filter takes the IR as a
+    SECOND input stream, so the IR file is passed via ``-i`` and the
+    dry signal + IR are wired through ``-filter_complex``. dry/wet are
+    afir's gain options in dB; e.g. dry=10, wet=3 ≈ ~15% wet, dry=10
+    wet=-3 ≈ ~5% wet.
 
     Note: ``loudnorm`` runs single-pass here (no measure-then-apply
     two-pass). Single-pass is ~2× faster and within ±1 LU of two-pass
     for our use case (uniform-target retrieval, not broadcast delivery).
     """
-    filter_complex = (
-        f"[0:a][1:a]afir=dry={dry_db}:wet={wet_db}[wet];"
-        f"[wet]loudnorm=I={target_lufs}:TP={true_peak}:LRA={lra}[out]"
-    )
-    return [
+    common = [
         "ffmpeg",
         "-nostdin",
         "-loglevel",
@@ -128,13 +127,34 @@ def _build_ffmpeg_cmd(
         "-y",
         "-i",
         str(src),
+    ]
+    if ir_path is None:
+        # Loudness-only path: simple -af chain, single input.
+        return common + [
+            "-af",
+            f"loudnorm=I={target_lufs}:TP={true_peak}:LRA={lra}",
+            "-c:a",
+            "flac",
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-f",
+            "flac",
+            str(dst),
+        ]
+    # Reverb + loudness path: afir takes IR as second input.
+    filter_complex = (
+        f"[0:a][1:a]afir=dry={dry_db}:wet={wet_db}[wet];"
+        f"[wet]loudnorm=I={target_lufs}:TP={true_peak}:LRA={lra}[out]"
+    )
+    return common + [
         "-i",
         str(ir_path),
         "-filter_complex",
         filter_complex,
         "-map",
         "[out]",
-        # Preserve container (FLAC in → FLAC out) and 44.1 kHz / mono.
         "-c:a",
         "flac",
         "-ar",
@@ -149,8 +169,9 @@ def _build_ffmpeg_cmd(
 
 def _process_one(
     src: Path,
+    dst: Path,
     *,
-    ir_path: Path,
+    ir_path: Path | None,
     wet_db: float,
     dry_db: float,
     target_lufs: float,
@@ -158,11 +179,16 @@ def _process_one(
     lra: float,
     force: bool,
 ) -> tuple[Path, bool, str]:
-    """Convert in-place. Returns (src, ok, message)."""
-    if not force and _is_already_processed(src):
+    """Process ``src`` → ``dst`` (atomic, idempotent). Returns (src, ok, msg).
+
+    The ``.postprocessed`` sentinel is dropped next to ``dst`` (not
+    ``src``) so the source tree stays untouched in non-in-place mode.
+    """
+    if not force and _is_already_processed(dst):
         return src, True, "already"
 
-    tmp = src.with_name(f"{src.name}.tmp.{os.getpid()}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f"{dst.name}.tmp.{os.getpid()}")
     cmd = _build_ffmpeg_cmd(
         src,
         tmp,
@@ -188,12 +214,12 @@ def _process_one(
         return src, False, msg
 
     try:
-        os.replace(tmp, src)
+        os.replace(tmp, dst)
     except OSError as e:
         tmp.unlink(missing_ok=True)
         return src, False, f"rename: {e}"
 
-    _mark_processed(src)
+    _mark_processed(dst)
     return src, True, "ok"
 
 
@@ -239,15 +265,31 @@ def main() -> int:
         "--src-dir",
         type=Path,
         default=Path("data/VGMIDITVar-timbre/audio"),
-        help="Audio directory (FLAC/WAV files, in-place processed). Default: %(default)s",
+        help="Source audio directory (FLAC/WAV). Default: %(default)s",
+    )
+    ap.add_argument(
+        "--dst-dir",
+        type=Path,
+        default=None,
+        help="Destination audio directory (mirrors --src-dir layout). "
+        "Default: ``<src-dir>/../audio_processed/``. The source tree is "
+        "NEVER modified — pass --in-place to override.",
+    )
+    ap.add_argument(
+        "--in-place",
+        action="store_true",
+        help="Process in-place, overwriting source files. WARNING: not "
+        "iteration-safe — once applied, you cannot undo the reverb without "
+        "re-rendering. Default is to write to a separate --dst-dir.",
     )
     ap.add_argument(
         "--ir",
         type=Path,
-        required=True,
+        default=None,
         help="Convolution-reverb impulse response (mono WAV recommended). "
-        "Source: a real-room IR like Samplicity Bricasti M7 Small Hall "
-        "(free download, downmix to mono via "
+        "Omit to skip reverb entirely (loudness-norm only). "
+        "Source: a real-room IR like Samplicity Bricasti M7 Vocal Plate "
+        "or Small Room (free download, downmix to mono via "
         "`ffmpeg -i in.wav -ac 1 -ar 44100 out.wav`).",
     )
     ap.add_argument(
@@ -314,12 +356,23 @@ def main() -> int:
     if shutil.which("ffmpeg") is None and not args.dry_run:
         log.error("ffmpeg not on PATH.")
         return 1
-    if not args.ir.exists():
+    if args.ir is not None and not args.ir.exists():
         log.error("--ir file not found: %s", args.ir)
         return 1
     if not args.src_dir.is_dir():
         log.error("--src-dir is not a directory: %s", args.src_dir)
         return 1
+    if args.in_place and args.dst_dir is not None:
+        log.error("--in-place and --dst-dir are mutually exclusive.")
+        return 1
+
+    # Resolve dst dir
+    if args.in_place:
+        dst_root = args.src_dir
+    elif args.dst_dir is not None:
+        dst_root = args.dst_dir
+    else:
+        dst_root = args.src_dir.parent / "audio_processed"
 
     # Discover audio files
     files = sorted([p for p in args.src_dir.rglob("*") if p.suffix.lower() in (".flac", ".wav")])
@@ -329,33 +382,47 @@ def main() -> int:
         log.warning("No FLAC/WAV files found under %s", args.src_dir)
         return 0
 
-    n_already = sum(1 for f in files if _is_already_processed(f) and not args.force)
-    n_todo = len(files) - n_already
+    # Build (src, dst) pairs preserving relative layout.
+    pairs = [(src, dst_root / src.relative_to(args.src_dir)) for src in files]
 
-    # Backup BEFORE processing
-    if args.backup_sample > 0:
+    n_already = sum(1 for _, dst in pairs if _is_already_processed(dst) and not args.force)
+    n_todo = len(pairs) - n_already
+
+    # Backup BEFORE processing (only meaningful in --in-place mode; in
+    # separate-dst mode the source IS the backup).
+    if args.backup_sample > 0 and args.in_place:
         _backup_sample(args.src_dir, args.backup_sample)
 
+    reverb_desc = (
+        f"{args.ir.name} (dry/wet {args.dry_db:+.1f}/{args.wet_db:+.1f} dB)"
+        if args.ir is not None
+        else "<none — loudness-only>"
+    )
     log.info("─" * 60)
-    log.info("VGMIDITVar-timbre post-processing plan")
+    log.info("VGMIDITVar post-processing plan")
     log.info("─" * 60)
     log.info("  --src-dir       : %s", args.src_dir)
-    log.info("  --ir            : %s", args.ir)
-    log.info("  dry/wet         : %.1f / %.1f dB", args.dry_db, args.wet_db)
+    log.info(
+        "  --dst-dir       : %s%s",
+        dst_root,
+        " (in-place)" if args.in_place else "",
+    )
+    log.info("  reverb          : %s", reverb_desc)
     log.info("  target LUFS     : %.1f", args.target_lufs)
     log.info("  true peak       : %.1f dBFS", args.true_peak)
     log.info("  loudness range  : %.1f LU", args.lra)
     log.info("  --workers       : %d", args.workers)
-    log.info("  files found     : %d", len(files))
+    log.info("  files found     : %d", len(pairs))
     log.info("  already done    : %d", n_already)
     log.info("  to process      : %d", n_todo)
     log.info("─" * 60)
 
     if args.dry_run:
-        if files:
+        if pairs:
+            src0, dst0 = pairs[0]
             example = _build_ffmpeg_cmd(
-                files[0],
-                files[0].with_name(files[0].name + ".tmp"),
+                src0,
+                dst0.with_name(dst0.name + ".tmp"),
                 ir_path=args.ir,
                 wet_db=args.wet_db,
                 dry_db=args.dry_db,
@@ -375,7 +442,8 @@ def main() -> int:
         futs = {
             pool.submit(
                 _process_one,
-                f,
+                src,
+                dst,
                 ir_path=args.ir,
                 wet_db=args.wet_db,
                 dry_db=args.dry_db,
@@ -383,8 +451,8 @@ def main() -> int:
                 true_peak=args.true_peak,
                 lra=args.lra,
                 force=args.force,
-            ): f
-            for f in files
+            ): src
+            for src, dst in pairs
         }
         for i, fut in enumerate(as_completed(futs), 1):
             _, ok, msg = fut.result()
