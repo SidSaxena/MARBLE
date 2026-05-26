@@ -2,14 +2,14 @@ seed_everything: 1234
 ckpt_path: null
 
 # SHS-100K zero-shot cover-song retrieval — CLaMP3 variant.
-# See probe.OMARRQ-multifeature25hz.SHS100K.yaml for full explanation.
+# See probe.OMARRQ-multifeature-25hz.SHS100K.yaml for full explanation.
 
 trainer:
   fast_dev_run: false
   accelerator: gpu
   devices: [0]
   num_nodes: 1
-  precision: 16
+  precision: bf16-mixed
   max_epochs: 0
   num_sanity_val_steps: 0
 
