@@ -70,6 +70,7 @@ Usage
 import argparse
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -739,7 +740,33 @@ def main():
     records: list[dict] = []
     total = sum(len(v) for v in splits.values())
     n_done = 0
+    # Snapshot the pre-existing FLACs so we can tell, in the worker-result
+    # loop, which records came from "already on disk" vs a fresh render.
+    # Without this, tqdm's "ok=N" counter conflated skipped-but-recorded
+    # with freshly-rendered files (confusing on resume runs).
+    final_ext = "flac" if args.audio_format == "flac" else "wav"
+    preexisting_finals: set[str] = set()
+    for ps in splits.values():
+        for mp in ps:
+            f = audio_dir / f"{mp.stem}.{final_ext}"
+            if f.exists() and f.stat().st_size > 1024:
+                preexisting_finals.add(mp.stem)
 
+    # Install a hard Ctrl-C handler. ThreadPoolExecutor's default behavior
+    # is to wait for in-flight workers to finish, which on Windows with
+    # fluidsynth subprocesses can hang the terminal for tens of seconds.
+    # SIGINT → immediate process exit so the user always gets the prompt
+    # back after one Ctrl-C.
+    import signal as _signal
+
+    def _bail(sig, frame):  # noqa: ARG001
+        log.warning("Ctrl-C — terminating worker pool immediately")
+        os._exit(130)  # 128 + SIGINT
+
+    _signal.signal(_signal.SIGINT, _bail)
+
+    n_rendered = 0
+    n_skipped = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futs = {}
         for split, paths in splits.items():
@@ -756,8 +783,8 @@ def main():
                         args.audio_format,
                     )
                 ] = (midi_path, split)
-        # Show file-level progress with ETA. smoothing=0.05 averages over a
-        # longer window so the rate is stable for the long-running render.
+        # tqdm shows rendered vs skipped explicitly in the postfix so
+        # resume runs make it obvious nothing is being re-synthesized.
         pbar = tqdm(
             as_completed(futs),
             total=total,
@@ -770,7 +797,12 @@ def main():
             rec = fut.result()
             if rec is not None:
                 records.append(rec)
-            pbar.set_postfix(ok=len(records), refresh=False)
+                stem = Path(rec["audio_path"]).stem
+                if stem in preexisting_finals:
+                    n_skipped += 1
+                else:
+                    n_rendered += 1
+            pbar.set_postfix(rendered=n_rendered, skipped=n_skipped, refresh=False)
 
     if not records:
         log.error("No records — nothing to write")

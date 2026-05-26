@@ -441,6 +441,18 @@ def main() -> int:
             log.info("Example ffmpeg cmd:\n  %s", " ".join(example))
         return 0
 
+    # Hard Ctrl-C handler — ThreadPoolExecutor's default waits for in-
+    # flight workers, which with ffmpeg subprocesses can hang the terminal
+    # for tens of seconds. SIGINT → immediate exit so the user always gets
+    # the prompt back after one Ctrl-C.
+    import signal as _signal
+
+    def _bail(sig, frame):  # noqa: ARG001
+        log.warning("Ctrl-C — terminating worker pool immediately")
+        os._exit(130)
+
+    _signal.signal(_signal.SIGINT, _bail)
+
     # Parallel process
     n_ok = 0
     n_skipped = 0
