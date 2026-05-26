@@ -210,3 +210,56 @@ details.
 - [`embedding_cache_correctness.md`](embedding_cache_correctness.md) — when caching is and isn't safe
 - [`performance_optimizations.md`](performance_optimizations.md) — sweep wall-clock optimisation reference
 - [`leitmotif_findings.md`](leitmotif_findings.md) — applied retrieval-evaluation methodology for the headline use case
+
+---
+
+## MAP self-exclusion fix — pre-fix vs post-fix numbers (2026-05-27)
+
+A code audit found that `CoverRetrievalTask._compute_map` excluded self
+via `sims_i[i] = -2.0` (a finite sentinel) rather than `-inf` + last-column
+drop. With the finite sentinel, `argsort(descending=True)` placed self at
+rank N rather than removing it; the `is_rel` mask matched self
+(`work_ids[i] == work_ids[i]` is always True), inflating `n_relevant`
+by 1 and adding a spurious hit at rank N.
+
+**Per-query bias** scaled as `1 − n_true / (n_true + 1)`:
+
+| Task | True n_relevant | test/map under-report |
+|---|---|---|
+| Covers80 | 1 | ~50% |
+| SHS100K | 1 | ~50% |
+| VGMIDITVar-leitmotif | ~4 | ~20% |
+| VGMIDITVar-timbre | ~7 | ~12.5% |
+| VGMIDITVar base | varies | depends on per-work variation count |
+
+**Fixed in** commit `ac121f0` on branch `fix/audit-cleanup-2` (merged
+into main as part of the audit-2 batch). After this commit:
+
+- `test/map`, `test/map_centered`, `test/map@1`, `test/map@1_centered`,
+  `test/mrr`, `test/mrr_centered` produce numbers consistent with the
+  standard IR-textbook MAP / MRR formulae.
+- `test/recall@K`, `test/r_precision`, `test/median_rank`,
+  `test/anisotropy/*`, `test/map_same_condition`,
+  `test/map_cross_condition`, `test/condition_gap` are **unchanged**
+  (they already used the correct -inf pattern via
+  `marble.utils.retrieval_metrics._ranking_order`).
+
+### Comparability
+
+- **Pre-fix wandb runs vs post-fix wandb runs**: `test/map` values are
+  NOT comparable. Post-fix is the correct number; pre-fix is
+  systematically under-reported by the multiplicative factor in the
+  table above.
+- **Pre-fix relative rankings** (which layer is best, which encoder is
+  best on a given task): preserved. The bias was multiplicative and
+  uniform across encoders within a task.
+- **Cross-task comparisons** in pre-fix data are particularly off
+  (Covers80 was reported at half its true MAP while VGMIDITVar-timbre
+  was off by only ~12.5%); avoid mixing pre-fix and post-fix numbers
+  in any table.
+
+### Action taken
+
+All zero-shot retrieval sweeps (Covers80, SHS100K, all VGMIDITVar
+variants) were re-run after the fix. The audit-2 cleanup branch
+documentation enumerates which wandb groups were re-run.
