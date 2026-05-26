@@ -79,15 +79,25 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from hashlib import md5
 from pathlib import Path
 
+from tqdm.auto import tqdm
+
 log = logging.getLogger(__name__)
 
 # Filename pattern handles both POP909-TVar and VGMIDI-TVar conventions:
 #   POP909-TVar:  052_A_0.mid                   piece=052, section=A, idx=0
 #   VGMIDI-TVar:  e0_real_Other games_NES_Monster Party_Title Screen_A_1.mid
 #                 piece="e0_real_Other games_NES_Monster Party_Title Screen", section=A, idx=1
-# The trailing  _<section>_<idx>.mid  is what identifies the variation; everything
-# before that (including underscores, spaces, slashes) is the piece identifier.
-_FILENAME_RE = re.compile(r"^(?P<piece>.+)_(?P<section>[A-Z]+)_(?P<idx>\d+)\.mid$")
+#   VGMIDITVar-timbre (cross-product):
+#                  052_A_0_p48.mid               piece=052, section=A, idx=0, program=48
+# The trailing  _<section>_<idx>(_p<program>)?.mid  is what identifies the
+# variation. The optional `_p<program>` suffix is the cross-product extension —
+# when present, the program is written to the JSONL's `gm_program` field; when
+# absent, the program is determined by other means (--instrument-map JSON
+# loaded sidecar, or omitted entirely for the single-SF baseline variant).
+# Everything before the structural tail is the piece identifier.
+_FILENAME_RE = re.compile(
+    r"^(?P<piece>.+)_(?P<section>[A-Z]+)_(?P<idx>\d+)(?:_p(?P<program>\d+))?\.mid$"
+)
 
 
 # ── MIDI extraction ──────────────────────────────────────────────────────────
@@ -163,15 +173,26 @@ def _extract_midi_zip(zip_path: Path, dest: Path) -> dict[str, list[Path]]:
 
 
 def _parse_filename(stem: str) -> dict | None:
-    """Parse  '052_A_0'  →  {'piece': '052', 'section': 'A', 'idx': 0}."""
+    """Parse  '052_A_0'  →  {'piece': '052', 'section': 'A', 'idx': 0}.
+
+    Cross-product timbre stems (with ``_p<program>`` suffix) yield an
+    additional ``program`` key:
+      '052_A_0_p48' →  {'piece': '052', 'section': 'A', 'idx': 0, 'program': 48}
+
+    The ``program`` key is None (not in dict) on stems without a suffix.
+    """
     m = _FILENAME_RE.match(stem + ".mid")
     if not m:
         return None
-    return {
+    out = {
         "piece": m.group("piece"),
         "section": m.group("section"),
         "idx": int(m.group("idx")),
     }
+    prog = m.group("program")
+    if prog is not None:
+        out["program"] = int(prog)
+    return out
 
 
 def _work_id_for(piece: str, section: str) -> int:
@@ -220,6 +241,65 @@ def _render_midi(
     if r.returncode != 0 or not audio_path.exists():
         log.warning(f"  render failed: {midi_path.name}: rc={r.returncode}  {r.stderr[:120]}")
         return False
+    return True
+
+
+def _convert_wav_to_flac(wav_path: Path, flac_path: Path, compression: int = 5) -> bool:
+    """Convert WAV → FLAC via ffmpeg (lossless), then delete the WAV.
+
+    Returns True on success, False on failure (in which case the WAV is
+    LEFT INTACT — caller can decide to fall back to it or skip the record).
+    On success, only the FLAC remains on disk; per-file peak disk during
+    conversion is one extra ~1.5 MB while ffmpeg writes the FLAC.
+
+    Used when --audio-format=flac to keep disk usage to ~half the WAV
+    baseline without ever materialising the full WAV dataset.
+
+    Args:
+        wav_path: source WAV (will be deleted on success)
+        flac_path: destination FLAC
+        compression: ffmpeg FLAC compression level [0..12]. Default 5 is
+            the FLAC reference default. Higher = smaller files at ~2-3x
+            CPU cost; 8 typically saves ~5-10% more vs 5.
+    """
+    if flac_path.exists() and flac_path.stat().st_size > 512:
+        # Already converted (resume safety) — drop the WAV if it's still here.
+        if wav_path.exists():
+            try:
+                wav_path.unlink()
+            except OSError:
+                pass
+        return True
+    flac_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(wav_path),
+        "-c:a",
+        "flac",
+        "-compression_level",
+        str(compression),
+        str(flac_path),
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        log.warning(f"  flac convert failed: {wav_path.name}: {e}")
+        return False
+    if r.returncode != 0 or not flac_path.exists() or flac_path.stat().st_size <= 512:
+        log.warning(f"  flac convert failed: {wav_path.name}: rc={r.returncode}  {r.stderr[:120]}")
+        # Leave the WAV behind so caller can either retry or fall back.
+        return False
+    # Conversion succeeded — drop the WAV to keep peak disk under control.
+    try:
+        wav_path.unlink()
+    except OSError as e:
+        log.warning(f"  could not delete WAV after FLAC convert: {wav_path.name}: {e}")
+        # Not fatal — the FLAC is valid; we just leak the WAV on disk.
     return True
 
 
@@ -317,13 +397,21 @@ def _process_one(
     soundfonts: list[Path],
     skip_render: bool,
     instrument_schedule: dict[int, int] | None = None,
+    audio_format: str = "wav",
 ) -> dict | None:
     parsed = _parse_filename(midi_path.stem)
     if parsed is None:
         log.debug(f"  unexpected filename: {midi_path.name}")
         return None
 
-    audio_path = audio_dir / f"{midi_path.stem}.wav"
+    # Final on-disk audio extension depends on --audio-format. WAV is the
+    # render output; FLAC is produced by a per-file convert+delete step
+    # right after render (peak per-file disk stays at ~1 WAV worth, never
+    # the whole dataset).
+    final_ext = "flac" if audio_format == "flac" else "wav"
+    wav_path = audio_dir / f"{midi_path.stem}.wav"
+    final_path = audio_dir / f"{midi_path.stem}.{final_ext}"
+
     # Determine soundfont up front so the JSONL record can carry a stable
     # identifier (used by CoverRetrievalTask for cross-soundfont MAP on the
     # multisf variant). Even with --skip-render we know which SF was picked
@@ -341,22 +429,37 @@ def _process_one(
     if not skip_render:
         if sf is None:  # no soundfonts configured (shouldn't happen in render mode)
             return None
-        ok = _render_midi(midi_path, audio_path, sf)
+        # Fluidsynth only writes WAV — render WAV first, then optionally
+        # transcode to FLAC + delete the WAV in the same worker call so
+        # peak disk only ever holds one WAV per concurrent worker.
+        ok = _render_midi(midi_path, wav_path, sf)
         if not ok:
             return None
-    elif not audio_path.exists():
+        if final_ext == "flac":
+            if not _convert_wav_to_flac(wav_path, final_path):
+                # Conversion failed; the WAV is still on disk per
+                # _convert_wav_to_flac's contract. Skip this record so
+                # we don't write a JSONL pointer to a file that may not
+                # match the final-ext promise. The orphan WAV is small;
+                # the user can rerun to retry.
+                return None
+    elif not final_path.exists():
+        # --skip-render path: the on-disk file MUST already be the
+        # configured final_ext. If --audio-format=flac but only .wav
+        # exists, the user needs to either convert manually first or
+        # rerun without --skip-render. Don't silently substitute.
         return None
 
-    info = _ffprobe_info(audio_path)
+    info = _ffprobe_info(final_path)
     if info is None:
-        log.warning(f"  ffprobe failed: {audio_path.name}")
+        log.warning(f"  ffprobe failed: {final_path.name}")
         return None
     sr, n_samples, channels = info
 
     record = {
         # Forward-slash separators for cross-OS portability. See
         # marble/utils/path_compat.py.
-        "audio_path": audio_path.as_posix(),
+        "audio_path": final_path.as_posix(),
         "work_id": _work_id_for(parsed["piece"], parsed["section"]),
         "variation": parsed["idx"],
         "piece_id": parsed["piece"],
@@ -367,7 +470,16 @@ def _process_one(
         "channels": channels,
         "duration": round(n_samples / sr, 3),
     }
-    if instrument_schedule:
+    # gm_program selection priority:
+    #   1. Filename-encoded program (e.g. ``foo_A_0_p48.mid``) — used by
+    #      the cross-product timbre variant where each (MIDI, program) pair
+    #      is its own file. This is the most explicit + reliable source.
+    #   2. --instrument-map JSON via ``instrument_schedule`` — legacy
+    #      leitmotif variant, program inferred from variation idx.
+    #   3. Neither → no ``gm_program`` field (single-SF baseline).
+    if "program" in parsed:
+        record["gm_program"] = int(parsed["program"])
+    elif instrument_schedule:
         idx = parsed["idx"]
         # Mirror the rewriter's cycling behaviour: idx ≥ len(schedule) cycles
         # modulo len(schedule).
@@ -453,7 +565,38 @@ def main():
         default=None,
         help="Where to extract the MIDI files (default: <data-dir>/midi)",
     )
+    ap.add_argument(
+        "--audio-format",
+        choices=("wav", "flac"),
+        default="wav",
+        help="Output audio format. ``wav`` (default) is fluidsynth's native "
+        "output. ``flac`` adds a per-file FLAC convert+delete step right "
+        "after render — peak per-worker disk stays at one WAV. FLAC is "
+        "lossless (bit-perfect decode); ~55%% smaller than WAV for "
+        "MIDI-rendered audio, zero impact on encoder behaviour. The JSONL "
+        "audio_path field uses the chosen extension. On --skip-render, the "
+        "on-disk files must already match this extension (no auto-substitution).",
+    )
+    ap.add_argument(
+        "--flac-compression",
+        type=int,
+        default=5,
+        help="FLAC compression level [0..12] when --audio-format=flac. "
+        "Default 5 is the FLAC reference default (~55%% of WAV size). "
+        "Level 8 saves an additional 5-10%% at ~2-3x CPU cost. Ignored "
+        "when --audio-format=wav.",
+    )
     args = ap.parse_args()
+    if args.audio_format == "flac" and shutil.which("ffmpeg") is None and not args.skip_render:
+        log.error(
+            "--audio-format=flac requires ffmpeg on PATH. Install ffmpeg "
+            "(e.g. `winget install Gyan.FFmpeg` / `brew install ffmpeg` / "
+            "`apt install ffmpeg`) or use --audio-format=wav."
+        )
+        sys.exit(1)
+    if not (0 <= args.flac_compression <= 12):
+        log.error("--flac-compression must be in [0, 12]; got %d", args.flac_compression)
+        sys.exit(1)
 
     # ── Validate dependencies ────────────────────────────────────────────────
     if not args.skip_render:
@@ -536,8 +679,8 @@ def main():
         1
         for ps in splits.values()
         for p in ps
-        if (audio_dir / f"{p.stem}.wav").exists()
-        and (audio_dir / f"{p.stem}.wav").stat().st_size > 1024
+        if (audio_dir / f"{p.stem}.{args.audio_format}").exists()
+        and (audio_dir / f"{p.stem}.{args.audio_format}").stat().st_size > 1024
     )
     n_to_render = sum(len(v) for v in splits.values()) - n_existing
     log.info("")
@@ -546,6 +689,10 @@ def main():
     log.info("─" * 60)
     log.info(f"  audio-dir         : {audio_dir}")
     log.info(f"  data-dir (jsonl)  : {data_dir / 'VGMIDITVar.jsonl'}")
+    log.info(
+        f"  audio-format      : {args.audio_format}"
+        + (f" (compression={args.flac_compression})" if args.audio_format == "flac" else "")
+    )
     log.info(f"  SoundFonts ({len(soundfonts)}): {[s.name for s in soundfonts]}")
     log.info(f"  MIDIs total       : {sum(len(v) for v in splits.values()):,}")
     log.info(f"  already rendered  : {n_existing:,} (will be skipped)")
@@ -596,16 +743,24 @@ def main():
                         soundfonts,
                         args.skip_render,
                         instrument_schedule,
+                        args.audio_format,
                     )
                 ] = (midi_path, split)
-        for fut in as_completed(futs):
+        # Show file-level progress with ETA. smoothing=0.05 averages over a
+        # longer window so the rate is stable for the long-running render.
+        pbar = tqdm(
+            as_completed(futs),
+            total=total,
+            desc="render",
+            unit="midi",
+            smoothing=0.05,
+        )
+        for fut in pbar:
             n_done += 1
             rec = fut.result()
             if rec is not None:
                 records.append(rec)
-            if n_done % 100 == 0 or n_done == total:
-                pct = 100 * n_done // total
-                log.info(f"  [{pct:3d}%] {n_done:>5}/{total}  ok={len(records):>5}")
+            pbar.set_postfix(ok=len(records), refresh=False)
 
     if not records:
         log.error("No records — nothing to write")

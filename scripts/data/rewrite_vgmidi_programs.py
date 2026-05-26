@@ -2,59 +2,74 @@
 """
 scripts/data/rewrite_vgmidi_programs.py
 ───────────────────────────────────────
-Rewrite the GM program of every VGMIDI-TVar MIDI based on its variation
-index, producing a cross-instrument theme/variation dataset for the
-"leitmotif" benchmark.
+Rewrite the GM program of every VGMIDI-TVar MIDI, producing a
+cross-instrument theme/variation dataset for the "leitmotif" benchmark.
 
-The source dataset is piano-only (every track on GM Program 0). To
-test whether an encoder is *cross-instrument* invariant — the real
-leitmotif scenario, where a theme stated on piano recurs on French
-horn or strings — we rewrite each MIDI's Program Change events so
-that the theme stays on piano and each variation lands on a different
-instrument.
+Two output modes:
 
-Schedule (idx → GM program):
-    idx 0 (theme) → 0   Acoustic Grand Piano
-    idx 1         → 48  String Ensemble 1
-    idx 2         → 60  French Horn
-    idx 3         → 73  Flute
-    idx 4         → 56  Trumpet
-    idx ≥ 5       → cycle (idx % 5)
+1. **Schedule mode (default, ``--mode schedule``)**: each variation idx
+   maps to one fixed program. Drives the legacy
+   ``VGMIDITVar-leitmotif`` variant where instrument identity is
+   confounded with variation index.
+
+   Schedule (idx → GM program):
+       idx 0 (theme) → 0   Acoustic Grand Piano
+       idx 1         → 48  String Ensemble 1
+       idx 2         → 60  French Horn
+       idx 3         → 73  Flute
+       idx 4         → 56  Trumpet
+       idx ≥ 5       → cycle (idx % 5)
+
+2. **Cross-product mode (``--mode cross-product --programs ...``)**:
+   each source MIDI gets ONE output per program in the user-supplied
+   list. Output filenames carry a ``_p<program>`` suffix so the
+   variation idx and program are recorded independently.
+
+       src/train/piece_A_0.mid → dst/train/piece_A_0_p0.mid     (piano)
+                              → dst/train/piece_A_0_p48.mid    (strings)
+                              → dst/train/piece_A_0_p52.mid    (choir)
+                              → ...
+
+   Drives the ``VGMIDITVar-timbre`` variant. Lets the analysis
+   disentangle three orthogonal axes: cross-instrument MAP (same
+   work, same variation, different program), cross-variation MAP
+   (same work, same program, different variation), and the combined
+   axis (legacy "cross-instrument MAP"). Disk cost: N MIDI copies per
+   source file (still ~50 MB per program × 5-8 programs ≈ negligible).
 
 Rewrite policy (in-place, not strip-and-insert):
     1. For every track, for every existing program_change message on a
-       non-drum channel, rewrite its `program` field to the schedule's
-       target for this file. Mid-piece program-change events that
-       existed in the source are preserved (their values are just
-       updated). VGMIDI files are piano-only so this is rare in
-       practice but the policy is robust.
+       non-drum channel, rewrite its `program` field to the target.
+       Mid-piece program-change events that existed in the source are
+       preserved (their values are just updated). VGMIDI files are
+       piano-only so this is rare in practice but the policy is robust.
     2. For any non-drum channel that fires a note_on BEFORE any
        program_change on that channel, insert a single
-       program_change(program=target, time=0) at the head of the
-       track. Guarantees the target instrument is selected before
-       any note is played.
-    3. Channel 9 (GM drum channel, 0-indexed) is left untouched —
-       drum programs select kits, not pitched instruments.
+       program_change(program=target, time=0) at the head of the track.
+    3. Channel 9 (GM drum channel, 0-indexed) is left untouched.
 
 Idempotency:
-    The instrument schedule is hashed and written to
-    `<dst-midi-dir>/instrument_map.json` on first run. Subsequent runs
-    compare the hash; mismatch refuses to proceed without --force,
-    preventing silent stale data when the schedule changes.
+    Schedule mode writes ``<dst-midi-dir>/instrument_map.json`` with a
+    hash of the SCHEDULE dict. Cross-product mode writes
+    ``<dst-midi-dir>/programs.json`` with the program list (sorted).
+    Both refuse to proceed on a hash/list mismatch unless ``--force``.
 
 Usage:
-    # Pilot (10 files), then verify
-    uv run python scripts/data/rewrite_vgmidi_programs.py \\
-        --src-midi-dir data/VGMIDITVar/midi \\
-        --dst-midi-dir data/VGMIDITVar-leitmotif/midi \\
-        --max-files 10
-    uv run python scripts/data/rewrite_vgmidi_programs.py \\
-        --dst-midi-dir data/VGMIDITVar-leitmotif/midi --verify
-
-    # Full run
+    # SCHEDULE mode (legacy leitmotif): one output per MIDI, program by idx
     uv run python scripts/data/rewrite_vgmidi_programs.py \\
         --src-midi-dir data/VGMIDITVar/midi \\
         --dst-midi-dir data/VGMIDITVar-leitmotif/midi
+
+    # CROSS-PRODUCT mode (timbre variant): N outputs per MIDI, one per program
+    uv run python scripts/data/rewrite_vgmidi_programs.py \\
+        --src-midi-dir data/VGMIDITVar/midi \\
+        --dst-midi-dir data/VGMIDITVar-timbre/midi \\
+        --mode cross-product \\
+        --programs 0,24,48,52,60,73,80,89
+
+    # Verify a previously-written dir
+    uv run python scripts/data/rewrite_vgmidi_programs.py \\
+        --dst-midi-dir data/VGMIDITVar-leitmotif/midi --verify
 """
 
 from __future__ import annotations
@@ -67,6 +82,7 @@ import sys
 from pathlib import Path
 
 import mido
+from tqdm.auto import tqdm
 
 # Import filename parsing utility from the renderer so we agree on the
 # canonical {piece_id}_{section}_{idx}.mid convention.
@@ -182,6 +198,76 @@ def read_or_init_instrument_map(dst_root: Path, force: bool) -> None:
                 sys.exit(2)
     dst_root.mkdir(parents=True, exist_ok=True)
     map_path.write_text(json.dumps(current, indent=2) + "\n")
+
+
+def read_or_init_programs_list(dst_root: Path, programs: list[int], force: bool) -> None:
+    """Cross-product analogue of read_or_init_instrument_map.
+
+    Writes ``<dst_root>/programs.json`` with the sorted program list. On
+    re-runs, refuses to proceed if the list disagrees with the prior
+    one unless ``--force`` — same intent as the schedule-mode guard
+    (prevent silently mixing outputs from two different program sets).
+    """
+    progs = sorted(set(programs))
+    map_path = dst_root / "programs.json"
+    current = {"programs": progs}
+    if map_path.exists():
+        try:
+            prior = json.loads(map_path.read_text())
+        except json.JSONDecodeError:
+            prior = None
+        if prior and sorted(prior.get("programs", [])) != progs:
+            if not force:
+                log.error(
+                    "Program list has CHANGED since the previous run.\n"
+                    "  Previous: %s\n"
+                    "  Current:  %s\n"
+                    "Re-running would mix MIDIs from two different program sets.\n"
+                    "Pass --force to proceed and overwrite. If you want both,"
+                    " choose a different --dst-midi-dir.",
+                    sorted(prior.get("programs", [])),
+                    progs,
+                )
+                sys.exit(2)
+    dst_root.mkdir(parents=True, exist_ok=True)
+    map_path.write_text(json.dumps(current, indent=2) + "\n")
+
+
+# Human-readable GM program names — used only for log clarity. Source:
+# https://en.wikipedia.org/wiki/General_MIDI#Program_change_events
+GM_NAMES = {
+    0: "Acoustic Grand Piano",
+    24: "Acoustic Guitar (Nylon)",
+    48: "String Ensemble 1",
+    52: "Choir Aahs",
+    56: "Trumpet",
+    60: "French Horn",
+    73: "Flute",
+    80: "Lead 1 (Square)",
+    89: "Pad 2 (Warm)",
+}
+
+
+def parse_programs_arg(s: str) -> list[int]:
+    """Parse a comma-separated GM program list like '0,48,73' into sorted ints.
+
+    Validates each value is in [0, 127] (GM range). Duplicates are
+    collapsed. Raises ValueError on malformed input or out-of-range
+    programs.
+    """
+    raw = [p.strip() for p in s.split(",") if p.strip()]
+    if not raw:
+        raise ValueError("--programs must be a non-empty comma-separated list")
+    progs: set[int] = set()
+    for p in raw:
+        try:
+            n = int(p)
+        except ValueError:
+            raise ValueError(f"--programs: '{p}' is not an integer") from None
+        if not (0 <= n <= 127):
+            raise ValueError(f"--programs: {n} is out of GM range [0, 127]")
+        progs.add(n)
+    return sorted(progs)
 
 
 # ── Verification ─────────────────────────────────────────────────────────────
@@ -310,6 +396,22 @@ def main() -> None:
         help="Skip rewriting; verify that each MIDI under --dst-midi-dir "
         "matches its scheduled target instrument. Exits 0 on success.",
     )
+    ap.add_argument(
+        "--mode",
+        choices=("schedule", "cross-product"),
+        default="schedule",
+        help="schedule (default, legacy leitmotif): one output per MIDI, "
+        "program by variation idx via SCHEDULE. cross-product (timbre "
+        "variant): N outputs per MIDI, one per program in --programs.",
+    )
+    ap.add_argument(
+        "--programs",
+        type=str,
+        default=None,
+        help="Comma-separated GM program list (0..127), required for "
+        "--mode cross-product. Example: '0,24,48,52,60,73,80,89' for "
+        "Piano/Guitar/Strings/Choir/Horn/Flute/SquareLead/WarmPad.",
+    )
     args = ap.parse_args()
 
     dst_root = Path(args.dst_midi_dir)
@@ -317,7 +419,20 @@ def main() -> None:
     if args.verify:
         sys.exit(verify_dir(dst_root))
 
-    read_or_init_instrument_map(dst_root, args.force)
+    # Parse + validate cross-product args before any I/O.
+    cross_product_programs: list[int] | None = None
+    if args.mode == "cross-product":
+        if not args.programs:
+            log.error("--mode cross-product requires --programs (e.g. '0,48,73')")
+            sys.exit(1)
+        try:
+            cross_product_programs = parse_programs_arg(args.programs)
+        except ValueError as e:
+            log.error("%s", e)
+            sys.exit(1)
+        read_or_init_programs_list(dst_root, cross_product_programs, args.force)
+    else:
+        read_or_init_instrument_map(dst_root, args.force)
 
     src_root = Path(args.src_midi_dir)
     if not src_root.exists():
@@ -331,49 +446,66 @@ def main() -> None:
     log.info("─" * 60)
     log.info("  src-midi-dir : %s", src_root)
     log.info("  dst-midi-dir : %s", dst_root)
-    log.info("  schedule     : %s", SCHEDULE)
+    log.info("  mode         : %s", args.mode)
+    if cross_product_programs:
+        named = ", ".join(f"{p} ({GM_NAMES.get(p, f'GM{p}')})" for p in cross_product_programs)
+        log.info("  programs     : %s", named)
+    else:
+        log.info("  schedule     : %s", SCHEDULE)
     if args.max_files:
         log.info("  max-files    : %d (pilot mode)", args.max_files)
     log.info("─" * 60)
 
-    n_done = 0
-    n_skipped = 0
-    n_failed = 0
+    # Precompute the full work plan so tqdm can show an accurate total +
+    # ETA. The (src, prog, dst) tuples are also useful for the cross-product
+    # case where one src expands into N outputs.
+    plan: list[tuple[Path, int, Path]] = []
     for split in ("train", "test"):
         d = src_root / split
         if not d.exists():
             log.warning("split missing in source: %s", d)
             continue
-        midis = sorted(d.glob("*.mid"))
-        for src in midis:
-            if args.max_files is not None and n_done >= args.max_files:
-                break
+        for src in sorted(d.glob("*.mid")):
             parsed = _parse_filename(src.stem)
             if parsed is None:
                 log.warning("skip unrecognised filename: %s", src.name)
-                n_failed += 1
                 continue
-            target = target_program_for_idx(parsed["idx"])
-            dst = dst_root / split / src.name
-            if dst.exists():
-                n_skipped += 1
-                continue
-            try:
-                rewrite_midi(src, dst, target)
-            except Exception as e:
-                log.warning("rewrite failed for %s: %s", src.name, e)
-                n_failed += 1
-                continue
-            n_done += 1
-            if n_done % 500 == 0:
-                log.info("  rewritten: %d", n_done)
-        if args.max_files is not None and n_done >= args.max_files:
+            # Schedule mode: one target per src by idx → original filename.
+            # Cross-product mode: N targets per src, one per program →
+            # filename with _p<program> suffix.
+            if cross_product_programs:
+                for p in cross_product_programs:
+                    plan.append((src, p, dst_root / split / f"{src.stem}_p{p}.mid"))
+            else:
+                target = target_program_for_idx(parsed["idx"])
+                plan.append((src, target, dst_root / split / src.name))
+            if args.max_files is not None and len(plan) >= args.max_files:
+                break
+        if args.max_files is not None and len(plan) >= args.max_files:
             break
+
+    n_done = 0
+    n_skipped = 0
+    n_failed = 0
+    for src, prog, dst in tqdm(plan, desc="rewrite", unit="midi", smoothing=0.05):
+        if dst.exists():
+            n_skipped += 1
+            continue
+        try:
+            rewrite_midi(src, dst, prog)
+        except Exception as e:
+            log.warning("rewrite failed for %s (prog=%d): %s", src.name, prog, e)
+            n_failed += 1
+            continue
+        n_done += 1
 
     log.info("")
     log.info("=" * 60)
     log.info(" Rewrote %d MIDIs (%d skipped existing, %d failed)", n_done, n_skipped, n_failed)
-    log.info(" Schedule hash: %s", schedule_hash())
+    if cross_product_programs:
+        log.info(" Programs: %s", cross_product_programs)
+    else:
+        log.info(" Schedule hash: %s", schedule_hash())
     log.info("=" * 60)
 
 

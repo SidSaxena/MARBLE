@@ -179,6 +179,129 @@ That only needs the ~10 MB of extracted MIDI; no audio render required.
 
 ---
 
+## Building the cross-product timbre variant (VGMIDITVar-timbre)
+
+The **timbre variant** renders each source MIDI with EVERY GM program
+in a user-chosen set, producing a controlled (variation × instrument)
+grid. This disentangles three orthogonal MAP slices:
+
+| Slice | Definition | What it measures |
+|---|---|---|
+| Pure cross-instrument MAP | same work, **same variation idx**, different `gm_program` | Pure timbre invariance — content held constant |
+| Pure cross-variation MAP | same work, **same `gm_program`**, different variation idx | Pure content invariance — timbre held constant |
+| Combined cross-everything MAP | same work, different variation AND different program | Realistic leitmotif scenario — both axes vary |
+
+Default program set (Set C — 8 programs spanning families):
+
+| GM program | Instrument | Family |
+|---|---|---|
+| 0 | Acoustic Grand Piano | Keys |
+| 24 | Acoustic Guitar (Nylon) | Guitar (plucked) |
+| 48 | String Ensemble 1 | Ensemble |
+| 52 | Choir Aahs | Ensemble (vocal) |
+| 60 | French Horn | Brass |
+| 73 | Flute | Pipe (wind) |
+| 80 | Lead 1 (Square) | Synth lead |
+| 89 | Pad 2 (Warm) | Synth pad |
+
+### Step 1 — Rewrite the MIDIs (cross-product mode)
+
+```bash
+# Assumes data/VGMIDITVar/midi/{train,test}/*.mid already exists.
+# If not, run the base build first (see "Building the dataset" above).
+uv run python scripts/data/rewrite_vgmidi_programs.py \
+    --src-midi-dir data/VGMIDITVar/midi \
+    --dst-midi-dir data/VGMIDITVar-timbre/midi \
+    --mode cross-product \
+    --programs 0,24,48,52,60,73,80,89
+```
+
+Produces 12,870 × 8 = **102,960 MIDIs** under
+`data/VGMIDITVar-timbre/midi/{train,test}/` with filenames like
+`<piece>_<section>_<idx>_p<program>.mid`. Writes `programs.json` for
+idempotency. Disk cost: ~80 MB (MIDIs are tiny).
+
+### Step 2 — Render audio
+
+Two storage choices:
+
+**Storage-conscious (recommended, ~145 GB on disk):**
+
+```bash
+uv run python scripts/data/build_vgmiditvar_dataset.py \
+    --skip-extract \
+    --midi-extract-dir data/VGMIDITVar-timbre/midi \
+    --soundfont /path/to/SGM-V2.01.sf2 \
+    --data-dir data/VGMIDITVar-timbre \
+    --audio-dir data/VGMIDITVar-timbre/audio \
+    --audio-format flac \
+    --workers 8
+```
+
+The `--audio-format flac` flag converts each WAV to FLAC immediately
+after fluidsynth renders it, then deletes the WAV. Peak per-worker disk
+stays at one in-flight WAV (~4 MB). Net dataset size: ~145 GB instead
+of ~312 GB. **Lossless** — torchaudio decodes FLAC bit-perfectly, so
+the encoder sees identical samples to a WAV render. Zero impact on
+retrieval-MAP. Requires `ffmpeg` on PATH.
+
+**Raw WAV (~312 GB on disk):**
+
+```bash
+uv run python scripts/data/build_vgmiditvar_dataset.py \
+    --skip-extract \
+    --midi-extract-dir data/VGMIDITVar-timbre/midi \
+    --soundfont /path/to/SGM-V2.01.sf2 \
+    --data-dir data/VGMIDITVar-timbre \
+    --audio-dir data/VGMIDITVar-timbre/audio \
+    --workers 8
+```
+
+(Omit `--audio-format` → defaults to `wav`.)
+
+Either way, the builder's `_FILENAME_RE` recognises the `_p<program>`
+suffix and writes the program directly to the JSONL's `gm_program`
+field (no `--instrument-map` needed — the program is encoded in the
+filename). Time: ~15-25 min on a modern CPU with 8 workers; FLAC adds
+~2-3 minutes for the in-line conversion.
+
+### Step 3 — Run layer sweeps
+
+The five `VGMIDITVar-timbre` SweepDefs are registered in
+`run_all_sweeps.py`. Standard:
+
+```bash
+uv run python scripts/sweeps/run_all_sweeps.py --tasks VGMIDITVar-timbre
+```
+
+Or one encoder at a time:
+
+```bash
+uv run python scripts/sweeps/run_sweep_local.py \
+    --base-config configs/probe.MuQ-layers.VGMIDITVar-timbre.yaml \
+    --num-layers 13 --model-tag MuQ --task-tag VGMIDITVar-timbre
+```
+
+`CoverRetrievalTask` reads the new `gm_program` field via the
+existing 5-tuple datamodule path — no probe code change needed.
+
+### Choosing your own program set
+
+Set C (8 programs) is the recommended default. Smaller sets cost
+proportionally less:
+
+| Set | Programs | # Files | ~Disk (stereo WAV) |
+|---|---|---|---|
+| A (5, legacy leitmotif) | 0, 48, 56, 60, 73 | ~64 k | ~200 GB |
+| B (5, refined) | 0, 24, 48, 52, 73 | ~64 k | ~200 GB |
+| **C (8, default)** | **0, 24, 48, 52, 60, 73, 80, 89** | **~103 k** | **~250-320 GB** |
+| D (4, minimal) | 0, 48, 60, 73 | ~51 k | ~160 GB |
+
+Pass any comma-separated set to `--programs`. The rewriter validates
+each value is in GM range [0, 127] and deduplicates.
+
+---
+
 ## Optional: re-encode to FLAC to save space
 
 After rendering, the WAVs can be compressed to FLAC losslessly,
