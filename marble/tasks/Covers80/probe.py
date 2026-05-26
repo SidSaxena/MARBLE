@@ -65,6 +65,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         emb_transforms: list[dict],
         cache_embeddings: bool = False,
         cache_pool_time: bool = True,
+        log_extended_retrieval_metrics: bool = False,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -81,6 +82,16 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         self.cache_embeddings = bool(cache_embeddings)
         self.cache_pool_time = bool(cache_pool_time)
         self._init_cache_state()
+
+        # Default trim set logs ~7 retrieval metrics (map, map_centered,
+        # recall@10, r_precision, median_rank, anisotropy/{mean_vec_norm,
+        # effective_rank}) plus the per-condition triplet when present.
+        # Set this True to also log map@1, mrr, the full recall@K range
+        # (1/5/10/50/100), hit_rate@K, the _centered duplicates of
+        # secondary metrics, and the two extra anisotropy lines —
+        # ~26 additional keys. Useful for leitmotif/no-ground-truth runs
+        # where the K-sweep is the actual scientific question.
+        self.log_extended_retrieval_metrics = bool(log_extended_retrieval_metrics)
 
     def setup(self, stage: str | None = None) -> None:
         """Hook into Lightning's per-stage setup to wire the cache check
@@ -235,10 +246,15 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
 
         self.log("test/map", map_raw, prog_bar=True, rank_zero_only=True)
         self.log("test/map_centered", map_centered, prog_bar=False, rank_zero_only=True)
-        self.log("test/map@1", self._map_at_k(sim, work_ids, k=1), rank_zero_only=True)
-        self.log("test/map@1_centered", self._map_at_k(sim_c, work_ids, k=1), rank_zero_only=True)
-        self.log("test/mrr", self._mrr(sim, work_ids), rank_zero_only=True)
-        self.log("test/mrr_centered", self._mrr(sim_c, work_ids), rank_zero_only=True)
+        if self.log_extended_retrieval_metrics:
+            # map@1 ≈ recall@1 (identical when one relevant per query); mrr
+            # ≈ inverse of median_rank. Kept available for K-sweep analysis.
+            self.log("test/map@1", self._map_at_k(sim, work_ids, k=1), rank_zero_only=True)
+            self.log(
+                "test/map@1_centered", self._map_at_k(sim_c, work_ids, k=1), rank_zero_only=True
+            )
+            self.log("test/mrr", self._mrr(sim, work_ids), rank_zero_only=True)
+            self.log("test/mrr_centered", self._mrr(sim_c, work_ids), rank_zero_only=True)
 
         # ── Recall / Hit Rate / median rank / R-Precision ────────────────────
         # Headline metrics for review-budget-K-aware retrieval evaluation
@@ -254,21 +270,49 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             recall_at_k,
         )
 
-        K_RECALL = [k for k in (1, 5, 10, 50, 100) if k < N]
-        K_HIT = [k for k in (1, 5, 10) if k < N]
-        for suffix, S in (("", sim), ("_centered", sim_c)):
-            for k in K_RECALL:
+        # Default trim set: recall@10, r_precision, median_rank — all raw.
+        # Centered variants of the secondary metrics are rarely flipped
+        # by anisotropy and are gated behind the extended flag.
+        if N > 10:
+            self.log("test/recall@10", recall_at_k(sim, work_ids, 10), rank_zero_only=True)
+        self.log("test/r_precision", r_precision(sim, work_ids), rank_zero_only=True)
+        self.log("test/median_rank", median_rank_first_hit(sim, work_ids), rank_zero_only=True)
+
+        if self.log_extended_retrieval_metrics:
+            # Full K-sweep + _centered duplicates + hit_rate. ~22 keys.
+            # Compute is cheap (sim matrix already in memory); cost is
+            # dashboard clutter, hence opt-in.
+            K_RECALL_EXTRA = [k for k in (1, 5, 50, 100) if k < N]
+            K_HIT = [k for k in (1, 5, 10) if k < N]
+            for k in K_RECALL_EXTRA:
+                self.log(f"test/recall@{k}", recall_at_k(sim, work_ids, k), rank_zero_only=True)
+            for suffix, S in (("", sim), ("_centered", sim_c)):
+                for k in K_HIT:
+                    self.log(
+                        f"test/hit_rate@{k}{suffix}",
+                        hit_rate_at_k(S, work_ids, k),
+                        rank_zero_only=True,
+                    )
+            # centered duplicates of the headline trim set
+            if N > 10:
                 self.log(
-                    f"test/recall@{k}{suffix}", recall_at_k(S, work_ids, k), rank_zero_only=True
+                    "test/recall@10_centered", recall_at_k(sim_c, work_ids, 10), rank_zero_only=True
                 )
-            for k in K_HIT:
+            K_RECALL_ALL_C = [k for k in (1, 5, 10, 50, 100) if k < N]
+            for k in K_RECALL_ALL_C:
+                if k == 10:
+                    continue
                 self.log(
-                    f"test/hit_rate@{k}{suffix}", hit_rate_at_k(S, work_ids, k), rank_zero_only=True
+                    f"test/recall@{k}_centered",
+                    recall_at_k(sim_c, work_ids, k),
+                    rank_zero_only=True,
                 )
+            self.log("test/r_precision_centered", r_precision(sim_c, work_ids), rank_zero_only=True)
             self.log(
-                f"test/median_rank{suffix}", median_rank_first_hit(S, work_ids), rank_zero_only=True
+                "test/median_rank_centered",
+                median_rank_first_hit(sim_c, work_ids),
+                rank_zero_only=True,
             )
-            self.log(f"test/r_precision{suffix}", r_precision(S, work_ids), rank_zero_only=True)
 
         # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
         # Only meaningful when the dataset carries a per-item condition
@@ -319,8 +363,26 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         from marble.utils.retrieval_metrics import anisotropy_metrics
 
         ani = anisotropy_metrics(embs)
-        for key, val in ani.items():
-            self.log(f"test/anisotropy/{key}", float(val), rank_zero_only=True)
+        # Default trim: mean_vec_norm (cone-effect headline) + effective_rank
+        # (rank collapse). avg_pair_cos and top1_sv_share are correlated
+        # with these and gated behind the extended flag.
+        self.log("test/anisotropy/mean_vec_norm", float(ani["mean_vec_norm"]), rank_zero_only=True)
+        self.log(
+            "test/anisotropy/effective_rank",
+            float(ani["effective_rank"]),
+            rank_zero_only=True,
+        )
+        if self.log_extended_retrieval_metrics:
+            self.log(
+                "test/anisotropy/avg_pair_cos",
+                float(ani["avg_pair_cos"]),
+                rank_zero_only=True,
+            )
+            self.log(
+                "test/anisotropy/top1_sv_share",
+                float(ani["top1_sv_share"]),
+                rank_zero_only=True,
+            )
         print(
             f"[CoverRetrieval] Anisotropy: mean_vec_norm={ani['mean_vec_norm']:.3f}  "
             f"avg_pair_cos={ani['avg_pair_cos']:.3f}  "

@@ -47,6 +47,7 @@ def _make_task_with_buffers(
     task._test_work_ids = []
     task._test_paths = []
     task._test_conditions = []
+    task.log_extended_retrieval_metrics = False
 
     # Generate n_clips entries: each file has n_clips/n_files clips.
     # work_ids cycle through n_works.
@@ -76,42 +77,74 @@ def _make_task_with_buffers(
     return task, captured
 
 
-def test_covers80_style_skips_condition_metrics():
-    """Covers80 / SHS100K emit 4-tuples → _test_conditions stays empty
-    → per-condition metrics are silently skipped. Generic + anisotropy
-    metrics still fire."""
-    task, log = _make_task_with_buffers(n_clips=20, n_files=10, n_works=5, conditions=None)
+def test_extended_flag_logs_full_metric_set():
+    """log_extended_retrieval_metrics=True restores the pre-trim metric
+    set (map@1, mrr, full K range, hit_rate, centered duplicates, all 4
+    anisotropy keys). Verifies the flag actually toggles behavior."""
+    task, log = _make_task_with_buffers(n_clips=40, n_files=20, n_works=5, conditions=None)
+    task.log_extended_retrieval_metrics = True
     task.on_test_epoch_end()
 
-    # Existing metrics — all present.
     for key in (
-        "test/map",
-        "test/map_centered",
         "test/map@1",
         "test/map@1_centered",
         "test/mrr",
         "test/mrr_centered",
-    ):
-        assert key in log, f"missing existing key {key}"
-
-    # Generic retrieval metrics — should fire on N=10 files.
-    assert "test/recall@1" in log
-    assert "test/recall@5" in log
-    assert "test/hit_rate@1" in log
-    assert "test/median_rank" in log
-    assert "test/r_precision" in log
-    # K=50 and K=100 should be skipped (N=10 < 50)
-    assert "test/recall@50" not in log
-    assert "test/recall@100" not in log
-
-    # Anisotropy — always fires.
-    for key in (
-        "test/anisotropy/mean_vec_norm",
+        "test/recall@1",
+        "test/recall@5",
+        "test/recall@10",
+        "test/recall@10_centered",
+        "test/hit_rate@1",
+        "test/hit_rate@5",
+        "test/hit_rate@10",
+        "test/median_rank_centered",
+        "test/r_precision_centered",
         "test/anisotropy/avg_pair_cos",
         "test/anisotropy/top1_sv_share",
-        "test/anisotropy/effective_rank",
     ):
-        assert key in log
+        assert key in log, f"missing extended key {key}"
+
+
+def test_covers80_style_skips_condition_metrics():
+    """Covers80 / SHS100K emit 4-tuples → _test_conditions stays empty
+    → per-condition metrics are silently skipped. Generic + anisotropy
+    metrics still fire."""
+    task, log = _make_task_with_buffers(n_clips=40, n_files=20, n_works=5, conditions=None)
+    task.on_test_epoch_end()
+
+    # Headline trim set (default — log_extended_retrieval_metrics=False).
+    for key in ("test/map", "test/map_centered"):
+        assert key in log, f"missing headline key {key}"
+
+    # Headline secondary metrics — raw only, no _centered duplicates.
+    assert "test/recall@10" in log
+    assert "test/median_rank" in log
+    assert "test/r_precision" in log
+
+    # Extended set MUST NOT fire under default flag.
+    for absent in (
+        "test/map@1",
+        "test/map@1_centered",
+        "test/mrr",
+        "test/mrr_centered",
+        "test/recall@1",
+        "test/recall@5",
+        "test/recall@50",
+        "test/recall@100",
+        "test/recall@10_centered",
+        "test/hit_rate@1",
+        "test/hit_rate@5",
+        "test/hit_rate@10",
+        "test/median_rank_centered",
+        "test/r_precision_centered",
+        "test/anisotropy/avg_pair_cos",
+        "test/anisotropy/top1_sv_share",
+    ):
+        assert absent not in log, f"unexpected extended key {absent}"
+
+    # Anisotropy trim — mean_vec_norm + effective_rank only.
+    assert "test/anisotropy/mean_vec_norm" in log
+    assert "test/anisotropy/effective_rank" in log
 
     # Per-condition — must NOT fire (no conditions).
     assert "test/map_same_condition" not in log
@@ -133,6 +166,7 @@ def test_vgmiditvar_leitmotif_style_fires_cross_condition():
     task._test_work_ids = []
     task._test_paths = []
     task._test_conditions = []
+    task.log_extended_retrieval_metrics = False
 
     torch.manual_seed(0)
     # 4 works × 4 files = 16 files. Each work has files at conditions
@@ -174,9 +208,9 @@ def test_base_vgmiditvar_style_all_sentinel_skips():
     """Base VGMIDITVar emits 5-tuples but condition=-1 for every record
     (no gm_program or soundfont_id in JSONL). Per-condition block must
     skip since `any(c != -1) == False`."""
-    file_conditions = [-1] * 10
+    file_conditions = [-1] * 20
     task, log = _make_task_with_buffers(
-        n_clips=20, n_files=10, n_works=5, conditions=file_conditions
+        n_clips=40, n_files=20, n_works=5, conditions=file_conditions
     )
     task.on_test_epoch_end()
 
@@ -185,10 +219,12 @@ def test_base_vgmiditvar_style_all_sentinel_skips():
     assert "test/map_cross_condition" not in log
     assert "test/condition_gap" not in log
 
-    # Generic + anisotropy + existing still fire.
-    assert "test/recall@1" in log
+    # Trim-default headline still fires.
+    assert "test/recall@10" in log
     assert "test/anisotropy/mean_vec_norm" in log
     assert "test/map" in log
+    # Extended-only key absent under default trim.
+    assert "test/recall@1" not in log
 
 
 def test_single_condition_logs_only_same_no_cross():
@@ -222,6 +258,7 @@ def test_first_seen_aggregation_path_to_condition():
     task._test_work_ids = []
     task._test_paths = []
     task._test_conditions = []
+    task.log_extended_retrieval_metrics = False
 
     torch.manual_seed(0)
     for file_idx in range(3):
