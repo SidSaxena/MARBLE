@@ -15,8 +15,10 @@ in rooms and mastered to typical streaming loudness, so dry-and-quiet
 SoundFont output is well outside their training distribution.
 
 This script applies, in a single ffmpeg pass per file:
-  1. **Convolution reverb** via ``afir`` with the bundled small-hall IR
-     (see ``scripts/data/ir/small_hall_1.2s.wav``) — adds realistic ambience.
+  1. **Convolution reverb** via ``afir`` with a real-room IR you supply
+     via ``--ir`` (recommend Samplicity Bricasti M7 Small Hall, free
+     download — downmix the stereo IR to mono first via
+     ``ffmpeg -i in.wav -ac 1 -ar 44100 out.wav``).
   2. **EBU R128 loudness normalization** via ``loudnorm`` to a uniform
      perceptual loudness (default ``-16 LUFS`` integrated, ``-1.5 dBFS``
      true peak).
@@ -242,8 +244,11 @@ def main() -> int:
     ap.add_argument(
         "--ir",
         type=Path,
-        default=Path("scripts/data/ir/small_hall_1.2s.wav"),
-        help="Convolution-reverb impulse response. Default: %(default)s",
+        required=True,
+        help="Convolution-reverb impulse response (mono WAV recommended). "
+        "Source: a real-room IR like Samplicity Bricasti M7 Small Hall "
+        "(free download, downmix to mono via "
+        "`ffmpeg -i in.wav -ac 1 -ar 44100 out.wav`).",
     )
     ap.add_argument(
         "--wet-db",
