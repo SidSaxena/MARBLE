@@ -272,3 +272,43 @@ FLAC.
 
 **Trigger.** Once VGMIDITVar-timbre sweep is interpreted AND we want a
 follow-up "ecological deployment" signal.
+
+---
+
+## Ecological per-instrument reverb experiment (deferred)
+
+**Motivation.** Real-world music applies different reverb signatures
+per instrument family: acoustic instruments in concert halls, lead
+synths with short bright reverbs, pad synths drenched in long ambient
+reverbs. Pre-trained encoders saw these conventions in training. The
+current VGMIDITVar-timbre uses ONE IR for all 8 programs to isolate
+timbre invariance as the only varying axis, which is methodologically
+clean but ecologically unrealistic for synth instruments (P80 Lead,
+P89 Pad).
+
+**Design.** Render-side: keep the existing mono renders. Postprocess
+with a per-program IR map instead of a single IR:
+- P0 Piano / P24 Guitar / P48 Strings / P52 Choir / P60 Horn / P73
+  Flute → small/medium concert hall (e.g. Bricasti M7 Small & Near)
+- P80 Lead → bright short plate reverb (e.g. Bricasti M7 Bright Plate,
+  ~1s decay)
+- P89 Pad → long ambient hall (e.g. Bricasti M7 Large & Deep, ~4s decay
+  with high wet mix)
+
+JSONL variant `VGMIDITVar-timbre-ecological` with the same audio paths
+swapped to the ecologically-mixed audio dir.
+
+**Why deferred.** Distinct experiment. The current uniform-IR test
+answers "can the encoder generalize across timbre?". The ecological
+variant answers "can the encoder retrieve under realistic deployment
+conditions?". Run AFTER the uniform-IR test is interpreted so we can
+attribute any per-program regression to either the timbre itself or
+the reverb mismatch.
+
+**Cost.** Re-render the timbre audio with per-program IR. Same wall
+time as the uniform-IR pass (~30-40 min for 102,960 files at 8
+workers). Disk: a parallel copy or in-place rewrite of the already-
+processed audio.
+
+**Trigger.** After VGMIDITVar-timbre (uniform) sweep results are
+analyzed and we want a follow-up "deployment realism" signal.
