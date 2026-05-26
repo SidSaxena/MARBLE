@@ -17,7 +17,7 @@ Marble is a modular, configuration-driven suite for training, evaluating, and pe
 
 ## News and Updates
 * 📌 Join Us on MIREX Discord! [<img alt="join discord" src="https://img.shields.io/discord/1379757597984296980?color=%237289da&logo=discord"/>](https://discord.gg/YxP7VkNxjk)
-* **2025-06-04** Now MARBLE v2 is published on main branch! You could find the old version in `main-v1-archived` branch. 
+* **2025-06-04** Now MARBLE v2 is published on main branch! You could find the old version in `main-v1-archived` branch.
 
 
 ## Key Features
@@ -64,7 +64,7 @@ Marble is a modular, configuration-driven suite for training, evaluating, and pe
     sudo apt install ffmpeg
     uv sync
     # CUDA-enabled torch/torchaudio wheels are fetched automatically
-    # from the PyTorch cu124 index (see pyproject.toml).
+    # from the PyTorch cu128 index (see pyproject.toml).
     ```
 
     **Windows**
@@ -119,12 +119,12 @@ Marble is a modular, configuration-driven suite for training, evaluating, and pe
 | **CLaMP3**                   | Cross-Modal & Language-based Music Pretraining v3. Aligns audio, sheet music, MIDI, and multilingual text via contrastive learning. | [arXiv:2502.10362](https://arxiv.org/abs/2502.10362)          | [GitHub sanderwood/clamp3](https://github.com/sanderwood/clamp3) |
 | **DaSheng**                  | Deep Audio-Signal Holistic Embeddings: masked autoencoder trained on 272 k h of diverse audio.               | [arXiv:2406.06992](https://arxiv.org/abs/2406.06992)          | [GitHub richermans/dasheng](https://github.com/richermans/dasheng) |
 | **identity**                 | Pass-through encoder.                                         | —                                                             | —                                                             |
-| **MERT**                     | Music understanding via large-scale self-supervised training with acoustic & musical pseudo-labels.          | [arXiv:2306.00107](https://arxiv.org/abs/2306.00107)          | [GitHub yizhilll/MERT](https://github.com/yizhilll/MERT)  
+| **MERT**                     | Music understanding via large-scale self-supervised training with acoustic & musical pseudo-labels.          | [arXiv:2306.00107](https://arxiv.org/abs/2306.00107)          | [GitHub yizhilll/MERT](https://github.com/yizhilll/MERT)
 | **MuQ**                      | Self-supervised music representation with Mel Residual Vector Quantization.                                  | [arXiv:2501.01108](https://arxiv.org/abs/2501.01108)          | [GitHub Tencent-ailab/MuQ](https://github.com/tencent-ailab/MuQ) |
 | **MuQMuLan**                 | Two-tower contrastive model combining MuQ audio and text for zero-shot tagging.                              | [arXiv:2501.01108](https://arxiv.org/abs/2501.01108)          | [Hugging Face OpenMuQ/MuQ-MuLan-large](https://huggingface.co/OpenMuQ/MuQ-MuLan-large) |
 | **MusicFM**                  | Masked-token modeling in music using random projections & codebooks.                                         | [arXiv:2311.03318](https://arxiv.org/abs/2311.03318)          | [GitHub minzwon/musicfm](https://github.com/minzwon/musicfm)    |
 | **Qwen2_5OmniEncoder**       | Qwen 2.5-Omni Audio Tower: a multimodal generalist model supporting text, image, audio, and video.           | [arXiv:2503.20215](https://arxiv.org/abs/2503.20215)          | [GitHub QwenLM/Qwen2.5-Omni](https://github.com/QwenLM/Qwen2.5-Omni) |
-| **Qwen2AudioInstructEncoder** | Instruction-tuned variant of Qwen2-Audio Encoder for interactive audio chat.                                 | [arXiv:2407.10759](https://arxiv.org/abs/2407.10759)          | [GitHub QwenLM/Qwen2-Audio](https://github.com/QwenLM/Qwen2-Audio)  
+| **Qwen2AudioInstructEncoder** | Instruction-tuned variant of Qwen2-Audio Encoder for interactive audio chat.                                 | [arXiv:2407.10759](https://arxiv.org/abs/2407.10759)          | [GitHub QwenLM/Qwen2-Audio](https://github.com/QwenLM/Qwen2-Audio)
 | **Xcodec**                   | Improves codec semantics for audio LLMs by integrating semantic features pre-quantization.                  | [arXiv:2408.17175](https://arxiv.org/abs/2408.17175)          | [GitHub zhenye234/xcodec](https://github.com/zhenye234/xcodec)  |
 
 
@@ -171,7 +171,7 @@ The `sota/predict_key.py` script performs key prediction on audio files using a 
 ```bash
 python sota/predict_key.py --filelist_path <filelist> --output_path <output> --batch_size 16 --download_dir <dir>
 
-# You may reproduce the training/testing (if you have access to corresponding data) by running 
+# You may reproduce the training/testing (if you have access to corresponding data) by running
 # bash sota/reproduce_key_sota_20250618.sh
 ```
 
@@ -194,8 +194,8 @@ python sota/predict_key.py --filelist_path <filelist> --output_path <output> --b
 └── README.md                 # This file
 ```
 
-See `marble/encoders/` for available encoders. 
-See `marble/tasks/` for available tasks. 
+See `marble/encoders/` for available encoders.
+See `marble/tasks/` for available tasks.
 
 
 

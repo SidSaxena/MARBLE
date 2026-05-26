@@ -2,7 +2,7 @@ import mir_eval
 import numpy as np
 import torch
 
-from marble.tasks.GTZANBeatTracking.modules import TimeEventFMeasure
+from marble.tasks.GTZANBeatTracking.metrics import TimeEventFMeasure
 from marble.utils.utils import mask_to_times
 
 
@@ -30,6 +30,7 @@ def test_time_event_fmeasure():
     metric1.update(est1, ref1)
     f1_1 = metric1.compute().item()
     print(f"Test 1 (both empty): F1 = {f1_1:.2f} (expected 1.00)")
+    assert abs(f1_1 - 1.0) < 0.01, f"both-empty case: F1 should be 1.0, got {f1_1}"
 
     # 2. Single matching event at exactly the same time → F1 = 1.0
     metric2 = TimeEventFMeasure(label_freq=label_freq, tol=tol)
@@ -39,6 +40,7 @@ def test_time_event_fmeasure():
     metric2.update(est2, ref2)
     f1_2 = metric2.compute().item()
     print(f"Test 2 (perfect match): F1 = {f1_2:.2f} (expected 1.00)")
+    assert abs(f1_2 - 1.0) < 0.01, f"perfect-match case: F1 should be 1.0, got {f1_2}"
 
     # 3. Reference has an event, prediction is empty → F1 = 0.0
     metric3 = TimeEventFMeasure(label_freq=label_freq, tol=tol)
@@ -47,6 +49,7 @@ def test_time_event_fmeasure():
     metric3.update(est3, ref3)
     f1_3 = metric3.compute().item()
     print(f"Test 3 (ref only): F1 = {f1_3:.2f} (expected 0.00)")
+    assert abs(f1_3 - 0.0) < 0.01, f"ref-only case: F1 should be 0.0, got {f1_3}"
 
     # 4. Prediction has an event, reference is empty → F1 = 0.0
     metric4 = TimeEventFMeasure(label_freq=label_freq, tol=tol)
@@ -55,6 +58,7 @@ def test_time_event_fmeasure():
     metric4.update(est4, ref4)
     f1_4 = metric4.compute().item()
     print(f"Test 4 (est only): F1 = {f1_4:.2f} (expected 0.00)")
+    assert abs(f1_4 - 0.0) < 0.01, f"est-only case: F1 should be 0.0, got {f1_4}"
 
     # 5a. Two events on each side; one match, one miss → F1 = 0.50
     metric5a = TimeEventFMeasure(label_freq=label_freq, tol=tol)
@@ -65,6 +69,7 @@ def test_time_event_fmeasure():
     metric5a.update(est5a, ref5a)
     f1_5a = metric5a.compute().item()
     print(f"Test 5a (2 ref vs. 2 pred, one match): F1 = {f1_5a:.2f} (expected 0.50)")
+    assert abs(f1_5a - 0.50) < 0.01, f"2v2 one-match case: F1 should be 0.50, got {f1_5a}"
 
     # 5b. One reference event, two predicted events; only one match → F1 ≈ 0.67
     metric5b = TimeEventFMeasure(label_freq=label_freq, tol=tol)
@@ -75,6 +80,7 @@ def test_time_event_fmeasure():
     metric5b.update(est5b, ref5b)
     f1_5b = metric5b.compute().item()
     print(f"Test 5b (1 ref vs. 2 pred, one match): F1 = {f1_5b:.2f} (expected ~0.67)")
+    assert abs(f1_5b - 0.6667) < 0.02, f"1v2 one-match case: F1 should be ~0.67, got {f1_5b}"
 
 
 if __name__ == "__main__":

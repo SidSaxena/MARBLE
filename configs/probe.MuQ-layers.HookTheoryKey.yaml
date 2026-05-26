@@ -117,17 +117,17 @@ data:
 
     audio_transforms:
       train:
-        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
           init_args:
             pre_trained_folder: null
             squeeze: true
       val:
-        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
           init_args:
             pre_trained_folder: null
             squeeze: true
       test:
-        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
           init_args:
             pre_trained_folder: null
             squeeze: true

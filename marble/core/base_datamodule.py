@@ -3,6 +3,7 @@
 import logging
 import os
 from abc import ABC, ABCMeta, abstractmethod
+from collections.abc import Callable
 
 import lightning.pytorch as pl
 import torch
@@ -158,7 +159,7 @@ class BaseAudioDataset(Dataset, ABC):
         super().__init__()
         # Set by the task at setup() time when the per-clip embedding cache
         # is active. See marble.utils.emb_cache.EmbeddingCacheMixin.
-        self.cache_check_fn: callable | None = None
+        self.cache_check_fn: Callable | None = None
         assert os.path.isfile(jsonl), f"JSONL file not found: {jsonl}"
         assert isinstance(sample_rate, (int, float)), "sample_rate must be an integer or float"
         self.jsonl = jsonl

@@ -312,3 +312,70 @@ processed audio.
 
 **Trigger.** After VGMIDITVar-timbre (uniform) sweep results are
 analyzed and we want a follow-up "deployment realism" signal.
+
+---
+
+## OMARRQ-multifeature-nonfsq config naming + checkpoint-family ambiguity
+
+**Motivation.** `configs/probe.OMARRQ-multifeature-nonfsq*.VGMIDITVar.yaml`
+have an internal inconsistency: the filename says `multifeature-nonfsq`
+(no `-25hz-`) AND the `model_id` is `mtg-upf/omar-rq-multifeature` (the
+75-Hz base checkpoint) — but the wandb `group`, `save_dir`, and some
+tags read `OMARRQ-multifeature-25hz-nonfsq` (would imply the 25-Hz
+variant). Auditor (issue #11) reported this as "two different group
+names for the same variant" — but the two names probably refer to
+DIFFERENT model checkpoints.
+
+**Resolution required.** Decide which checkpoint we actually want to
+probe at this config name, then fix the labels to match. Options:
+1. The intent is the 75-Hz base non-FSQ → fix `group`/`save_dir` to
+   drop the `-25hz-` substring.
+2. The intent is a 25-Hz non-FSQ variant → change `model_id` to the
+   matching HF checkpoint (verify it exists).
+
+**Why deferred.** Not a mechanical fix; needs us to confirm which OMAR-RQ
+checkpoint we ran (or intended to run) under this name. Audit cleanup
+branch leaves these configs untouched.
+
+**Cost.** ~15 min once we decide. No wandb runs exist under either
+group name yet, so no dashboard regression either way.
+
+**Trigger.** When the next OMARRQ-multifeature-nonfsq sweep is
+scheduled, or when collating final OMARRQ variant comparisons.
+
+---
+
+## LeitmotifDetection embedding-cache integration
+
+**Motivation.** `marble/tasks/LeitmotifDetection/probe.py` has zero
+cache wiring while every other new task uses `EmbeddingCacheMixin`.
+Every layer-sweep run re-encodes audio from scratch → ~10× the
+compute cost it should be. LeitmotifDetection is listed as the #1
+research priority in this doc.
+
+**Design (verified via Phase-1 exploration in
+`/Users/sid/.claude/plans/no-i-think-we-re-structured-quilt.md`).**
+
+Probe edits (mirror Covers80/probe.py pattern, since `BaseTask` already
+mixes `EmbeddingCacheMixin`):
+- `__init__`: add `cache_embeddings: bool = False` + `cache_pool_time:
+  bool = True` params; set as attrs; call `self._init_cache_state()`.
+- `setup()`: add hook calling `super().setup(stage); self._ensure_cache();
+  self._inject_cache_check_into_datasets()`.
+- `test_step()`: unpack 4-tuple `(x, labels, file_paths, clip_ids)`
+  and pass `clip_ids=list(clip_ids)` to `self(...)`.
+
+Datamodule edits:
+- Import `make_clip_id` from `marble.utils.emb_cache`.
+- Change `__getitem__` return signature from 3-tuple → 4-tuple
+  `(waveform, label, path, clip_id)`.
+- Compute `clip_id = make_clip_id(path, slice_idx)` per item.
+- Add `self.cache_check_fn = None` in `__init__` for audio-I/O bypass.
+
+**Why deferred (user decision).** Larger structural change (alters the
+3-tuple → 4-tuple contract); wants to land it as its own focused
+branch rather than bundling into a mechanical-fixes PR.
+
+**Cost.** ~1-2 hours implementation + 1 smoke sweep to validate.
+
+**Trigger.** Before the next active LeitmotifDetection sweep run.

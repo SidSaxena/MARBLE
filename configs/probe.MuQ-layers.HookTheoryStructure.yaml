@@ -71,7 +71,7 @@ model:
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
-          in_dim: 1024    # MERT-v1-95M hidden size
+          in_dim: 1024    # MuQ hidden size
           out_dim: 7     # 7 structure classes (intro/verse/pre-chorus/chorus/bridge/outro/inst)
           hidden_layers: [256]
           activation_fn:
@@ -111,17 +111,17 @@ data:
 
     audio_transforms:
       train:
-        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
           init_args:
             pre_trained_folder: null
             squeeze: true
       val:
-        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
           init_args:
             pre_trained_folder: null
             squeeze: true
       test:
-        - class_path: marble.encoders.MERT.model.MERT_v1_95M_FeatureExtractor
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
           init_args:
             pre_trained_folder: null
             squeeze: true

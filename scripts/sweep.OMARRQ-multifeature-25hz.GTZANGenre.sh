@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_CONFIG="configs/probe.OMARRQ-multifeature25hz.GTZANGenre.yaml"
+BASE_CONFIG="configs/probe.OMARRQ-multifeature-25hz.GTZANGenre.yaml"
 NUM_LAYERS=12
-MODEL_TAG="OMARRQ-multifeature25hz"
+MODEL_TAG="OMARRQ-multifeature-25hz"
 TASK_TAG="GTZANGenre"
-SWEEP_DIR="configs/sweeps/OMARRQ-multifeature25hz.GTZANGenre"
+SWEEP_DIR="configs/sweeps/OMARRQ-multifeature-25hz.GTZANGenre"
 
 python scripts/gen_sweep_configs.py \
     --base-config "$BASE_CONFIG" \

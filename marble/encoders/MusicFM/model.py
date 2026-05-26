@@ -10,14 +10,14 @@ from marble.core.base_encoder import BaseEncoder
 
 class MusicFM_Encoder(BaseEncoder):
     """
-    A Hugging Face HuBERT-based wrapper with optional LoRA adapters, full fine-tuning, or freezing.
+    MusicFM masked-denoising encoder wrapper with optional LoRA adapters, full fine-tuning, or freezing.
     """
 
     NAME = "MusicFM"
     MODEL_NAME = "minzwon/MusicFM/pretrained_msd"
     TOKEN_RATE = 25  # Number of feature frames per second of audio
     SAMPLING_RATE = 24000  # Audio sampling rate expected by the model
-    NUM_FEATURES = 1024  # Hidden dimension of the HuBERT model
+    NUM_FEATURES = 1024  # Hidden dimension of the MusicFM model
     N_TRANSFORMER_LAYERS = 12  # Number of transformer layers in the backbone
 
     def __init__(
@@ -30,7 +30,7 @@ class MusicFM_Encoder(BaseEncoder):
         lora_target_modules: Sequence[str] = ["q_proj", "v_proj"],
     ) -> None:
         """
-        Initialize the MERT HuBERT encoder.
+        Initialize the MusicFM masked-denoising encoder.
 
         Args:
             pre_trained_folder (str, optional): Path or HF identifier of the pretrained model.
@@ -64,7 +64,7 @@ class MusicFM_Encoder(BaseEncoder):
             print("Download complete. Files saved to:", pre_trained_folder)
 
 
-        # Load the core MusicHuBERT model
+        # Load the core MusicFM model
         self.model = MusicFM25Hz(
             is_flash=False,
             stat_path=os.path.join(pre_trained_folder, "msd_stats.json"),
@@ -116,7 +116,7 @@ class MusicFM_Encoder(BaseEncoder):
         **kwargs
     ) -> dict:
         """
-        Perform a forward pass through the HuBERT encoder.
+        Perform a forward pass through the MusicFM encoder.
 
         Args:
             x (torch.Tensor): Waveform tensor, shape (batch_size, num_samples), values in [-1, 1].

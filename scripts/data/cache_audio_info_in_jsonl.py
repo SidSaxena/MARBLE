@@ -220,7 +220,7 @@ def cache_for_jsonl(
     tmp = jsonl.with_suffix(jsonl.suffix + ".tmp")
     with tmp.open("w") as f:
         for rec in records:
-            f.write(json.dumps(rec) + "\n")
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     tmp.replace(jsonl)
     print(f"  wrote → {jsonl}")
     return len(records), cached, skipped

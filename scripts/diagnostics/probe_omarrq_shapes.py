@@ -174,7 +174,7 @@ def main():
             "embeddings": pooled,  # (L, B, C)
             "raw_layer_outputs": [t for t in layer_outputs],  # frame-level for later
             "clip_paths": [str(p) for p in paths],
-            "model_name": "OMARRQ-multifeature25hz",
+            "model_name": "OMARRQ-multifeature-25hz",
         },
         args.save_embeddings,
     )

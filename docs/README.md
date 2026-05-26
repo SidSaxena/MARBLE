@@ -34,6 +34,19 @@ sweeps locally and on Modal. Code lives in
 | [leitmotif_clamp3.md](leitmotif_clamp3.md) | CLaMP3-based leitmotif detection — design, datasets, metrics, sweep wiring |
 | [leitmotif_swtc.md](leitmotif_swtc.md) | SWTC standalone evaluation pipeline |
 | [structure_datasets_survey.md](structure_datasets_survey.md) | Survey of music structure datasets MARBLE supports / could add |
+| [symbolic_encoder_landscape.md](symbolic_encoder_landscape.md) | Survey of symbolic / MIDI-native music encoders relevant to this benchmark |
+| [benchmarking_methodology.md](benchmarking_methodology.md) | How we evaluate probes — MLP-probe vs zero-shot retrieval, metric choices, fairness considerations |
+
+## Infrastructure / performance
+
+| Doc | What it covers |
+|---|---|
+| [embedding_cache.md](embedding_cache.md) | Per-clip embedding cache architecture, when to enable, cache-key derivation |
+| [embedding_cache_correctness.md](embedding_cache_correctness.md) | Correctness checks + invariants for the cache (hit/miss semantics, hashing) |
+| [performance_optimizations.md](performance_optimizations.md) | Repo-wide perf tricks — compile modes, data-pipeline scripts, diagnostics |
+| [optimization_uniformity_audit.md](optimization_uniformity_audit.md) | Audit of per-encoder/per-task optimization parity for cross-encoder fairness |
+| [nsynth_optimization_plan.md](nsynth_optimization_plan.md) | NSynth-specific data + training optimization plan |
+| [TODO.md](TODO.md) | Open follow-ups — deferred experiments and design questions |
 
 ## Quick reference — common commands
 

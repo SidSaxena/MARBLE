@@ -15,68 +15,69 @@ python3 -c "import epitran.download; epitran.download.cedict()"
 
 import re
 import warnings
-import sys
-from typing import List, Tuple
 
-# Attempt to import all libraries and provide helpful error messages
+# Attempt to import all libraries. Re-raise ImportError on failure so
+# callers can introspect / handle the missing dep without terminating
+# the host process. We use # noqa: F401 on the imports here because
+# ruff's "unused" detector can't see that the try-block IS the
+# availability check — each import is the side effect we care about.
 try:
-    from unidecode import unidecode
-    from phonemizer import phonemize
-    from phonemizer.separator import Separator
-    import editdistance
-    import langid
-    import epitran
-    import pyopenjtalk
-    import pycantonese
-    import pypinyin
-    from pypinyin.style._utils import get_finals, get_initials
+    import editdistance  # noqa: F401
+    import epitran  # noqa: F401
+    import langid  # noqa: F401
+    import pycantonese  # noqa: F401
+    import pyopenjtalk  # noqa: F401
+    import pypinyin  # noqa: F401
+    from phonemizer import phonemize  # noqa: F401
+    from phonemizer.separator import Separator  # noqa: F401
+    from pypinyin.style._utils import get_finals, get_initials  # noqa: F401
+    from unidecode import unidecode  # noqa: F401
 except ImportError as e:
-    print(f"Error: A required library is not installed: {e.name}")
-    print("Please install all required libraries from the script's docstring.")
-    sys.exit(1)
+    raise ImportError(
+        f"marble.utils.per requires phonemizer, epitran, langid, pycantonese, "
+        f"pyopenjtalk, pypinyin, editdistance, unidecode (missing: {e.name}). "
+        f"See the script docstring for install instructions."
+    ) from e
 
 
 # Mapping from langid codes to phonemizer/internal codes
 LANGUAGE_MAPPING = {
-    'en': 'en-us', # Specify US English for phonemizer
-    'fr': 'fr-fr',
-    'es': 'es',
-    'de': 'de',
-    'zh': 'zh',   # Mandarin
-    'ja': 'ja',
-    'ru': 'ru',
-    'yue': 'yue', # Cantonese (Custom code for our script)
+    "en": "en-us",  # Specify US English for phonemizer
+    "fr": "fr-fr",
+    "es": "es",
+    "de": "de",
+    "zh": "zh",  # Mandarin
+    "ja": "ja",
+    "ru": "ru",
+    "yue": "yue",  # Cantonese (Custom code for our script)
 }
 
 # Create a list of languages that the `langid` library actually supports.
-LANGID_DETECTABLE_LANGS = [lang for lang in LANGUAGE_MAPPING.keys() if lang != 'yue']
+LANGID_DETECTABLE_LANGS = [lang for lang in LANGUAGE_MAPPING if lang != "yue"]
 langid.set_languages(LANGID_DETECTABLE_LANGS)
 
 
 # Epitran language codes for fallback (Chinese 'zh' is now handled by pypinyin)
 EPITRAN_MAPPING = {
-    'ko': 'kor-Hang',      # Korean (Hangul) -> IPA
-    'ru': 'rus-Cyrl',      # Russian (Cyrillic) -> IPA
+    "ko": "kor-Hang",  # Korean (Hangul) -> IPA
+    "ru": "rus-Cyrl",  # Russian (Cyrillic) -> IPA
 }
 
 
 def normalize_text(text: str, language_code: str) -> str:
     """Apply language-appropriate text normalization."""
     text = text.lower().strip()
-    if language_code in {'en-us', 'fr-fr', 'es', 'de'}:
+    if language_code in {"en-us", "fr-fr", "es", "de"}:
         text = unidecode(text)
-    punctuation_to_remove = ".,?!:;\"()[]-"
-    text = re.sub(f'[{re.escape(punctuation_to_remove)}]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
+    punctuation_to_remove = '.,?!:;"()[]-'
+    text = re.sub(f"[{re.escape(punctuation_to_remove)}]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
 def text_to_phonemes(
-    text: str,
-    language_code: str,
-    verbose: bool = False,
-    pinyin_with_tone: bool = True
-) -> List[str]:
+    text: str, language_code: str, verbose: bool = False, pinyin_with_tone: bool = True
+) -> list[str]:
     """
     Convert text to a list of phonemes with a clear fallback strategy.
     For Chinese, allows toggling tones in Pinyin output.
@@ -87,7 +88,7 @@ def text_to_phonemes(
     # --- 1. Specialized Libraries ---
 
     # Handle Mandarin Chinese with pypinyin for accurate Pinyin syllables
-    if language_code == 'zh':
+    if language_code == "zh":
         try:
             # Choose the pypinyin style based on the pinyin_with_tone flag
             style = pypinyin.Style.TONE3 if pinyin_with_tone else pypinyin.Style.NORMAL
@@ -99,10 +100,10 @@ def text_to_phonemes(
         except Exception as e:
             warnings.warn(f"pypinyin failed for 'zh', falling back. Error: {e}")
 
-    if language_code == 'ja':
+    if language_code == "ja":
         try:
             phonemes = pyopenjtalk.g2p(text, kana=False).strip().split()
-            return [p for p in phonemes if p.lower() != 'pau']
+            return [p for p in phonemes if p.lower() != "pau"]
         except Exception as e:
             warnings.warn(f"pyopenjtalk failed for 'ja', falling back. Error: {e}")
 
@@ -123,19 +124,21 @@ def text_to_phonemes(
         phon_str = phonemize(
             text,
             language=language_code,
-            backend='espeak',
-            separator=Separator(phone=' ', word='|'),
+            backend="espeak",
+            separator=Separator(phone=" ", word="|"),
             strip=True,
             preserve_punctuation=False,
             with_stress=True,
-            njobs=1
+            njobs=1,
         )
-        phonemes = [p for p in phon_str.replace('|', ' ').split() if p]
+        phonemes = [p for p in phon_str.replace("|", " ").split() if p]
         if phonemes:
             return phonemes
     except RuntimeError as e:
         if verbose:
-            warnings.warn(f"phonemizer (espeak) does not support '{language_code}', trying epitran. Error: {e}")
+            warnings.warn(
+                f"phonemizer (espeak) does not support '{language_code}', trying epitran. Error: {e}"
+            )
     except Exception as e:
         if verbose:
             warnings.warn(f"phonemizer (espeak) failed unexpectedly, trying epitran. Error: {e}")
@@ -152,7 +155,9 @@ def text_to_phonemes(
         except Exception as e:
             warnings.warn(f"Epitran fallback failed for '{language_code}'. Error: {e}")
             if "cedict.script" in str(e):
-                print("Hint: You may need to download epitran data. See script docstring for the command.")
+                print(
+                    "Hint: You may need to download epitran data. See script docstring for the command."
+                )
 
     # --- 4. Final Fallback: Character-level ---
     warnings.warn(
@@ -160,9 +165,9 @@ def text_to_phonemes(
         f"Falling back to character-level representation. "
         f"The result will be Character Error Rate (CER), not PER."
     )
-    if language_code in ['zh', 'ja', 'yue']:
-        return list(text.replace(' ', ''))
-    return list(text.replace(' ', ''))
+    if language_code in ["zh", "ja", "yue"]:
+        return list(text.replace(" ", ""))
+    return list(text.replace(" ", ""))
 
 
 def phoneme_error_rate(
@@ -170,7 +175,7 @@ def phoneme_error_rate(
     hyp_text: str,
     language_code: str,
     verbose: bool = False,
-    pinyin_with_tone: bool = True
+    pinyin_with_tone: bool = True,
 ) -> float:
     """
     Calculate Phoneme Error Rate (PER).
@@ -207,21 +212,21 @@ def phoneme_error_rate(
 
 
 if __name__ == "__main__":
-    test_cases: List[Tuple[str, str, str]] = [
+    test_cases: list[tuple[str, str, str]] = [
         # (Reference, Hypothesis, Language Code)
-        ("Cats are sitting on the mats.", "Cats are siting on the mat.", 'en-us'),
-        ("Hello world!", "Hello world!", 'en-us'),
-        ("Phoneme error rate.", "Phoneme eror rate.", 'en-us'),
-        ("One two three four", "One two three", 'en-us'),
-        ("Sphinx of black quartz, judge my vow.", "Sphinx of black quartz judge my vow", 'en-us'),
-        ("", "", 'en-us'),
-        ("Non empty ref", "", 'en-us'),
-        ("你好 世界", "你好 思杰", 'zh'),  # Mandarin: 'shi jie' vs 'si jie'
-        ("唔該 世界", "你好 世界", 'yue'), # Cantonese vs Mandarin
-        ("こんにちは 世界", "こんいちは せかい", 'ja'),
-        ("Bonjour le monde", "Bonjor le monde", 'fr-fr'),
-        ("Привет мир", "Привет мир", 'ru'),
-        ("Hola mundo", "Hola mundo!", 'es')
+        ("Cats are sitting on the mats.", "Cats are siting on the mat.", "en-us"),
+        ("Hello world!", "Hello world!", "en-us"),
+        ("Phoneme error rate.", "Phoneme eror rate.", "en-us"),
+        ("One two three four", "One two three", "en-us"),
+        ("Sphinx of black quartz, judge my vow.", "Sphinx of black quartz judge my vow", "en-us"),
+        ("", "", "en-us"),
+        ("Non empty ref", "", "en-us"),
+        ("你好 世界", "你好 思杰", "zh"),  # Mandarin: 'shi jie' vs 'si jie'
+        ("唔該 世界", "你好 世界", "yue"),  # Cantonese vs Mandarin
+        ("こんにちは 世界", "こんいちは せかい", "ja"),
+        ("Bonjour le monde", "Bonjor le monde", "fr-fr"),
+        ("Привет мир", "Привет мир", "ru"),
+        ("Hola mundo", "Hola mundo!", "es"),
     ]
 
     for idx, (r, h, lang_code) in enumerate(test_cases, 1):
@@ -234,17 +239,21 @@ if __name__ == "__main__":
             continue
 
         # Special handling to demonstrate the pinyin tone switch
-        if lang_code == 'zh':
+        if lang_code == "zh":
             print("\n--- Testing Chinese with Tones (Default) ---")
             try:
-                per_val = phoneme_error_rate(r, h, language_code=lang_code, verbose=True, pinyin_with_tone=True)
+                per_val = phoneme_error_rate(
+                    r, h, language_code=lang_code, verbose=True, pinyin_with_tone=True
+                )
                 print(f"PER (with tones): {per_val:.2%}\n")
             except Exception as e:
                 print(f"Error computing PER: {e}\n")
-            
+
             print("--- Testing Chinese without Tones ---")
             try:
-                per_val = phoneme_error_rate(r, h, language_code=lang_code, verbose=True, pinyin_with_tone=False)
+                per_val = phoneme_error_rate(
+                    r, h, language_code=lang_code, verbose=True, pinyin_with_tone=False
+                )
                 print(f"PER (without tones): {per_val:.2%}\n")
             except Exception as e:
                 print(f"Error computing PER: {e}\n")

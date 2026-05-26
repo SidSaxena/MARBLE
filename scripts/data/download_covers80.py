@@ -204,8 +204,8 @@ def main():
 
     print("\nNext steps — run the Covers80 layer sweep:")
     print("  python scripts/sweeps/run_sweep_local.py \\")
-    print("      --base-config configs/probe.OMARRQ-multifeature25hz.Covers80.yaml \\")
-    print("      --num-layers 24 --model-tag OMARRQ-multifeature25hz --task-tag Covers80")
+    print("      --base-config configs/probe.OMARRQ-multifeature-25hz.Covers80.yaml \\")
+    print("      --num-layers 24 --model-tag OMARRQ-multifeature-25hz --task-tag Covers80")
 
 
 if __name__ == "__main__":

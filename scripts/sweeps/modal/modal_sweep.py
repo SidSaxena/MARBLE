@@ -9,9 +9,9 @@ single-layer time instead of N × single-layer.
 Usage
 -----
     modal run scripts/sweeps/modal/modal_sweep.py \\
-        --base-config configs/probe.OMARRQ-multifeature25hz.GS.yaml \\
+        --base-config configs/probe.OMARRQ-multifeature-25hz.GS.yaml \\
         --num-layers 24 \\
-        --model-tag OMARRQ-multifeature25hz \\
+        --model-tag OMARRQ-multifeature-25hz \\
         --task-tag GS
 
 Subset of layers (comma-separated):

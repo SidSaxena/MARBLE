@@ -161,7 +161,7 @@ python scripts/sweeps/run_all_sweeps.py --tasks VGMIDITVar
 This runs:
 1. `CLaMP3 × VGMIDITVar`           (13 layers, audio path)
 2. `MERT-v1-95M × VGMIDITVar`      (13 layers, audio path)
-3. `OMARRQ-multifeature25hz × VGMIDITVar` (24 layers, audio path)
+3. `OMARRQ-multifeature-25hz × VGMIDITVar` (24 layers, audio path)
 4. `CLaMP3-symbolic × VGMIDITVar`  (13 layers, MIDI native — no audio needed)
 
 All four are zero-shot retrieval (`max_epochs=0`); each layer runs

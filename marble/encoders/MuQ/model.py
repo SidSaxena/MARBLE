@@ -9,14 +9,14 @@ from marble.core.base_encoder import BaseEncoder
 
 class MuQ_Encoder(BaseEncoder):
     """
-    A Hugging Face HuBERT-based wrapper with optional LoRA adapters, full fine-tuning, or freezing.
+    MuQ Conformer encoder wrapper with optional LoRA adapters, full fine-tuning, or freezing.
     """
 
     NAME = "MuQ"
     HUGGINGFACE_MODEL_NAME = "OpenMuQ/MuQ-large-msd-iter"
     TOKEN_RATE = 25  # Number of feature frames per second of audio
     SAMPLING_RATE = 24000  # Audio sampling rate expected by the model
-    NUM_FEATURES = 1024  # Hidden dimension of the HuBERT model
+    NUM_FEATURES = 1024  # Hidden dimension of the MuQ Conformer
     N_TRANSFORMER_LAYERS = 12  # Number of transformer layers in the backbone
 
     def __init__(
@@ -30,7 +30,7 @@ class MuQ_Encoder(BaseEncoder):
         compile_mode: str | None = None,
     ) -> None:
         """
-        Initialize the MERT HuBERT encoder.
+        Initialize the MuQ Conformer encoder.
 
         Args:
             pre_trained_folder (str, optional): Path or HF identifier of the pretrained model.
@@ -58,7 +58,7 @@ class MuQ_Encoder(BaseEncoder):
         # otherwise undo the .eval() applied here for train_mode='freeze'.
         self._marble_train_mode = train_mode
 
-        # Load the core MusicHuBERT model
+        # Load the core MuQ Conformer model
         self.model = MuQ.from_pretrained(
             pre_trained_folder or self.HUGGINGFACE_MODEL_NAME
         )
@@ -149,7 +149,7 @@ class MuQ_Encoder(BaseEncoder):
         **kwargs
     ) -> dict:
         """
-        Perform a forward pass through the HuBERT encoder.
+        Perform a forward pass through the MuQ encoder.
 
         Args:
             x (torch.Tensor): Waveform tensor, shape (batch_size, num_samples), values in [-1, 1].

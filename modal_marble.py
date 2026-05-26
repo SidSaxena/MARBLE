@@ -1927,9 +1927,9 @@ def download_gtzan_only():
 def sweep_omarrq_chords1217():
     """OMAR-RQ multifeature-25hz full layer sweep on Chords1217 (24 layers, depth=24)."""
     run_sweep.remote(
-        base_config="configs/probe.OMARRQ-multifeature25hz.Chords1217.yaml",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.Chords1217.yaml",
         num_layers=24,
-        model_tag="OMARRQ-multifeature25hz",
+        model_tag="OMARRQ-multifeature-25hz",
         task_tag="Chords1217",
     )
 
@@ -1938,9 +1938,9 @@ def sweep_omarrq_chords1217():
 def sweep_omarrq_gtzan():
     """OMAR-RQ multifeature-25hz full layer sweep on GTZANGenre (24 layers, depth=24)."""
     run_sweep.remote(
-        base_config="configs/probe.OMARRQ-multifeature25hz.GTZANGenre.yaml",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.GTZANGenre.yaml",
         num_layers=24,
-        model_tag="OMARRQ-multifeature25hz",
+        model_tag="OMARRQ-multifeature-25hz",
         task_tag="GTZANGenre",
     )
 
@@ -1960,9 +1960,9 @@ def sweep_clamp3_gtzan():
 def sweep_omarrq_beat():
     """OMAR-RQ multifeature-25hz full layer sweep on GTZANBeatTracking (24 layers, depth=24)."""
     run_sweep.remote(
-        base_config="configs/probe.OMARRQ-multifeature25hz.GTZANBeatTracking.yaml",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.GTZANBeatTracking.yaml",
         num_layers=24,
-        model_tag="OMARRQ-multifeature25hz",
+        model_tag="OMARRQ-multifeature-25hz",
         task_tag="GTZANBeatTracking",
     )
 
@@ -1971,9 +1971,9 @@ def sweep_omarrq_beat():
 def sweep_omarrq_gs():
     """OMAR-RQ multifeature-25hz full layer sweep on GiantSteps key detection (24 layers)."""
     run_sweep.remote(
-        base_config="configs/probe.OMARRQ-multifeature25hz.GS.yaml",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.GS.yaml",
         num_layers=24,
-        model_tag="OMARRQ-multifeature25hz",
+        model_tag="OMARRQ-multifeature-25hz",
         task_tag="GS",
     )
 
@@ -1982,9 +1982,9 @@ def sweep_omarrq_gs():
 def sweep_omarrq_emo():
     """OMAR-RQ multifeature-25hz full layer sweep on EmoMusic valence/arousal (24 layers)."""
     run_sweep.remote(
-        base_config="configs/probe.OMARRQ-multifeature25hz.EMO.yaml",
+        base_config="configs/probe.OMARRQ-multifeature-25hz.EMO.yaml",
         num_layers=24,
-        model_tag="OMARRQ-multifeature25hz",
+        model_tag="OMARRQ-multifeature-25hz",
         task_tag="EMO",
     )
 

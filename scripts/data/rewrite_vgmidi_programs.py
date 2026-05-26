@@ -289,7 +289,14 @@ def verify_dir(dst_root: Path) -> int:
                 log.warning("verify: unrecognised filename %s", midi_path.name)
                 failures += 1
                 continue
-            expected = target_program_for_idx(parsed["idx"])
+            # Cross-product stems carry their explicit program in the
+            # ``_p<program>`` suffix (parsed["program"]). Use that when
+            # present; fall back to SCHEDULE for schedule-mode files.
+            # Without this branch, verify_dir would compare cross-product
+            # MIDIs against the wrong SCHEDULE-derived expected program.
+            expected = parsed.get("program")
+            if expected is None:
+                expected = target_program_for_idx(parsed["idx"])
             try:
                 mid = mido.MidiFile(str(midi_path))
             except Exception as e:
