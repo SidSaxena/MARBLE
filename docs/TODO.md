@@ -241,3 +241,34 @@ at current disk usage — defer until aggregate cache passes ~10 GB.
 The cache assumes a frozen encoder; if `train_mode != "freeze"`, the
 cache key would need to include encoder weight hashes and invalidate
 every epoch. Not in scope for the current probe-only experiments.
+
+---
+
+## Background-leitmotif level-mismatch experiment (deferred)
+
+**Motivation.** When listening to game/film soundtracks, a leitmotif is
+often re-introduced quieter, in the background under dialogue or louder
+foreground instruments. A retrieval system that only works at uniform
+levels misses that real use case. We want to know whether the encoders
+can match a leitmotif against a quieter restatement of itself.
+
+**Design.** Same VGMIDITVar-timbre rendered + normalized audio (post the
+reverb + LUFS-normalize pass), but generate copies attenuated by
+{−6, −12, −18, −24} dB. Build a JSONL variant `VGMIDITVar-timbre-levels`
+where each (work, program) pair appears at 5 levels (0 dB plus the 4
+attenuations). Cross-condition MAP grid spans both program AND level
+axes — same metric infrastructure (`compute_perpair_map`,
+`condition_gap`), just two condition fields concatenated.
+
+**Why deferred.** Distinct from the cross-instrument timbre test. We
+want to attribute timbre robustness BEFORE confounding it with level
+robustness. Run this after the timbre sweep is interpreted; if
+encoders are already failing on cross-instrument, level-mismatch
+results will be even worse and uninformative.
+
+**Cost.** 4 attenuated copies of 102,960 files = 411,840 extra renders.
+Pure scalar gain, ~5 min with 8 ffmpeg workers. Disk ~3-4 GB additional
+FLAC.
+
+**Trigger.** Once VGMIDITVar-timbre sweep is interpreted AND we want a
+follow-up "ecological deployment" signal.
