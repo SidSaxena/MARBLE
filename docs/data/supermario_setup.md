@@ -556,4 +556,4 @@ for the full survey context and ranking.
   - [`hxmsa_setup.md`](hxmsa_setup.md) — closest comparable audio task (Harmonix structure)
   - [`vgmiditvar_setup.md`](vgmiditvar_setup.md) — MIDI-rendering pipeline (if you want to render audio from the source MIDIs)
   - [`../structure_datasets_survey.md`](../structure_datasets_survey.md) — full MSA dataset survey
-  - [`../leitmotif_findings.md`](../leitmotif_findings.md) — CLaMP3-symbolic vs audio findings on the leitmotif task (informs expectations)
+  - *../leitmotif_findings.md (deprecated, variant dropped)* — CLaMP3-symbolic vs audio findings on the leitmotif task (informs expectations)

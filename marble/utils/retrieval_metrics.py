@@ -202,21 +202,15 @@ def compute_perpair_map(
     target_condition``. ``None`` for either means "any condition".
 
     The "condition" axis is dataset-specific:
-      - VGMIDITVar-leitmotif: ``conditions = gm_program`` (GM
-        instrument code, e.g. 0=piano, 48=strings, 60=horn, 73=flute,
-        56=trumpet). Diagonal cells (same instrument) measure
-        within-timbre retrieval; off-diagonal cells measure
+      - VGMIDITVar-timbre: ``conditions = gm_program`` (GM instrument
+        code, e.g. 0=piano, 24=guitar, 48=strings, 60=horn, 73=flute,
+        80=lead-square, 89=warm-pad). Diagonal cells (same instrument)
+        measure within-timbre retrieval; off-diagonal cells measure
         cross-instrument retrieval — the operationally-relevant
-        metric for leitmotif systems.
-      - VGMIDITVar-multisf: ``conditions = soundfont_id`` (which
+        leitmotif/motif-discovery metric.
+      - Legacy multisf builds: ``conditions = soundfont_id`` (which
         SoundFont rendered this audio). Same intuition: off-diagonal
-        = cross-soundfont retrieval, the timbre-invariance measure.
-
-    Lifted from ``scripts/analysis/vgmiditvar_leitmotif_breakdown.py``
-    to enable both (a) live wandb logging via
-    ``CoverRetrievalTask.on_test_epoch_end`` and (b) re-use by the
-    offline analysis script (which now imports from here — single
-    source of truth).
+        = cross-soundfont retrieval.
 
     Args:
         sim: ``(N, N)`` similarity matrix.

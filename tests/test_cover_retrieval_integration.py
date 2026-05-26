@@ -152,8 +152,8 @@ def test_covers80_style_skips_condition_metrics():
     assert "test/condition_gap" not in log
 
 
-def test_vgmiditvar_leitmotif_style_fires_cross_condition():
-    """VGMIDITVar-leitmotif emits 5-tuples with gm_program; per-condition
+def test_vgmiditvar_timbre_style_fires_cross_condition():
+    """VGMIDITVar-timbre emits 5-tuples with gm_program; per-condition
     grid should produce same + cross + gap metrics.
 
     Fixture: 4 works × 4 files-per-work × 2 conditions (2 files per

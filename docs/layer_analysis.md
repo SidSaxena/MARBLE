@@ -23,7 +23,7 @@ representation-evaluation methodology, not zero-shot), see
 [`benchmarking_methodology.md`](benchmarking_methodology.md).
 
 **For the deep-dive on cross-instrument leitmotif retrieval (the headline
-deployment scenario): see [`leitmotif_findings.md`](leitmotif_findings.md).**
+deployment scenario): see *VGMIDITVar-leitmotif findings (deprecated, variant dropped)*.**
 That doc covers the per-instrument-pair MAP analysis, the
 aggregate-vs-cross-instrument metric divergence, the theme→variation
 asymmetry, and per-encoder dashboards. This doc is the broader layer-
@@ -45,7 +45,7 @@ selection reference covering all tasks.
 - **MuQ L11 is Pareto-optimal as a single layer:** strictly dominates OMARRQ L15 on retrieval (+5% cross-instrument MAP / +85% aggregate MAP at same 1024-dim). On classification (HookTheoryStructure) MuQ L10 (0.591) wins narrowly over MuQ L11 (0.589) and OMARRQ L17 (0.589) — all three essentially tied. Within MuQ's own L7/L10/L11/L12 set, L11 is the joint-optimal single layer for retrieval; L10 is the joint-optimal single layer for classification; they're within 0.002 acc of each other.
 - **OMARRQ L15 / L17 stays competitive on classification, broad peak holds.** Same "metric-agreement + robustness > absolute performance" trade-off as on retrieval. For multi-task pipelines that span retrieval and structure, OMARRQ degrades more gracefully under layer-choice drift than MuQ.
 - **Two-layer pair recommendation refreshed:** for **retrieval-only** L11 alone is sufficient; for **mixed retrieval + structure** (the leitmotif-in-soundtracks deployment), **L10 + L11** is now defensible (L10 captures structure, L11 captures song identity). 2× cost but the second layer is well-motivated rather than marginal.
-- **CLaMP3-symbolic dominates when symbolic input is available.** Structurally instrument-invariant via M3 token representation on retrieval. Whether it also dominates on supervised classification is open (SuperMario sweep will answer). See [`leitmotif_findings.md`](leitmotif_findings.md).
+- **CLaMP3-symbolic dominates when symbolic input is available.** Structurally instrument-invariant via M3 token representation on retrieval. Whether it also dominates on supervised classification is open (SuperMario sweep will answer). See *VGMIDITVar-leitmotif findings (deprecated, variant dropped)*.
 
 ---
 
@@ -296,7 +296,7 @@ Hidden states 0–12, hidden dim 1024, token rate 25 Hz, sample rate 24 kHz
 
 Re-evaluate any ensemble choice case-by-case via the breakdown script's per-pair output before committing to it.
 
-**Why this changed (2026-05-18 third pass):** the previous (2026-05-16) recommendation said "L11 only, ensembles never justified." That was correct for leitmotif retrieval but undersold the structure-task case. With HookTheoryStructure data showing L10 wins structure, L10+L11 becomes a defensible mixed-task ensemble. See [`leitmotif_findings.md`](leitmotif_findings.md) § Second-pass observations + the HookTheoryStructure note above for the full reasoning chain.
+**Why this changed (2026-05-18 third pass):** the previous (2026-05-16) recommendation said "L11 only, ensembles never justified." That was correct for leitmotif retrieval but undersold the structure-task case. With HookTheoryStructure data showing L10 wins structure, L10+L11 becomes a defensible mixed-task ensemble. See *VGMIDITVar-leitmotif findings (deprecated, variant dropped)* § Second-pass observations + the HookTheoryStructure note above for the full reasoning chain.
 
 ### OMARRQ-multifeature-25hz
 
@@ -435,7 +435,7 @@ just doing more compute for no gain.
 
 > **For deployment-scenario-specific recipes covering single-pool vs hybrid
 > retrieval, the index-direction asymmetry trick, and per-encoder-pair
-> ensemble guidance, see [`leitmotif_findings.md`](leitmotif_findings.md)
+> ensemble guidance, see *VGMIDITVar-leitmotif findings (deprecated, variant dropped)*
 > § Recommendations.** This section covers the broader retrieval setup;
 > the leitmotif doc has the deployment-quality detail.
 

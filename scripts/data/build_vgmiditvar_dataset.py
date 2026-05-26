@@ -559,7 +559,7 @@ def main():
         help="Optional path to an instrument_map.json (written by "
         "rewrite_vgmidi_programs.py). When set, each JSONL record gets "
         "a `gm_program` field derived from its variation index via the "
-        "map's schedule. Used by the VGMIDITVar-leitmotif analysis.",
+        "map's schedule. Used by schedule-driven VGMIDITVar variants.",
     )
     ap.add_argument(
         "--allow-overwrite-default-dir",

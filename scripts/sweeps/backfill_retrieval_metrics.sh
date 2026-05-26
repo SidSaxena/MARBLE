@@ -20,7 +20,7 @@
 #   - SHS100K  × 4 encoders         (~63 layers)
 #   - VGMIDITVar (base)             (~76 layers, with CLaMP3-symbolic)
 #   - VGMIDITVar-multisf            (~63 layers, needs JSONL regen first)
-#   - VGMIDITVar-leitmotif          (~76 layers, with CLaMP3-symbolic)
+#   - VGMIDITVar-timbre             (~76 layers, with CLaMP3-symbolic)
 #
 # Add those when storage is freed + audio restored.
 #

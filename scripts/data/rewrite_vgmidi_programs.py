@@ -3,14 +3,14 @@
 scripts/data/rewrite_vgmidi_programs.py
 ───────────────────────────────────────
 Rewrite the GM program of every VGMIDI-TVar MIDI, producing a
-cross-instrument theme/variation dataset for the "leitmotif" benchmark.
+cross-instrument theme/variation dataset.
 
 Two output modes:
 
 1. **Schedule mode (default, ``--mode schedule``)**: each variation idx
-   maps to one fixed program. Drives the legacy
-   ``VGMIDITVar-leitmotif`` variant where instrument identity is
-   confounded with variation index.
+   maps to one fixed program — instrument identity is confounded with
+   variation index. Generic schedule-driven variant builder; not in
+   the active sweep set as of audit cleanup.
 
    Schedule (idx → GM program):
        idx 0 (theme) → 0   Acoustic Grand Piano
@@ -55,10 +55,10 @@ Idempotency:
     Both refuse to proceed on a hash/list mismatch unless ``--force``.
 
 Usage:
-    # SCHEDULE mode (legacy leitmotif): one output per MIDI, program by idx
+    # SCHEDULE mode (schedule-driven variant): one output per MIDI, program by idx
     uv run python scripts/data/rewrite_vgmidi_programs.py \\
         --src-midi-dir data/VGMIDITVar/midi \\
-        --dst-midi-dir data/VGMIDITVar-leitmotif/midi
+        --dst-midi-dir data/VGMIDITVar-schedule/midi
 
     # CROSS-PRODUCT mode (timbre variant): N outputs per MIDI, one per program
     uv run python scripts/data/rewrite_vgmidi_programs.py \\
@@ -69,7 +69,7 @@ Usage:
 
     # Verify a previously-written dir
     uv run python scripts/data/rewrite_vgmidi_programs.py \\
-        --dst-midi-dir data/VGMIDITVar-leitmotif/midi --verify
+        --dst-midi-dir data/VGMIDITVar-timbre/midi --verify
 """
 
 from __future__ import annotations
@@ -383,7 +383,7 @@ def main() -> None:
     )
     ap.add_argument(
         "--dst-midi-dir",
-        default="data/VGMIDITVar-leitmotif/midi",
+        default="data/VGMIDITVar-schedule/midi",
         help="Destination MIDI directory. Will be created. Default: %(default)s",
     )
     ap.add_argument(

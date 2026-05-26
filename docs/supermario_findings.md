@@ -198,7 +198,7 @@ two-peak structure, so the ensemble is more defensible here**).
 ## 6. What this means for VGM structure & motif analysis
 
 Synthesizing across this sweep, the
-[leitmotif retrieval findings](leitmotif_findings.md), and the
+*VGMIDITVar-leitmotif retrieval findings (deprecated)*, and the
 [cross-encoder layer analysis](layer_analysis.md):
 
 ### For *structure* analysis on VGM specifically
@@ -356,7 +356,7 @@ In rough priority order:
   / melody analysis depending on whether you have audio, symbolic,
   or both. Distills the results in this doc + the leitmotif work
   into actionable per-modality recipes.
-- [`docs/leitmotif_findings.md`](leitmotif_findings.md) — sister
+- *docs/leitmotif_findings.md (deprecated, variant dropped)* — sister
   retrieval analysis; same encoder, different invariance dimension.
 - [`docs/layer_analysis.md`](layer_analysis.md) — cross-encoder
   per-task summary tables; the canonical recommendation guide.

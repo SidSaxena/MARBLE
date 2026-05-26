@@ -17,7 +17,7 @@ literature search.
 
 This survey covers everything else. Companion to
 [`layer_analysis.md`](layer_analysis.md) and
-[`leitmotif_findings.md`](leitmotif_findings.md).
+*VGMIDITVar-leitmotif findings (deprecated, variant dropped)*.
 
 ---
 
@@ -288,7 +288,7 @@ would be a film/game soundtrack corpus with:
 3. Hand-curate a leitmotif benchmark from public soundtracks (~50
    themes from Star Wars / LotR / Skyrim / Halo). This is the
    gold-standard test but it's days of annotation work and small.
-   See `docs/leitmotif_findings.md` § Open questions.
+   See *docs/leitmotif_findings.md (deprecated)* § Open questions.
 
 ---
 
@@ -363,7 +363,7 @@ complexity.
 - [`docs/data/supermario_setup.md`](data/supermario_setup.md)
 - [`docs/data/vgmiditvar_setup.md`](data/vgmiditvar_setup.md)
 - [`docs/layer_analysis.md`](layer_analysis.md)
-- [`docs/leitmotif_findings.md`](leitmotif_findings.md)
+- *docs/leitmotif_findings.md (deprecated, variant dropped)*
 
 ---
 
