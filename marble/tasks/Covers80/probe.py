@@ -392,13 +392,24 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
 
     @staticmethod
     def _compute_map(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
-        """Standard MAP from a similarity matrix and work_id labels."""
+        """Standard MAP from a similarity matrix and work_id labels.
+
+        Self-exclusion uses ``-inf`` sentinel + last-column drop. The
+        earlier ``sims_i[i] = -2.0`` pattern left self at rank N with
+        ``work_ids[self] == work_ids[self] = True``, inflating
+        ``n_relevant`` by 1 and adding a spurious hit at rank N. The
+        per-query bias scaled as ``1 - n_true / (n_true + 1)`` — ~50%
+        for 1-relevant tasks (Covers80, SHS100K), ~12-20% for
+        VGMIDITVar variants. Matches the convention in
+        ``marble.utils.retrieval_metrics._ranking_order``.
+        """
         N = len(work_ids)
         aps: list[float] = []
         for i in range(N):
             sims_i = sim[i].clone()
-            sims_i[i] = -2.0  # exclude self
-            order = sims_i.argsort(descending=True)
+            sims_i[i] = -float("inf")  # exclude self via sentinel
+            # Drop self (now at rank N after argsort descending).
+            order = sims_i.argsort(descending=True)[: N - 1]
             is_rel = work_ids[order] == work_ids[i]
             n_relevant = int(is_rel.sum().item())
             if n_relevant == 0:
@@ -417,11 +428,12 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
 
     @staticmethod
     def _map_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
+        """MAP@K. Self-exclusion uses ``-inf`` (matches _compute_map)."""
         N = len(work_ids)
         aps = []
         for i in range(N):
             s = sim[i].clone()
-            s[i] = -2.0
+            s[i] = -float("inf")
             top_k = s.argsort(descending=True)[:k]
             is_rel = (work_ids[top_k] == work_ids[i]).float()
             n_total = int((work_ids == work_ids[i]).sum().item()) - 1
@@ -439,12 +451,16 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
 
     @staticmethod
     def _mrr(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
+        """Mean reciprocal rank of first true positive. Self excluded via
+        ``-inf`` + last-column drop. Without the drop, queries with no
+        true relevants would spuriously report ``1/N`` from self instead
+        of being skipped (which is what we want for the MRR average)."""
         N = len(work_ids)
         recip = []
         for i in range(N):
             s = sim[i].clone()
-            s[i] = -2.0
-            order = s.argsort(descending=True)
+            s[i] = -float("inf")
+            order = s.argsort(descending=True)[: N - 1]
             is_rel = work_ids[order] == work_ids[i]
             nz = is_rel.nonzero(as_tuple=True)[0]
             if len(nz) == 0:
