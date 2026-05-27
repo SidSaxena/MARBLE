@@ -440,14 +440,38 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         cell_results: dict[tuple[int, int], tuple[float, int]],
     ) -> None:
         """Write ``condition_grid.{csv,png}`` next to the wandb run dir so
-        the 8x8 (query_cond × target_cond) MAP table is available offline
-        for paper figures. Failures are logged but never raise — this is a
+        the 8x8 (query_cond x target_cond) MAP table is available offline
+        for paper figures. Failures are logged but never raise -- this is a
         side-channel artefact, not a load-bearing metric.
 
         Matplotlib is imported lazily so headless envs without it still
         get the CSV. The output dir is derived from the trainer's logger;
         if no logger is attached (smoke tests) we skip silently.
+
+        ALL print statements use ASCII-only characters because on Windows
+        Python's default stdout encoding is cp1252 and the wandb console-
+        capture wrapper re-encodes through it -- a UnicodeEncodeError on
+        e.g. a U+2192 (right-arrow) here would propagate up through
+        Lightning's on_test_epoch_end hook and crash the entire run AFTER
+        all metrics are already logged. The whole method is wrapped in a
+        broad try/except for the same defensive reason.
         """
+        import contextlib
+
+        try:
+            self._dump_condition_grid_artifacts_inner(unique_conds, cell_results)
+        except Exception as e:  # noqa: BLE001 — defensive; never break the run
+            # Print at most a short ASCII summary so even this fallback
+            # can't itself trigger a UnicodeEncodeError. Suppress any
+            # further exception from the fallback print itself.
+            with contextlib.suppress(Exception):
+                print(f"[CoverRetrieval] WARN: condition grid dump failed: {type(e).__name__}")
+
+    def _dump_condition_grid_artifacts_inner(
+        self,
+        unique_conds: list[int],
+        cell_results: dict[tuple[int, int], tuple[float, int]],
+    ) -> None:
         # Derive output dir from the wandb logger; fall back gracefully.
         out_dir = None
         try:
@@ -479,12 +503,12 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                     for t in unique_conds:
                         ap, n = cell_results.get((q, t), (0.0, 0))
                         w.writerow([q, t, f"{ap:.6f}", n])
-            print(f"[CoverRetrieval] wrote condition grid CSV → {csv_path}")
+            print(f"[CoverRetrieval] wrote condition grid CSV -> {csv_path}")
         except OSError as e:
             print(f"[CoverRetrieval] WARN: could not write {csv_path}: {e}")
             return
 
-        # PNG heatmap (matplotlib optional — skip if missing or fails).
+        # PNG heatmap (matplotlib optional -- skip if missing or fails).
         try:
             import matplotlib  # noqa: PLC0415
 
@@ -526,9 +550,9 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             png_path = out_path / "condition_grid.png"
             fig.savefig(png_path, dpi=150)
             plt.close(fig)
-            print(f"[CoverRetrieval] wrote condition grid PNG → {png_path}")
+            print(f"[CoverRetrieval] wrote condition grid PNG -> {png_path}")
         except ImportError:
-            pass  # matplotlib not installed — CSV only.
+            pass  # matplotlib not installed -- CSV only.
         except Exception as e:
             print(f"[CoverRetrieval] WARN: matplotlib heatmap failed: {e}")
 

@@ -218,6 +218,59 @@ def test_vgmiditvar_timbre_style_fires_cross_condition():
     assert abs(off - cross) < 1e-5, f"off-mean {off} != cross {cross}"
 
 
+def test_dump_condition_grid_artifacts_uses_ascii_only_runtime_prints():
+    """On Windows, Python's default stdout encoding is cp1252 and wandb's
+    console-capture wrapper re-encodes through it. A single non-ASCII
+    character in a runtime print() (e.g. U+2192 right-arrow) raises
+    UnicodeEncodeError that propagates up through Lightning's
+    on_test_epoch_end hook and kills the run AFTER metrics have already
+    logged.
+
+    This test scans probe.py for non-ASCII characters in runtime
+    print/log statements (NOT in comments or docstrings) inside
+    ``_dump_condition_grid_artifacts*`` and the on_test_epoch_end body.
+    Comments/docstrings can use whatever Unicode they want; only actual
+    runtime byte streams must stay ASCII.
+    """
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "marble" / "tasks" / "Covers80" / "probe.py"
+    text = src.read_text(encoding="utf-8")
+
+    # Find every `print(...)` call (single-line; multi-line prints
+    # don't exist in this file at time of writing). For each, extract
+    # the format string and assert it's ASCII.
+    print_calls = re.findall(r"print\(([^)]*)\)", text)
+    bad = []
+    for call in print_calls:
+        for ch in call:
+            if ord(ch) > 127:
+                bad.append((ch, call.strip()[:80]))
+                break
+    assert not bad, (
+        f"Non-ASCII character(s) in print() runtime calls (would crash on "
+        f"Windows cp1252 stdout): {bad[:3]}"
+    )
+
+
+def test_dump_condition_grid_artifacts_never_propagates():
+    """The outer wrapper must swallow ANY exception from the inner
+    write path -- artefact failures are side-channel, not load-bearing.
+    Force the inner method to raise and confirm the outer returns
+    cleanly without re-raising.
+    """
+    task = CoverRetrievalTask.__new__(CoverRetrievalTask)
+
+    def boom(*a, **kw):
+        raise RuntimeError("simulated artefact-writer crash")
+
+    task._dump_condition_grid_artifacts_inner = boom  # type: ignore[method-assign]
+    # Should NOT raise. If it does, the assertion in the test framework
+    # fails and we know the defensive wrapper regressed.
+    task._dump_condition_grid_artifacts([0, 1], {(0, 0): (0.5, 10), (0, 1): (0.3, 10)})
+
+
 def test_base_vgmiditvar_style_all_sentinel_skips():
     """Base VGMIDITVar emits 5-tuples but condition=-1 for every record
     (no gm_program or soundfont_id in JSONL). Per-condition block must
