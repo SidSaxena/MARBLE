@@ -140,3 +140,75 @@ def test_target_program_for_idx_cycles():
     assert program_for[:5] == [0, 48, 60, 73, 56]
     # idx 5..9 wraps back to idx 0..4
     assert program_for[5:10] == program_for[:5]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cross-product filename construction ↔ verify-side parsing.
+#
+# These two halves of the timbre-variant pipeline have to agree: the
+# rewriter writes ``<piece>_<section>_<idx>_p<prog>.mid`` (probe.py
+# line 485) and ``verify_dir`` recovers ``program`` from the suffix
+# via ``_parse_filename`` (rewrite_vgmidi_programs.py line 297, where
+# the audit-2 #8 fix lives). If either side drifts, ``--verify``
+# silently mis-validates the dataset. Running mido is out of scope
+# for this Mac-side venv (no real package installed), so this test
+# pins the string contract directly.
+# ──────────────────────────────────────────────────────────────────────
+
+import sys as _sys  # noqa: E402
+
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "data"))
+from build_vgmiditvar_dataset import _parse_filename  # noqa: E402
+
+
+def _cross_product_stem(src_stem: str, program: int) -> str:
+    """Mirror the rewriter's stem construction at line 485:
+    ``f"{src.stem}_p{p}.mid"`` — sans the .mid suffix."""
+    return f"{src_stem}_p{program}"
+
+
+def test_cross_product_stems_parseable_by_verify_dir():
+    """For every (src, program) pair the rewriter would emit, the
+    recovered ``_parse_filename(stem)["program"]`` must equal the program
+    we wrote into the filename. Three source-stem styles cover the
+    POP909-TVar, VGMIDI-TVar long-name, and recommended Set C cases."""
+    src_stems = [
+        "052_A_0",  # POP909-TVar
+        "e0_real_Other games_NES_Monster Party_Title Screen_A_1",  # VGMIDI-TVar
+        "999_Z_42",  # boundary
+    ]
+    programs = [0, 24, 48, 52, 60, 73, 80, 89]
+    for src in src_stems:
+        for p in programs:
+            stem = _cross_product_stem(src, p)
+            parsed = _parse_filename(stem)
+            assert parsed is not None, f"parse failed on {stem!r}"
+            assert parsed.get("program") == p, (
+                f"program mismatch on {stem!r}: got {parsed.get('program')}, want {p}"
+            )
+
+
+def test_cross_product_filenames_have_no_collisions():
+    """No two (src, program) pairs may produce the same on-disk
+    filename. Pins the basic invariant that the rewriter doesn't
+    accidentally drop or overwrite outputs."""
+    src_stems = ["052_A_0", "052_B_0", "999_A_0", "999_A_1"]
+    programs = [0, 24, 48, 52, 60, 73, 80, 89]
+    stems = [_cross_product_stem(s, p) for s in src_stems for p in programs]
+    assert len(set(stems)) == len(stems), "filename collision in cross-product"
+    # Every output is still parseable and reports the expected piece+program.
+    for src in src_stems:
+        for p in programs:
+            stem = _cross_product_stem(src, p)
+            parsed = _parse_filename(stem)
+            assert parsed["program"] == p
+
+
+def test_schedule_mode_stems_have_no_program_field():
+    """Schedule-mode stems (no ``_p<N>`` suffix) must NOT populate the
+    ``program`` field. The audit-2 #8 fix in verify_dir falls back to
+    ``target_program_for_idx`` when ``program`` is None — confirm we
+    keep that distinction."""
+    parsed = _parse_filename("052_A_0")
+    assert parsed is not None
+    assert "program" not in parsed

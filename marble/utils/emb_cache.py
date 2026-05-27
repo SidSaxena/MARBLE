@@ -483,8 +483,21 @@ class EmbeddingCacheMixin:
         )
 
     def _derive_cache_slugs(self) -> tuple[str, str]:
-        """Return ``(encoder_slug, task_name)`` derived from the WandB
-        group name when available; fall back to class names."""
+        """Return ``(encoder_slug, task_name)`` for the cache directory.
+
+        Resolution order:
+          1. WandB group name in the form ``"<encoder> / <task>"``
+             (production sweeps). Returns the two halves.
+          2. Test-stage JSONL stem as the task name, encoder class name
+             as the encoder. This disambiguates retrieval tasks
+             (Covers80, SHS100K, VGMIDITVar, VGMIDITVar-timbre) that
+             share ``type(self).__name__ == "CoverRetrievalTask"`` —
+             without it they'd all share a single cache directory in
+             no-wandb smoke runs and silently reuse each others'
+             embeddings.
+          3. Class names as a last resort.
+        """
+        # ── 1. wandb group ────────────────────────────────────────────
         group = None
         try:
             logger = self.trainer.logger  # type: ignore[attr-defined]
@@ -495,9 +508,23 @@ class EmbeddingCacheMixin:
         if isinstance(group, str) and " / " in group:
             enc, task = group.split(" / ", 1)
             return enc.strip(), task.strip()
+
+        # ── 2. JSONL stem fallback (disambiguates retrieval tasks) ────
         enc = type(self.encoder).__name__
-        task = type(self).__name__
-        return enc, task
+        jsonl_path = None
+        try:
+            test_cfg = self.trainer.datamodule.test_config  # type: ignore[attr-defined]
+            init_args = test_cfg.get("init_args", {})
+            jsonl_path = init_args.get("jsonl")
+        except Exception:
+            jsonl_path = None
+        if isinstance(jsonl_path, str) and jsonl_path:
+            stem = Path(jsonl_path).stem
+            if stem:
+                return enc, stem
+
+        # ── 3. final fallback ─────────────────────────────────────────
+        return enc, type(self).__name__
 
     def _derive_clip_seconds(self) -> float:
         try:
