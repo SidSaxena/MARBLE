@@ -510,6 +510,27 @@ def test_compute_retrieval_metrics_batch_invariant():
         assert m_default[key] == pytest.approx(m_huge[key]), f"batch=1024 mismatch at {key}"
 
 
+def test_compute_retrieval_metrics_empty_corpus_returns_all_nan():
+    """N=0 must return NaN for every requested key, not crash."""
+    import math as _math
+
+    from marble.utils.retrieval_metrics import compute_retrieval_metrics
+
+    sim = torch.empty(0, 0)
+    work_ids = torch.empty(0, dtype=torch.long)
+    out = compute_retrieval_metrics(
+        sim,
+        work_ids,
+        recall_ks=(1, 5),
+        hit_ks=(1,),
+        include_r_precision=True,
+        include_median_rank=True,
+    )
+    # All-NaN for an empty corpus.
+    for key, val in out.items():
+        assert _math.isnan(val), f"{key} should be NaN, got {val}"
+
+
 def test_iter_row_orders_self_excluded_and_complete():
     """Each yielded row_order is (N-1,) and never contains self-index."""
     from marble.utils.retrieval_metrics import _iter_row_orders

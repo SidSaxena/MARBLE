@@ -289,6 +289,16 @@ def compute_retrieval_metrics(
     recall_ks_eff = [int(k) for k in recall_ks if 0 < int(k) < N]
     hit_ks_eff = [int(k) for k in hit_ks if 0 < int(k) < N]
 
+    if N == 0:
+        # Degenerate: every requested metric is undefined.
+        out: dict[str, float] = {f"recall@{k}": float("nan") for k in recall_ks_eff}
+        out.update({f"hit_rate@{k}": float("nan") for k in hit_ks_eff})
+        if include_r_precision:
+            out["r_precision"] = float("nan")
+        if include_median_rank:
+            out["median_rank"] = float("nan")
+        return out
+
     # Vectorised n_relevant precompute: one O(N) scatter-add pass instead of
     # N Python ``is_rel.sum().item()`` calls in the inner loop. Each query's
     # n_relevant is "count of items with my work_id, minus self".
