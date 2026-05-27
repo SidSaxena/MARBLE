@@ -227,8 +227,8 @@ by 1 and adding a spurious hit at rank N.
 | Task | True n_relevant per query | test/map under-report |
 |---|---|---|
 | Covers80 | 1 (exactly 2 versions per work) | ~50% |
-| SHS100K — canonical 500-work test | ~9 (≈10 versions per work) | ~10% |
-| SHS100K — our YouTube-attrition subset | ~60 (mean 61.45 versions per work after attrition; 111 works, range 15–584) | **~1.6%** |
+| SHS100K — canonical 2025 test split | ~63 (heavily skewed: 111 works, max 595, min 17) | **~1.6%** |
+| SHS100K — our local set | ~61 (mean 61.45 versions/work after 3% YouTube attrition; same 111 works as upstream) | **~1.6%** |
 | VGMIDITVar-timbre | ~7 (per-condition diagonal cells) | ~12.5% |
 | VGMIDITVar base | varies | depends on per-work variation count |
 

@@ -7,10 +7,19 @@ Download SHS-100K (Second Hand Songs 2025) and build MARBLE JSONL metadata.
 Dataset
 -------
   Source : https://github.com/second-hand-songs/shs-100k  (branch: 2025)
-  Scale  : 10,000 works, ~110,000 cover performances split into:
-    test.csv      500 works,  ~7,100 tracks  ← community benchmark (default)
-    validate.csv  500 works,  ~5,000 tracks
-    train.csv   9,000 works, ~100,000 tracks
+  Scale  : 10,000 works, ~110,000 cover performances total, split into
+           three CSVs that do NOT share works (per upstream README):
+    test.csv       111 works,  7,033 tracks  ← community benchmark (default)
+    validate.csv   ~5,000 tracks (work count unverified; not used here)
+    train.csv      ~100,000 tracks across the remaining ~9,778 works
+
+  IMPORTANT: the test split is HEAVILY skewed by design. The upstream
+  sampled works with ≥20 YouTube versions then took ALL of them, so the
+  top works have hundreds of covers (e.g. one work has 595 versions of
+  Prince's "1999"; mean ~63 versions/work, median ~33, max 595, min 17).
+  This makes retrieval much easier than the often-quoted "500 works ×
+  ~10 versions" figure (which referred to a DIFFERENT, earlier SHS-100K
+  release and does not apply to the 2025 edition this script targets).
 
   CSV format — no header row, 5 columns:
     performance_id, work_id, title, artist, youtube_id

@@ -480,30 +480,39 @@ agreed mitigation.
 
 ---
 
-## SHS100K test split is heavily skewed on disk
+## SHS100K test split is heavily skewed *by design* (corrected 2026-05-28)
 
-**Motivation.** The canonical SHS-100K test split has 500 unique
-works × ~10 versions per work. After YouTube download attrition our
-on-disk subset is:
-- 6,821 records
-- **111 unique works** (vs canonical 500)
-- mean **61.45 versions/work** (median 32, max 584) — extremely skewed
-- per-query n_relevant ≈ 60 → much easier retrieval than published
-  SHS-100K benchmarks
+**Earlier draft was wrong.** I originally wrote that our local set was
+artificially smaller than canonical (111 vs "500" works). After
+re-reading the upstream README + diffing against the 2025 test.csv
+on `github.com/second-hand-songs/shs-100k`:
 
-**Status.** Documented in
-`docs/benchmarking_methodology.md` (table updated 2026-05-27); the
-pre-fix MAP under-report figure was corrected (was 50% inherited
-from Covers80, actual ~1.6%).
+- **Upstream test.csv 2025**: 7,033 unique performances across exactly
+  **111 unique works**.
+- **Our local set**: 6,821 perfs across the **same 111 works** (212
+  perfs, ~3.0%, lost to YouTube attrition).
 
-**Implication.** Absolute MAP numbers from our sweeps are NOT
-directly comparable to published SHS-100K results. Relative
-encoder/layer rankings are still meaningful.
+The "500 works × 10 versions" figure I'd cited was a stale comment in
+`scripts/data/download_shs100k.py:11` (referring to an earlier
+SHS-100K release that doesn't match the 2025 edition our script
+targets). Fixed in commit ___.
 
-**Trigger.** If we want canonical-comparable numbers: either source
-the missing audio (yt-dlp retry against a fresh cookies jar; some
-~75 % attrition is hard to recover) or annotate the dataset card
-with the skew. For now annotation-only is enough.
+**What's actually true:**
+- The upstream split sampled "works with ≥20 YouTube versions then
+  took all of them" → naturally skewed.
+- Distribution: mean 64 versions/work, median 33, max 595 (Prince's
+  "1999"), min 17.
+- Our pre-fix MAP under-report estimate of **~1.6%** for SHS100K was
+  correct (~63 relevants/query implies ~1/64 bias).
+
+**Implication.** Our sweep numbers ARE directly comparable to any
+other 2025 SHS-100K test results — we have full work coverage and
+only 3% performance attrition. Earlier worry about "111 vs 500
+works skew" was unfounded.
+
+**Trigger.** None — the dataset is as canonical as practically
+achievable given YouTube attrition. The 212 missing performances
+could be retried with yt-dlp + cookies but the payoff is small.
 
 ---
 
