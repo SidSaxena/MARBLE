@@ -203,6 +203,20 @@ def test_vgmiditvar_timbre_style_fires_cross_condition():
     gap = captured["test/condition_gap"]
     assert abs(gap - (same - cross)) < 1e-5, f"gap arithmetic: {gap} vs {same - cross}"
 
+    # Per-cell logging: 2 conditions → 4 cells, each yielding map_grid/q_to_t
+    # plus map_grid/q_to_t_n (n_queries). 8 keys total when both conditions
+    # contribute to every cell (this fixture guarantees that).
+    grid_keys = sorted(k for k in captured if k.startswith("test/map_grid/"))
+    assert "test/map_grid/0_to_0" in grid_keys
+    assert "test/map_grid/0_to_1" in grid_keys
+    assert "test/map_grid/1_to_0" in grid_keys
+    assert "test/map_grid/1_to_1" in grid_keys
+    # Cells in the grid match the aggregate same/cross stats they feed.
+    diag = (captured["test/map_grid/0_to_0"] + captured["test/map_grid/1_to_1"]) / 2
+    off = (captured["test/map_grid/0_to_1"] + captured["test/map_grid/1_to_0"]) / 2
+    assert abs(diag - same) < 1e-5, f"diag-mean {diag} != same {same}"
+    assert abs(off - cross) < 1e-5, f"off-mean {off} != cross {cross}"
+
 
 def test_base_vgmiditvar_style_all_sentinel_skips():
     """Base VGMIDITVar emits 5-tuples but condition=-1 for every record

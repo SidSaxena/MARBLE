@@ -383,6 +383,20 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                 gap = float(sum(same_aps) / len(same_aps) - sum(cross_aps) / len(cross_aps))
                 self.log("test/condition_gap", gap, rank_zero_only=True)
 
+            # Per-cell logging of the full (query_cond × target_cond) grid.
+            # For VGMIDITVar-timbre with 8 GM programs that's 64 keys —
+            # tractable in wandb. Use ``map_grid/q_to_t`` keys (slashes
+            # group them under one dashboard section). Also dump CSV +
+            # PNG heatmap next to the wandb run for paper figures.
+            for q in unique_conds:
+                for t in unique_conds:
+                    ap, n = cell_results.get((q, t), (0.0, 0))
+                    if n == 0:
+                        continue
+                    self.log(f"test/map_grid/{q}_to_{t}", ap, rank_zero_only=True)
+                    self.log(f"test/map_grid/{q}_to_{t}_n", float(n), rank_zero_only=True)
+            self._dump_condition_grid_artifacts(unique_conds, cell_results)
+
         # ── Anisotropy diagnostics ───────────────────────────────────────────
         # Cone-effect / rank-collapse measurements on the per-file embedding
         # matrix (pre-centering, since centering itself is what we're
@@ -417,6 +431,106 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             f"top1_sv={ani['top1_sv_share']:.3f}  "
             f"eff_rank={ani['effective_rank']:.1f}"
         )
+
+    # ── per-condition grid CSV + heatmap PNG ──────────────────────────────────
+
+    def _dump_condition_grid_artifacts(
+        self,
+        unique_conds: list[int],
+        cell_results: dict[tuple[int, int], tuple[float, int]],
+    ) -> None:
+        """Write ``condition_grid.{csv,png}`` next to the wandb run dir so
+        the 8x8 (query_cond × target_cond) MAP table is available offline
+        for paper figures. Failures are logged but never raise — this is a
+        side-channel artefact, not a load-bearing metric.
+
+        Matplotlib is imported lazily so headless envs without it still
+        get the CSV. The output dir is derived from the trainer's logger;
+        if no logger is attached (smoke tests) we skip silently.
+        """
+        # Derive output dir from the wandb logger; fall back gracefully.
+        out_dir = None
+        try:
+            logger = self.trainer.logger  # type: ignore[attr-defined]
+            save_dir = getattr(logger, "save_dir", None) or getattr(logger, "_save_dir", None)
+            run_dir = (
+                getattr(logger.experiment, "dir", None) if hasattr(logger, "experiment") else None
+            )
+            out_dir = run_dir or save_dir
+        except Exception:
+            out_dir = None
+        if out_dir is None:
+            return
+        import csv
+        from pathlib import Path
+
+        out_path = Path(out_dir)
+        try:
+            out_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+
+        csv_path = out_path / "condition_grid.csv"
+        try:
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["query_program", "target_program", "map", "n_queries"])
+                for q in unique_conds:
+                    for t in unique_conds:
+                        ap, n = cell_results.get((q, t), (0.0, 0))
+                        w.writerow([q, t, f"{ap:.6f}", n])
+            print(f"[CoverRetrieval] wrote condition grid CSV → {csv_path}")
+        except OSError as e:
+            print(f"[CoverRetrieval] WARN: could not write {csv_path}: {e}")
+            return
+
+        # PNG heatmap (matplotlib optional — skip if missing or fails).
+        try:
+            import matplotlib  # noqa: PLC0415
+
+            matplotlib.use("Agg")
+            import numpy as np  # noqa: PLC0415
+            from matplotlib import pyplot as plt  # noqa: PLC0415
+
+            n_c = len(unique_conds)
+            grid = np.full((n_c, n_c), np.nan, dtype=float)
+            for i, q in enumerate(unique_conds):
+                for j, t in enumerate(unique_conds):
+                    ap, n = cell_results.get((q, t), (0.0, 0))
+                    if n > 0:
+                        grid[i, j] = ap
+            fig, ax = plt.subplots(figsize=(max(4, n_c * 0.7), max(4, n_c * 0.7)))
+            im = ax.imshow(grid, cmap="viridis", aspect="auto", vmin=0.0)
+            ax.set_xticks(range(n_c))
+            ax.set_yticks(range(n_c))
+            ax.set_xticklabels([str(c) for c in unique_conds], rotation=45, ha="right")
+            ax.set_yticklabels([str(c) for c in unique_conds])
+            ax.set_xlabel("target condition (gm_program)")
+            ax.set_ylabel("query condition (gm_program)")
+            ax.set_title("Per-condition MAP grid (centered sim)")
+            for i in range(n_c):
+                for j in range(n_c):
+                    v = grid[i, j]
+                    if not np.isnan(v):
+                        ax.text(
+                            j,
+                            i,
+                            f"{v:.2f}",
+                            ha="center",
+                            va="center",
+                            color="white" if v < 0.5 else "black",
+                            fontsize=8,
+                        )
+            fig.colorbar(im, ax=ax, label="MAP")
+            fig.tight_layout()
+            png_path = out_path / "condition_grid.png"
+            fig.savefig(png_path, dpi=150)
+            plt.close(fig)
+            print(f"[CoverRetrieval] wrote condition grid PNG → {png_path}")
+        except ImportError:
+            pass  # matplotlib not installed — CSV only.
+        except Exception as e:
+            print(f"[CoverRetrieval] WARN: matplotlib heatmap failed: {e}")
 
     # ── back-compat shims (delegate to compute_retrieval_metrics) ─────────────
     # These three static methods used to contain their own per-row argsort
