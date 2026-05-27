@@ -344,6 +344,218 @@ scheduled, or when collating final OMARRQ variant comparisons.
 
 ---
 
+## SuperMarioStructure boundary-detection task (DEFERRED 2026-05-27)
+
+**Motivation.** Original task is per-segment 6-class classification.
+A boundary-detection variant would predict change-points along the
+timeline (SALAMI-style), complementing the existing classification
+probe. Work was started on `feat/supermario-boundary-detection` over
+four commits (Sprint 1a + audit + Sprint 1b) but the user decided to
+defer in favor of finishing the retrieval layer sweeps.
+
+**Status.** Branch deleted from origin AND local (`b0748c3` was tip).
+Commits are still reachable from the local reflog for 30+ days under
+`HEAD@{0..3}` after the `999cf1c` checkout-from-main entry — recover
+with `git reflog | grep boundary` or directly:
+
+```
+git checkout -b feat/supermario-boundary-detection b0748c3
+# chain: 1719f84 → afe92e9 → 3c0ce59 → b0748c3
+```
+
+**Trigger.** When retrieval sweeps (SHS100K + VGMIDITVar-timbre layer
+matrix) are done analyzing and there's bandwidth for the structure-
+analysis follow-up.
+
+---
+
+## SuperMarioStructure: secondary heads + section-level + pair-similarity
+
+**Motivation.** Per the dataset audit (this session's analysis), the
+upstream supermario-structure-annotation dataset supports four task
+axes we don't currently evaluate:
+
+1. **Section-level (thematic) classification** — 8-label A/B/.../G/X
+   vocabulary. Requires either cross-piece motif clustering or a
+   piece-conditioned head.
+2. **`IsAdaptive` / `IsStinger` piece-level binary flags** — 472/82
+   and 46/508 splits. Tiny piece-level head over pooled segment
+   embeddings.
+3. **3,304-pair compound-similarity regression** — the actual
+   headline task of the upstream ISMIR submission. Siamese encoder +
+   1D regression head over the compound chroma/duration/register/
+   density score in `metadata/pairs.csv`.
+4. **Class-balanced loss / weighted CE** — current loop class is 65%
+   of segments; macro-F1 (0.252) lags accuracy (0.599) on that
+   imbalance. Add class weights or focal loss.
+
+**Why deferred.** Each is a meaningful new evaluation surface but
+none is the immediate critical-path item. Retrieval layer sweeps
+(SHS100K + VGMIDITVar-timbre) are the active focus.
+
+**Cost.** Class-balanced loss ~1 h. IsAdaptive/IsStinger ~2 h (need a
+piece-level pooling head, but the architecture is trivial). Pair-
+similarity regression ~2-3 days (Siamese, new datamodule, new probe
+class). Section-level ~1 week (the cross-piece motif label problem is
+research-grade).
+
+**Trigger.** Discussion with first-author of the upstream paper, or
+after retrieval sweeps are interpreted and we want to revisit the
+VGM-structure thread.
+
+---
+
+## Re-render SuperMarioStructure audio via Bricasti pipeline
+
+**Motivation.** Current SuperMarioStructure audio comes from
+user-supplied recordings matched by piece-id stem, then sliced via
+the MIDI bar→time mapping. If the audio's tempo deviates from the
+MIDI score (live performance, alternate arrangement, ROM-emulator at
+different tempo) segments drift silently — the bar 5 boundary in the
+annotation lands at a different audio offset than intended.
+
+**Design.** Mirror the VGMIDITVar-timbre pipeline:
+1. Render each piece's MIDI via FluidSynth + a fixed GM soundfont
+   (single program per piece, or honour any embedded program changes).
+2. Convolve with the Bricasti M7 Small Room IR at ~5% wet.
+3. Slice via the same MIDI tempo map — guaranteed synchronization
+   because audio is derived from the MIDI.
+
+**Why deferred.** Current results (CLaMP3-symbolic L4/L11 at acc=0.599)
+are usable and the symbolic path is the higher-leverage modality for
+this task. Re-rendering would unblock the audio sweep numbers but
+isn't critical to the leitmotif story.
+
+**Cost.** ~few hours of CPU rendering + per-encoder cache rebuild
+(~20-30 min each).
+
+**Trigger.** When we want clean cross-modality SuperMarioStructure
+audio numbers as a paper figure.
+
+---
+
+## Cross-OS test JSONL load (UTF-8 hygiene audit)
+
+**Motivation.** Found and fixed in commit `c0082ed`:
+`marble/utils/path_compat.py::load_jsonl` used the locale-default
+encoding which on Windows is cp1252 and fails on non-ASCII fields.
+SHS100K's YouTube artist names (e.g. "Beyoncé") triggered it.
+
+**Status.** Fixed for the central `load_jsonl` chokepoint. But:
+- Other scripts (`scripts/data/*.py`, analysis tools) open JSONL via
+  bare `open(...)` paths. Quick grep showed several call sites that
+  don't specify `encoding="utf-8"`. None of these are on the active
+  sweep critical path but they'll bite again on Windows.
+
+**Trigger.** Sweep across `scripts/` and `marble/` for `open(*.jsonl`
+without explicit encoding, batch-fix. ~30 min.
+
+---
+
+## Wandb-core spawn failures on Windows (desktop-heap exhaustion)
+
+**Motivation.** Sporadic `wandb-core exited with code 3221225794`
+(STATUS_DLL_INIT_FAILED) on my-pc after many sweep iterations. Same
+root cause as the earlier ffmpeg-spawn issue: Windows desktop heap is
+shared across processes in a session and fragments after several
+hundred process spawns. Recovery requires either reboot or waiting
+hours.
+
+**Status.** Reproducible: CLaMP3 × VGMIDITVar-timbre meanall failed
+twice with this error during the 2026-05-27 meanall pass.
+
+**Mitigations to evaluate.**
+1. Run with `WANDB_MODE=offline` — wandb-core still spawns but the
+   network-service variant is bypassed. May or may not avoid the
+   underlying spawn-time DLL init.
+2. Wrap sweep launchers in a heap-recovery sleep (e.g. 30 s between
+   runs) and retry-on-3221225794 — empirical recovery rate unclear.
+3. Periodic reboot between major sweep batches.
+4. Migrate sweep orchestration to a Modal container (Linux,
+   immune to desktop heap).
+
+**Trigger.** Next sustained sweep batch that hits the issue. For the
+imminent layer-sweep run see `docs/layer_sweeps_plan.md` for the
+agreed mitigation.
+
+---
+
+## SHS100K test split is heavily skewed on disk
+
+**Motivation.** The canonical SHS-100K test split has 500 unique
+works × ~10 versions per work. After YouTube download attrition our
+on-disk subset is:
+- 6,821 records
+- **111 unique works** (vs canonical 500)
+- mean **61.45 versions/work** (median 32, max 584) — extremely skewed
+- per-query n_relevant ≈ 60 → much easier retrieval than published
+  SHS-100K benchmarks
+
+**Status.** Documented in
+`docs/benchmarking_methodology.md` (table updated 2026-05-27); the
+pre-fix MAP under-report figure was corrected (was 50% inherited
+from Covers80, actual ~1.6%).
+
+**Implication.** Absolute MAP numbers from our sweeps are NOT
+directly comparable to published SHS-100K results. Relative
+encoder/layer rankings are still meaningful.
+
+**Trigger.** If we want canonical-comparable numbers: either source
+the missing audio (yt-dlp retry against a fresh cookies jar; some
+~75 % attrition is hard to recover) or annotate the dataset card
+with the skew. For now annotation-only is enough.
+
+---
+
+## Probe perf: bf16 sim matrix + GPU offload of metric block
+
+**Motivation.** VGMIDITVar-timbre's (102960, 102960) float32 sim is
+42 GB. The OOM fix + perf-batched refactor (commits `9b050d6`,
+`044c912`, `aab5aa1`) now runs at peak ~44 GB and per-pass time
+~3 min for the metric block. Two further levers:
+
+1. **bf16 sim** — halves memory (~22 GB) and matmul time. CPU argsort
+   on bf16 is supported in recent PyTorch but precision delta on
+   >100k-row sims is uncharacterised. ~1 day of experimentation +
+   numerical-equivalence test against fp32 baseline.
+2. **GPU offload** of `sim = embs @ embs.T` and the per-row
+   argsorts. 5-10× speedup possible. Requires moving 42 GB across
+   PCIe and managing GPU OOM (24 GB cards can't hold the matrix).
+   Would need streaming row batches → GPU → metric per chunk.
+
+**Why deferred.** Current cost is ~3 min/layer post-encoder, dwarfed
+by the encoder DataLoader pass. Not worth the engineering cost yet.
+
+**Trigger.** If sweep cadence becomes routine (re-runs every few
+weeks) the bf16 win is worth it. GPU offload only if we move to a
+context where per-layer wall-time matters more than now.
+
+---
+
+## Unify Covers80 + SHS100K + VGMIDITVar datamodules
+
+**Motivation.** All three retrieval datamodules share ~95% of their
+clip-slicing + cache-bypass logic, with only the JSONL schema
+differing. Three copies of the same code → real maintenance burden;
+any bugfix needs to be applied three times.
+
+**Status.** Pre-Phase-3 audit flagged this as out-of-scope for the
+imminent sweep but real. Specific divergence noted between
+`marble/tasks/SHS100K/datamodule.py` and
+`marble/tasks/Covers80/datamodule.py`.
+
+**Design.** Factor shared logic into `marble/core/retrieval_datamodule.py`
+with a `RetrievalAudioBase` class; per-task datamodules subclass to
+specialise JSONL field extraction (work_id, performance_id vs work_id,
+version, etc.).
+
+**Cost.** ~half day implementation + integration test fixtures.
+
+**Trigger.** Next time we add a 4th retrieval task, or next time we
+find a bug that needs to be applied to all three.
+
+---
+
 ## LeitmotifDetection embedding-cache integration
 
 **Motivation.** `marble/tasks/LeitmotifDetection/probe.py` has zero
