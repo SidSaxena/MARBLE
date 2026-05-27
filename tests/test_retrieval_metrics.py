@@ -458,6 +458,73 @@ def test_anisotropy_metrics_deterministic_under_seed():
 # ──────────────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Single-pass bundle + row iterator (added with the VGMIDITVar-timbre
+# OOM fix — verify the batched per-row path produces identical numbers
+# to the individual function calls).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_compute_retrieval_metrics_matches_individual_calls():
+    """Single-pass bundle must match per-metric functions bit-for-bit."""
+    from marble.utils.retrieval_metrics import compute_retrieval_metrics
+
+    torch.manual_seed(7)
+    N = 50
+    sim = torch.randn(N, N)
+    work_ids = torch.randint(0, 8, (N,))
+
+    bundle = compute_retrieval_metrics(
+        sim,
+        work_ids,
+        recall_ks=(1, 5, 10),
+        hit_ks=(1, 5, 10),
+        include_r_precision=True,
+        include_median_rank=True,
+    )
+    for k in (1, 5, 10):
+        assert bundle[f"recall@{k}"] == pytest.approx(recall_at_k(sim, work_ids, k))
+        assert bundle[f"hit_rate@{k}"] == pytest.approx(hit_rate_at_k(sim, work_ids, k))
+    assert bundle["r_precision"] == pytest.approx(r_precision(sim, work_ids))
+    assert bundle["median_rank"] == pytest.approx(median_rank_first_hit(sim, work_ids))
+
+
+def test_compute_retrieval_metrics_batch_invariant():
+    """Output is identical regardless of ``batch`` size — proves the
+    chunked argsort path is correct (no off-by-one at chunk boundaries)."""
+    from marble.utils.retrieval_metrics import compute_retrieval_metrics
+
+    torch.manual_seed(11)
+    N = 64
+    sim = torch.randn(N, N)
+    work_ids = torch.randint(0, 4, (N,))
+
+    m_default = compute_retrieval_metrics(sim, work_ids, recall_ks=(5,))
+    m_tiny = compute_retrieval_metrics(sim, work_ids, recall_ks=(5,), batch=7)
+    m_one = compute_retrieval_metrics(sim, work_ids, recall_ks=(5,), batch=1)
+    m_huge = compute_retrieval_metrics(sim, work_ids, recall_ks=(5,), batch=1024)
+
+    for key in m_default:
+        assert m_default[key] == pytest.approx(m_tiny[key]), f"batch=7 mismatch at {key}"
+        assert m_default[key] == pytest.approx(m_one[key]), f"batch=1 mismatch at {key}"
+        assert m_default[key] == pytest.approx(m_huge[key]), f"batch=1024 mismatch at {key}"
+
+
+def test_iter_row_orders_self_excluded_and_complete():
+    """Each yielded row_order is (N-1,) and never contains self-index."""
+    from marble.utils.retrieval_metrics import _iter_row_orders
+
+    torch.manual_seed(3)
+    N = 32
+    sim = torch.randn(N, N)
+    seen = set()
+    for i, order_i in _iter_row_orders(sim, batch=8):
+        assert order_i.shape == (N - 1,)
+        assert i not in order_i.tolist(), f"row {i} contains self"
+        seen.add(i)
+    assert seen == set(range(N))
+
+
 def test_metrics_are_bounded_in_unit_interval():
     """Sanity check: a random similarity matrix produces metrics in [0, 1]."""
     torch.manual_seed(0)

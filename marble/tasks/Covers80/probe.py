@@ -263,79 +263,71 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # centered variants logged. K values that exceed corpus size are
         # silently skipped — small smoke runs don't pollute the log with
         # NaN keys.
-        from marble.utils.retrieval_metrics import (
-            _ranking_order,
-            hit_rate_at_k,
-            median_rank_first_hit,
-            r_precision,
-            recall_at_k,
-        )
-
-        # Precompute ranking orders once for all metrics (the (N, N)
-        # argsort is the dominant cost; each metric function accepts an
-        # optional ``order`` kwarg to skip recomputation).
-        order = _ranking_order(sim)
-        order_c = _ranking_order(sim_c) if self.log_extended_retrieval_metrics else None
+        # ``compute_retrieval_metrics`` runs the per-row argsort once per
+        # similarity matrix and aggregates every requested metric inside
+        # that single pass. This bounds peak memory to O(batch × N) — the
+        # earlier "precompute (N, N-1) order once and share it" pattern
+        # OOM'd for VGMIDITVar-timbre (N=102 960 → 84 GB int64 order
+        # tensor).
+        from marble.utils.retrieval_metrics import compute_retrieval_metrics
 
         # Default trim set: recall@10, r_precision, median_rank — all raw.
         # Centered variants of the secondary metrics are rarely flipped
         # by anisotropy and are gated behind the extended flag.
-        if N > 10:
-            self.log(
-                "test/recall@10", recall_at_k(sim, work_ids, 10, order=order), rank_zero_only=True
-            )
-        self.log("test/r_precision", r_precision(sim, work_ids, order=order), rank_zero_only=True)
-        self.log(
-            "test/median_rank",
-            median_rank_first_hit(sim, work_ids, order=order),
-            rank_zero_only=True,
+        recall_ks_raw: list[int] = [10] if N > 10 else []
+        if self.log_extended_retrieval_metrics:
+            recall_ks_raw = sorted(set(recall_ks_raw + [k for k in (1, 5, 50, 100) if k < N]))
+        hit_ks_raw: list[int] = (
+            [k for k in (1, 5, 10) if k < N] if self.log_extended_retrieval_metrics else []
         )
+        metrics_raw = compute_retrieval_metrics(
+            sim,
+            work_ids,
+            recall_ks=recall_ks_raw,
+            hit_ks=hit_ks_raw,
+            include_r_precision=True,
+            include_median_rank=True,
+        )
+        if "recall@10" in metrics_raw:
+            self.log("test/recall@10", metrics_raw["recall@10"], rank_zero_only=True)
+        self.log("test/r_precision", metrics_raw["r_precision"], rank_zero_only=True)
+        self.log("test/median_rank", metrics_raw["median_rank"], rank_zero_only=True)
 
         if self.log_extended_retrieval_metrics:
             # Full K-sweep + _centered duplicates + hit_rate. ~22 keys.
-            # Compute is cheap (sim matrix already in memory); cost is
-            # dashboard clutter, hence opt-in.
-            K_RECALL_EXTRA = [k for k in (1, 5, 50, 100) if k < N]
-            K_HIT = [k for k in (1, 5, 10) if k < N]
-            for k in K_RECALL_EXTRA:
-                self.log(
-                    f"test/recall@{k}",
-                    recall_at_k(sim, work_ids, k, order=order),
-                    rank_zero_only=True,
-                )
-            for suffix, S, O in (("", sim, order), ("_centered", sim_c, order_c)):
-                for k in K_HIT:
-                    self.log(
-                        f"test/hit_rate@{k}{suffix}",
-                        hit_rate_at_k(S, work_ids, k, order=O),
-                        rank_zero_only=True,
-                    )
-            # centered duplicates of the headline trim set
-            if N > 10:
-                self.log(
-                    "test/recall@10_centered",
-                    recall_at_k(sim_c, work_ids, 10, order=order_c),
-                    rank_zero_only=True,
-                )
-            K_RECALL_ALL_C = [k for k in (1, 5, 10, 50, 100) if k < N]
-            for k in K_RECALL_ALL_C:
-                if k == 10:
-                    continue
-                self.log(
-                    f"test/recall@{k}_centered",
-                    recall_at_k(sim_c, work_ids, k, order=order_c),
-                    rank_zero_only=True,
-                )
-            self.log(
-                "test/r_precision_centered",
-                r_precision(sim_c, work_ids, order=order_c),
-                rank_zero_only=True,
+            # Compute is cheap relative to the row sort itself; this
+            # block adds dashboard surface but does not add a second
+            # sweep over ``sim``.
+            for k in (1, 5, 50, 100):
+                key = f"recall@{k}"
+                if key in metrics_raw:
+                    self.log(f"test/{key}", metrics_raw[key], rank_zero_only=True)
+            for k in (1, 5, 10):
+                key = f"hit_rate@{k}"
+                if key in metrics_raw:
+                    self.log(f"test/{key}", metrics_raw[key], rank_zero_only=True)
+
+            # Centered variant — separate single pass over ``sim_c``.
+            recall_ks_c = [k for k in (1, 5, 10, 50, 100) if k < N]
+            hit_ks_c = [k for k in (1, 5, 10) if k < N]
+            metrics_c = compute_retrieval_metrics(
+                sim_c,
+                work_ids,
+                recall_ks=recall_ks_c,
+                hit_ks=hit_ks_c,
+                include_r_precision=True,
+                include_median_rank=True,
             )
-            self.log(
-                "test/median_rank_centered",
-                median_rank_first_hit(sim_c, work_ids, order=order_c),
-                rank_zero_only=True,
-            )
+            for k in (1, 5, 10, 50, 100):
+                key = f"recall@{k}"
+                if key in metrics_c:
+                    self.log(f"test/{key}_centered", metrics_c[key], rank_zero_only=True)
+            for k in (1, 5, 10):
+                key = f"hit_rate@{k}"
+                if key in metrics_c:
+                    self.log(f"test/{key}_centered", metrics_c[key], rank_zero_only=True)
+            self.log("test/r_precision_centered", metrics_c["r_precision"], rank_zero_only=True)
+            self.log("test/median_rank_centered", metrics_c["median_rank"], rank_zero_only=True)
 
         # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
         # Only meaningful when the dataset carries a per-item condition
