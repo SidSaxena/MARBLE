@@ -224,13 +224,19 @@ by 1 and adding a spurious hit at rank N.
 
 **Per-query bias** scaled as `1 − n_true / (n_true + 1)`:
 
-| Task | True n_relevant | test/map under-report |
+| Task | True n_relevant per query | test/map under-report |
 |---|---|---|
-| Covers80 | 1 | ~50% |
-| SHS100K | 1 | ~50% |
-| VGMIDITVar-leitmotif | ~4 | ~20% |
-| VGMIDITVar-timbre | ~7 | ~12.5% |
+| Covers80 | 1 (exactly 2 versions per work) | ~50% |
+| SHS100K — canonical 500-work test | ~9 (≈10 versions per work) | ~10% |
+| SHS100K — our YouTube-attrition subset | ~60 (mean 61.45 versions per work after attrition; 111 works, range 15–584) | **~1.6%** |
+| VGMIDITVar-timbre | ~7 (per-condition diagonal cells) | ~12.5% |
 | VGMIDITVar base | varies | depends on per-work variation count |
+
+The earlier draft of this table listed SHS100K at "~50%" — that figure
+was an erroneous copy from the Covers80 row (assumed `n_true=1`). The
+corrected number for our SHS-100K test set on disk is ~1.6% because
+download attrition left a heavily-skewed distribution (median 32
+versions per surviving work, see ``data/SHS100K/SHS100K.test.jsonl``).
 
 **Fixed in** commit `ac121f0` on branch `fix/audit-cleanup-2` (merged
 into main as part of the audit-2 batch). After this commit:
