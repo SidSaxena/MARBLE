@@ -224,8 +224,68 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             f"({len(set(file_work_ids))} works)."
         )
 
+        # ── Single batched pass: map, secondary metrics, all in one sweep ────
+        # ``compute_retrieval_metrics`` runs the per-row argsort once per
+        # similarity matrix and aggregates every requested metric inside
+        # that single pass. This is the only sane shape for large N:
+        # the earlier "precompute (N, N-1) order once and share it"
+        # pattern OOM'd for VGMIDITVar-timbre (N=102 960 → 84 GB int64
+        # order tensor); the previous "one call per metric" pattern still
+        # paid the row-sort cost for each call (MAP family was up to
+        # 6 redundant passes over ``sim``).
+        from marble.utils.retrieval_metrics import (
+            compute_perpair_map_all,
+            compute_retrieval_metrics,
+        )
+
+        # Default trim set: recall@10, r_precision, median_rank — all raw.
+        # Centered variants of the secondary metrics are rarely flipped
+        # by anisotropy and are gated behind the extended flag.
+        recall_ks_raw: list[int] = [10] if N > 10 else []
+        if self.log_extended_retrieval_metrics:
+            recall_ks_raw = sorted(set(recall_ks_raw + [k for k in (1, 5, 50, 100) if k < N]))
+        hit_ks_raw: list[int] = (
+            [k for k in (1, 5, 10) if k < N] if self.log_extended_retrieval_metrics else []
+        )
+        map_at_ks_raw: list[int] = [1] if self.log_extended_retrieval_metrics and N > 1 else []
+
         # ── cosine similarity (embeddings already L2-normalised) ─────────────
-        sim = embs @ embs.T  # (N, N)
+        sim = embs @ embs.T  # (N, N) — ~42 GB at N=102 960
+        metrics_raw = compute_retrieval_metrics(
+            sim,
+            work_ids,
+            recall_ks=recall_ks_raw,
+            hit_ks=hit_ks_raw,
+            include_r_precision=True,
+            include_median_rank=True,
+            include_map=True,
+            map_at_ks=map_at_ks_raw,
+            include_mrr=self.log_extended_retrieval_metrics,
+        )
+        # Free the raw similarity matrix before allocating ``sim_c`` — on a
+        # 32 GB RAM + 81 GB pagefile machine, holding both simultaneously
+        # (84 GB) overruns the commit limit. Halves peak memory.
+        del sim
+
+        map_raw = metrics_raw["map"]
+        print(f"[CoverRetrieval] MAP (raw)      = {map_raw:.4f}")
+        self.log("test/map", map_raw, prog_bar=True, rank_zero_only=True)
+        if "recall@10" in metrics_raw:
+            self.log("test/recall@10", metrics_raw["recall@10"], rank_zero_only=True)
+        self.log("test/r_precision", metrics_raw["r_precision"], rank_zero_only=True)
+        self.log("test/median_rank", metrics_raw["median_rank"], rank_zero_only=True)
+        if self.log_extended_retrieval_metrics:
+            for k in (1, 5, 50, 100):
+                key = f"recall@{k}"
+                if key in metrics_raw:
+                    self.log(f"test/{key}", metrics_raw[key], rank_zero_only=True)
+            for k in (1, 5, 10):
+                key = f"hit_rate@{k}"
+                if key in metrics_raw:
+                    self.log(f"test/{key}", metrics_raw[key], rank_zero_only=True)
+            if "map@1" in metrics_raw:
+                self.log("test/map@1", metrics_raw["map@1"], rank_zero_only=True)
+            self.log("test/mrr", metrics_raw["mrr"], rank_zero_only=True)
 
         # ── Centering variant: remove cone-effect anisotropy ─────────────────
         # The anisotropy diagnostic (scripts/diagnostics/anisotropy_diag.py)
@@ -238,86 +298,26 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         embs_c = F.normalize(embs_c, dim=-1)
         sim_c = embs_c @ embs_c.T
 
-        # ── compute MAP for both variants ─────────────────────────────────────
-        map_raw = self._compute_map(sim, work_ids)
-        map_centered = self._compute_map(sim_c, work_ids)
-        print(f"[CoverRetrieval] MAP (raw)      = {map_raw:.4f}")
+        recall_ks_c = (
+            [k for k in (1, 5, 10, 50, 100) if k < N] if self.log_extended_retrieval_metrics else []
+        )
+        hit_ks_c = [k for k in (1, 5, 10) if k < N] if self.log_extended_retrieval_metrics else []
+        map_at_ks_c = [1] if self.log_extended_retrieval_metrics and N > 1 else []
+        metrics_c = compute_retrieval_metrics(
+            sim_c,
+            work_ids,
+            recall_ks=recall_ks_c,
+            hit_ks=hit_ks_c,
+            include_r_precision=self.log_extended_retrieval_metrics,
+            include_median_rank=self.log_extended_retrieval_metrics,
+            include_map=True,
+            map_at_ks=map_at_ks_c,
+            include_mrr=self.log_extended_retrieval_metrics,
+        )
+        map_centered = metrics_c["map"]
         print(f"[CoverRetrieval] MAP (centered) = {map_centered:.4f}")
-
-        self.log("test/map", map_raw, prog_bar=True, rank_zero_only=True)
         self.log("test/map_centered", map_centered, prog_bar=False, rank_zero_only=True)
         if self.log_extended_retrieval_metrics:
-            # map@1 ≈ recall@1 (identical when one relevant per query); mrr
-            # ≈ inverse of median_rank. Kept available for K-sweep analysis.
-            self.log("test/map@1", self._map_at_k(sim, work_ids, k=1), rank_zero_only=True)
-            self.log(
-                "test/map@1_centered", self._map_at_k(sim_c, work_ids, k=1), rank_zero_only=True
-            )
-            self.log("test/mrr", self._mrr(sim, work_ids), rank_zero_only=True)
-            self.log("test/mrr_centered", self._mrr(sim_c, work_ids), rank_zero_only=True)
-
-        # ── Recall / Hit Rate / median rank / R-Precision ────────────────────
-        # Headline metrics for review-budget-K-aware retrieval evaluation
-        # (leitmotif workflow). See marble/utils/retrieval_metrics.py and
-        # docs/benchmarking_methodology.md for rationale. Both raw and
-        # centered variants logged. K values that exceed corpus size are
-        # silently skipped — small smoke runs don't pollute the log with
-        # NaN keys.
-        # ``compute_retrieval_metrics`` runs the per-row argsort once per
-        # similarity matrix and aggregates every requested metric inside
-        # that single pass. This bounds peak memory to O(batch × N) — the
-        # earlier "precompute (N, N-1) order once and share it" pattern
-        # OOM'd for VGMIDITVar-timbre (N=102 960 → 84 GB int64 order
-        # tensor).
-        from marble.utils.retrieval_metrics import compute_retrieval_metrics
-
-        # Default trim set: recall@10, r_precision, median_rank — all raw.
-        # Centered variants of the secondary metrics are rarely flipped
-        # by anisotropy and are gated behind the extended flag.
-        recall_ks_raw: list[int] = [10] if N > 10 else []
-        if self.log_extended_retrieval_metrics:
-            recall_ks_raw = sorted(set(recall_ks_raw + [k for k in (1, 5, 50, 100) if k < N]))
-        hit_ks_raw: list[int] = (
-            [k for k in (1, 5, 10) if k < N] if self.log_extended_retrieval_metrics else []
-        )
-        metrics_raw = compute_retrieval_metrics(
-            sim,
-            work_ids,
-            recall_ks=recall_ks_raw,
-            hit_ks=hit_ks_raw,
-            include_r_precision=True,
-            include_median_rank=True,
-        )
-        if "recall@10" in metrics_raw:
-            self.log("test/recall@10", metrics_raw["recall@10"], rank_zero_only=True)
-        self.log("test/r_precision", metrics_raw["r_precision"], rank_zero_only=True)
-        self.log("test/median_rank", metrics_raw["median_rank"], rank_zero_only=True)
-
-        if self.log_extended_retrieval_metrics:
-            # Full K-sweep + _centered duplicates + hit_rate. ~22 keys.
-            # Compute is cheap relative to the row sort itself; this
-            # block adds dashboard surface but does not add a second
-            # sweep over ``sim``.
-            for k in (1, 5, 50, 100):
-                key = f"recall@{k}"
-                if key in metrics_raw:
-                    self.log(f"test/{key}", metrics_raw[key], rank_zero_only=True)
-            for k in (1, 5, 10):
-                key = f"hit_rate@{k}"
-                if key in metrics_raw:
-                    self.log(f"test/{key}", metrics_raw[key], rank_zero_only=True)
-
-            # Centered variant — separate single pass over ``sim_c``.
-            recall_ks_c = [k for k in (1, 5, 10, 50, 100) if k < N]
-            hit_ks_c = [k for k in (1, 5, 10) if k < N]
-            metrics_c = compute_retrieval_metrics(
-                sim_c,
-                work_ids,
-                recall_ks=recall_ks_c,
-                hit_ks=hit_ks_c,
-                include_r_precision=True,
-                include_median_rank=True,
-            )
             for k in (1, 5, 10, 50, 100):
                 key = f"recall@{k}"
                 if key in metrics_c:
@@ -328,6 +328,9 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                     self.log(f"test/{key}_centered", metrics_c[key], rank_zero_only=True)
             self.log("test/r_precision_centered", metrics_c["r_precision"], rank_zero_only=True)
             self.log("test/median_rank_centered", metrics_c["median_rank"], rank_zero_only=True)
+            if "map@1" in metrics_c:
+                self.log("test/map@1_centered", metrics_c["map@1"], rank_zero_only=True)
+            self.log("test/mrr_centered", metrics_c["mrr"], rank_zero_only=True)
 
         # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
         # Only meaningful when the dataset carries a per-item condition
@@ -342,19 +345,29 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # is the actual operational scenario for cross-orchestration
         # leitmotif retrieval.
         if has_conditions and any(c != -1 for c in file_conditions):
-            from marble.utils.retrieval_metrics import compute_perpair_map
-
             unique_conds = sorted({c for c in file_conditions if c != -1})
-            same_aps: list[float] = []
-            cross_aps: list[float] = []
             # Use the centered similarity matrix for cross-condition MAP —
             # consistent with offline analysis in
             # scripts/analysis/vgmiditvar_leitmotif_breakdown.py, which
             # subtracts the corpus mean before per-pair MAP to remove
             # cone-effect anisotropy (relevant for OMARRQ esp.).
+            #
+            # ``compute_perpair_map_all`` does a single batched argsort
+            # pass and slices per (q, t) cell — for VGMIDITVar-timbre
+            # (8 GM programs → 64 cells, N=102 960) this drops the grid
+            # from ~4 h of unbatched per-cell sorts to ~3 min.
+            cell_results = compute_perpair_map_all(
+                sim_c,
+                file_work_ids,
+                file_conditions,
+                query_conds=unique_conds,
+                target_conds=unique_conds,
+            )
+            same_aps: list[float] = []
+            cross_aps: list[float] = []
             for q in unique_conds:
                 for t in unique_conds:
-                    ap, n = compute_perpair_map(sim_c, file_work_ids, file_conditions, q, t)
+                    ap, n = cell_results.get((q, t), (0.0, 0))
                     if n == 0:
                         continue
                     (same_aps if q == t else cross_aps).append(ap)
@@ -405,80 +418,65 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             f"eff_rank={ani['effective_rank']:.1f}"
         )
 
+    # ── back-compat shims (delegate to compute_retrieval_metrics) ─────────────
+    # These three static methods used to contain their own per-row argsort
+    # loops. Production paths (`on_test_epoch_end`) now run through
+    # ``marble.utils.retrieval_metrics.compute_retrieval_metrics`` directly,
+    # which folds map / map@K / mrr into the same batched pass as the
+    # secondary metrics. The shims below are kept because
+    # ``tests/test_compute_map_self_exclusion.py`` invokes them directly to
+    # pin the self-exclusion convention. They delegate so we have ONE source
+    # of truth.
+
     @staticmethod
     def _compute_map(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
-        """Standard MAP from a similarity matrix and work_id labels.
-
-        Self-exclusion uses ``-inf`` sentinel + last-column drop. The
-        earlier ``sims_i[i] = -2.0`` pattern left self at rank N with
-        ``work_ids[self] == work_ids[self] = True``, inflating
-        ``n_relevant`` by 1 and adding a spurious hit at rank N. The
-        per-query bias scaled as ``1 - n_true / (n_true + 1)`` — ~50%
-        for 1-relevant tasks (Covers80, SHS100K), ~12-20% for
-        VGMIDITVar variants. Matches the convention in
-        ``marble.utils.retrieval_metrics._ranking_order``.
+        """Standard MAP — delegates to
+        :func:`marble.utils.retrieval_metrics.compute_retrieval_metrics`.
+        Self-exclusion convention: ``-inf`` sentinel + last-column drop
+        (audit-2 #6, commit ac121f0). For large N use the bundle directly.
         """
-        N = len(work_ids)
-        aps: list[float] = []
-        for i in range(N):
-            sims_i = sim[i].clone()
-            sims_i[i] = -float("inf")  # exclude self via sentinel
-            # Drop self (now at rank N after argsort descending).
-            order = sims_i.argsort(descending=True)[: N - 1]
-            is_rel = work_ids[order] == work_ids[i]
-            n_relevant = int(is_rel.sum().item())
-            if n_relevant == 0:
-                continue
-            hits = 0
-            ap = 0.0
-            for rank, rel in enumerate(is_rel.tolist(), start=1):
-                if rel:
-                    hits += 1
-                    ap += hits / rank
-            ap /= n_relevant
-            aps.append(ap)
-        return float(torch.tensor(aps).mean().item()) if aps else 0.0
+        from marble.utils.retrieval_metrics import compute_retrieval_metrics
 
-    # ── helper metrics ────────────────────────────────────────────────────────
+        return compute_retrieval_metrics(
+            sim,
+            work_ids,
+            recall_ks=(),
+            include_r_precision=False,
+            include_median_rank=False,
+            include_map=True,
+        )["map"]
 
     @staticmethod
     def _map_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
-        """MAP@K. Self-exclusion uses ``-inf`` (matches _compute_map)."""
-        N = len(work_ids)
-        aps = []
-        for i in range(N):
-            s = sim[i].clone()
-            s[i] = -float("inf")
-            top_k = s.argsort(descending=True)[:k]
-            is_rel = (work_ids[top_k] == work_ids[i]).float()
-            n_total = int((work_ids == work_ids[i]).sum().item()) - 1
-            if n_total == 0:
-                continue
-            hits = 0
-            ap = 0.0
-            for rank, rel in enumerate(is_rel.tolist(), start=1):
-                if rel:
-                    hits += 1
-                    ap += hits / rank
-            ap /= n_total
-            aps.append(ap)
-        return float(torch.tensor(aps).mean().item()) if aps else 0.0
+        """MAP@K — delegates to
+        :func:`marble.utils.retrieval_metrics.compute_retrieval_metrics`.
+        Uses the non-standard normalisation that divides AP@K by total
+        ``n_relevant`` (not ``min(K, n_relevant)``); back-compat with the
+        original ``test/map@1`` wandb key.
+        """
+        from marble.utils.retrieval_metrics import compute_retrieval_metrics
+
+        return compute_retrieval_metrics(
+            sim,
+            work_ids,
+            recall_ks=(),
+            include_r_precision=False,
+            include_median_rank=False,
+            map_at_ks=(k,),
+        )[f"map@{k}"]
 
     @staticmethod
     def _mrr(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
-        """Mean reciprocal rank of first true positive. Self excluded via
-        ``-inf`` + last-column drop. Without the drop, queries with no
-        true relevants would spuriously report ``1/N`` from self instead
-        of being skipped (which is what we want for the MRR average)."""
-        N = len(work_ids)
-        recip = []
-        for i in range(N):
-            s = sim[i].clone()
-            s[i] = -float("inf")
-            order = s.argsort(descending=True)[: N - 1]
-            is_rel = work_ids[order] == work_ids[i]
-            nz = is_rel.nonzero(as_tuple=True)[0]
-            if len(nz) == 0:
-                continue
-            recip.append(1.0 / (nz[0].item() + 1))
-        return float(torch.tensor(recip).mean().item()) if recip else 0.0
+        """Mean reciprocal rank — delegates to
+        :func:`marble.utils.retrieval_metrics.compute_retrieval_metrics`.
+        """
+        from marble.utils.retrieval_metrics import compute_retrieval_metrics
+
+        return compute_retrieval_metrics(
+            sim,
+            work_ids,
+            recall_ks=(),
+            include_r_precision=False,
+            include_median_rank=False,
+            include_mrr=True,
+        )["mrr"]

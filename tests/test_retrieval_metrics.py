@@ -531,6 +531,122 @@ def test_compute_retrieval_metrics_empty_corpus_returns_all_nan():
         assert _math.isnan(val), f"{key} should be NaN, got {val}"
 
 
+# ──────────────────────────────────────────────────────────────────────
+# MAP / MAP@K / MRR — bundle must match the probe's static methods
+# bit-for-bit. The static methods now delegate to the bundle, so these
+# tests pin both the bundle's correctness AND the shim's faithfulness.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _bundle_map(sim, work_ids):
+    from marble.utils.retrieval_metrics import compute_retrieval_metrics
+
+    return compute_retrieval_metrics(
+        sim,
+        work_ids,
+        recall_ks=(),
+        include_r_precision=False,
+        include_median_rank=False,
+        include_map=True,
+    )["map"]
+
+
+def _bundle_map_at_k(sim, work_ids, k):
+    from marble.utils.retrieval_metrics import compute_retrieval_metrics
+
+    return compute_retrieval_metrics(
+        sim,
+        work_ids,
+        recall_ks=(),
+        include_r_precision=False,
+        include_median_rank=False,
+        map_at_ks=(k,),
+    )[f"map@{k}"]
+
+
+def _bundle_mrr(sim, work_ids):
+    from marble.utils.retrieval_metrics import compute_retrieval_metrics
+
+    return compute_retrieval_metrics(
+        sim,
+        work_ids,
+        recall_ks=(),
+        include_r_precision=False,
+        include_median_rank=False,
+        include_mrr=True,
+    )["mrr"]
+
+
+def test_bundle_map_matches_known_values():
+    """Hand-computed MAP for the 4-item 2-pair fixture."""
+    sim, work_ids = _two_pairs_perfect_sim()
+    # Perfect retrieval: rel at rank 1, AP = 1/1 = 1.0 for every query.
+    assert _bundle_map(sim, work_ids) == pytest.approx(1.0)
+
+    sim_inv, work_ids_inv = _two_pairs_inverted_sim()
+    # Inverted: rel at rank 3, AP = (1/3) for every query.
+    assert _bundle_map(sim_inv, work_ids_inv) == pytest.approx(1.0 / 3.0)
+
+
+def test_bundle_map_matches_probe_compute_map():
+    """The probe's _compute_map static method delegates to the bundle —
+    confirm they return identical values on a non-trivial fixture."""
+    from marble.tasks.Covers80.probe import CoverRetrievalTask
+
+    torch.manual_seed(13)
+    N = 50
+    sim = torch.randn(N, N)
+    work_ids = torch.randint(0, 6, (N,))
+    assert CoverRetrievalTask._compute_map(sim, work_ids) == pytest.approx(
+        _bundle_map(sim, work_ids)
+    )
+
+
+def test_bundle_map_at_k_matches_probe():
+    from marble.tasks.Covers80.probe import CoverRetrievalTask
+
+    torch.manual_seed(17)
+    N = 60
+    sim = torch.randn(N, N)
+    work_ids = torch.randint(0, 5, (N,))
+    for k in (1, 5, 10, 30):
+        assert CoverRetrievalTask._map_at_k(sim, work_ids, k) == pytest.approx(
+            _bundle_map_at_k(sim, work_ids, k)
+        ), f"map@{k} mismatch"
+
+
+def test_bundle_mrr_matches_probe():
+    from marble.tasks.Covers80.probe import CoverRetrievalTask
+
+    torch.manual_seed(23)
+    N = 40
+    sim = torch.randn(N, N)
+    work_ids = torch.randint(0, 4, (N,))
+    assert CoverRetrievalTask._mrr(sim, work_ids) == pytest.approx(_bundle_mrr(sim, work_ids))
+
+
+def test_compute_perpair_map_all_matches_per_cell():
+    """Batched all-cells perpair MAP must match per-cell `compute_perpair_map`."""
+    from marble.utils.retrieval_metrics import compute_perpair_map, compute_perpair_map_all
+
+    torch.manual_seed(29)
+    N = 40
+    sim = torch.randn(N, N)
+    work_ids = torch.randint(0, 5, (N,)).tolist()
+    # 3 conditions × 3 conditions = 9 cells; some will have zero queries.
+    conditions = [i % 3 for i in range(N)]
+
+    all_cells = compute_perpair_map_all(sim, work_ids, conditions)
+    for q in (0, 1, 2):
+        for t in (0, 1, 2):
+            ap_ref, n_ref = compute_perpair_map(sim, work_ids, conditions, q, t)
+            ap_new, n_new = all_cells[(q, t)]
+            assert n_new == n_ref, f"cell ({q},{t}) n={n_new} vs ref {n_ref}"
+            assert ap_new == pytest.approx(ap_ref, abs=1e-6), (
+                f"cell ({q},{t}) ap={ap_new} vs ref {ap_ref}"
+            )
+
+
 def test_iter_row_orders_self_excluded_and_complete():
     """Each yielded row_order is (N-1,) and never contains self-index."""
     from marble.utils.retrieval_metrics import _iter_row_orders
