@@ -54,7 +54,7 @@ data:
   class_path: marble.tasks.VGMIDITVar.datamodule.VGMIDITVarDataModule
   init_args:
     batch_size: 8
-    num_workers: 4
+    num_workers: 8
 
     audio_transforms:
       train:
