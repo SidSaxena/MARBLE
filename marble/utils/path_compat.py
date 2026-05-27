@@ -98,7 +98,13 @@ def load_jsonl(path: str | Path) -> list[dict]:
     Records without an ``audio_path`` field are passed through
     unchanged — the helper is safe for non-audio JSONL too.
     """
-    with open(path) as f:
+    # ``encoding="utf-8"`` is mandatory — on Windows the default is the
+    # locale codepage (typically cp1252) which fails on any non-ASCII
+    # field, e.g. SHS100K's YouTube ``artist`` strings with characters
+    # like 'é' or Cyrillic. Linux/macOS already default to UTF-8 so this
+    # is invisible there; the bug surfaced when SHS100K probes started
+    # running on my-pc (Windows).
+    with open(path, encoding="utf-8") as f:
         records: list[dict] = [json.loads(line) for line in f]
     for r in records:
         if "audio_path" in r:
