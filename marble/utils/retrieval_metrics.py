@@ -39,6 +39,7 @@ metric.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 
 import numpy as np
 import torch
@@ -67,12 +68,60 @@ def _ranking_order(sim: torch.Tensor) -> torch.Tensor:
     SHS100K (1 relevant per query) and ~12.5% for VGMIDITVar-timbre
     (7 relevants). See ``docs/benchmarking_methodology.md`` for the
     pre-fix vs post-fix comparability rules.
+
+    .. warning::
+       This function materialises the full ``(N, N-1)`` int64 ranking
+       tensor (~84 GB for VGMIDITVar-timbre at N=102 960). It is kept
+       for tests and for small corpora (Covers80, SHS100K). Production
+       paths on large corpora must use :func:`compute_retrieval_metrics`
+       or iterate :func:`_iter_row_orders` directly — both sort in
+       bounded-memory row batches.
     """
-    sim = sim.clone()
+    rows = [order_i.clone() for _, order_i in _iter_row_orders(sim)]
+    return torch.stack(rows, dim=0) if rows else torch.empty(0, 0, dtype=torch.long)
+
+
+def _iter_row_orders(sim: torch.Tensor, *, batch: int = 2048) -> Iterator[tuple[int, torch.Tensor]]:
+    """Yield ``(i, row_order)`` for each query row, self excluded.
+
+    Each ``row_order`` is a ``(N-1,)`` long tensor giving the indices of
+    OTHER items sorted by descending similarity to query ``i``. Self is
+    forced to the bottom with ``-inf`` and then dropped — the same
+    pattern ``CoverRetrievalTask._compute_map`` uses (audit-2 #6).
+
+    Memory: rows are sorted in chunks of ``batch`` at a time. Each chunk
+    allocates a ``(batch, N)`` float copy (~412 MB at batch=2048,
+    N=102 960) plus a ``(batch, N)`` int64 argsort output (~1.7 GB).
+    Both are released between chunks. This bounds peak working memory
+    irrespective of N — the alternative ``(N, N)`` argsort output that
+    :func:`_ranking_order` (and the original ``order = …`` precompute in
+    ``probe.py``) produces is **84 GB at N=102 960** and cannot fit in
+    RAM on a 32-GB-class machine.
+
+    The yielded tensor is a view into the active chunk; consume it in
+    the loop body before the next iteration. The standard
+    ``for i, order_i in _iter_row_orders(sim): …`` pattern is safe.
+
+    Args:
+        sim: ``(N, N)`` similarity matrix on CPU (or any device — the
+            chunk is moved nowhere).
+        batch: chunk size in rows. Default 2048 keeps peak working
+            memory ≲ 2 GB at N≈100 k.
+    """
     N = sim.size(0)
-    sim[range(N), range(N)] = float("-inf")  # force self to the bottom
-    order = sim.argsort(descending=True, dim=-1)
-    return order[:, :-1]  # drop the last column (always self)
+    if N == 0:
+        return
+    for start in range(0, N, batch):
+        end = min(start + batch, N)
+        chunk = sim[start:end].clone()
+        row_idx = torch.arange(end - start)
+        col_idx = torch.arange(start, end)
+        chunk[row_idx, col_idx] = float("-inf")
+        # (end-start, N) int64 — released when chunk goes out of scope.
+        order_chunk = chunk.argsort(descending=True, dim=-1)[:, : N - 1]
+        for j in range(end - start):
+            yield start + j, order_chunk[j]
+        del chunk, order_chunk
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -95,14 +144,19 @@ def recall_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
 
     Returns:
         Average recall as a Python float in [0, 1].
+
+    Note:
+        Each call iterates :func:`_iter_row_orders` once. When computing
+        multiple metrics on the same ``sim`` use
+        :func:`compute_retrieval_metrics` to amortise the row sorts
+        across all metrics in a single pass.
     """
     N = work_ids.size(0)
     if k <= 0 or k >= N:
         raise ValueError(f"k={k} must be in [1, N-1] where N={N}")
-    order = _ranking_order(sim)
     recalls: list[float] = []
-    for i in range(N):
-        is_rel = work_ids[order[i]] == work_ids[i]
+    for i, order_i in _iter_row_orders(sim):
+        is_rel = work_ids[order_i] == work_ids[i]
         n_relevant = int(is_rel.sum().item())
         if n_relevant == 0:
             continue
@@ -117,15 +171,15 @@ def hit_rate_at_k(sim: torch.Tensor, work_ids: torch.Tensor, k: int) -> float:
     Binary per query; lower variance than Recall@K. "Did the system
     surface at least one true positive in the review budget?"
 
-    Same args / return shape as :func:`recall_at_k`.
+    Same args / return shape as :func:`recall_at_k`. See
+    :func:`compute_retrieval_metrics` to share row sorts across metrics.
     """
     N = work_ids.size(0)
     if k <= 0 or k >= N:
         raise ValueError(f"k={k} must be in [1, N-1] where N={N}")
-    order = _ranking_order(sim)
     hits: list[float] = []
-    for i in range(N):
-        is_rel = work_ids[order[i]] == work_ids[i]
+    for i, order_i in _iter_row_orders(sim):
+        is_rel = work_ids[order_i] == work_ids[i]
         if int(is_rel.sum().item()) == 0:
             continue
         hits.append(1.0 if bool(is_rel[:k].any().item()) else 0.0)
@@ -138,15 +192,17 @@ def median_rank_first_hit(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
     Diagnostic — "how deep into the ranking before I see *anything*?"
     Queries with zero relevant items are skipped.
 
+    Args:
+        sim: ``(N, N)`` similarity matrix.
+        work_ids: ``(N,)`` group labels.
+
     Returns:
         Median 1-indexed rank as float (use ``int(round(.))`` if a
         rank integer is desired downstream). NaN if no query has a hit.
     """
-    N = work_ids.size(0)
-    order = _ranking_order(sim)
     first_ranks: list[float] = []
-    for i in range(N):
-        is_rel = work_ids[order[i]] == work_ids[i]
+    for i, order_i in _iter_row_orders(sim):
+        is_rel = work_ids[order_i] == work_ids[i]
         if int(is_rel.sum().item()) == 0:
             continue
         # 1-indexed rank of the first True in is_rel
@@ -167,13 +223,15 @@ def r_precision(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
     size of its relevant set. Standard in IR literature; sidesteps the
     "which K?" question entirely.
 
+    Args:
+        sim: ``(N, N)`` similarity matrix.
+        work_ids: ``(N,)`` group labels.
+
     Queries with zero relevant items are skipped.
     """
-    N = work_ids.size(0)
-    order = _ranking_order(sim)
     rps: list[float] = []
-    for i in range(N):
-        is_rel = work_ids[order[i]] == work_ids[i]
+    for i, order_i in _iter_row_orders(sim):
+        is_rel = work_ids[order_i] == work_ids[i]
         r = int(is_rel.sum().item())
         if r == 0:
             continue
@@ -181,6 +239,117 @@ def r_precision(sim: torch.Tensor, work_ids: torch.Tensor) -> float:
         hits = int(is_rel[:r].sum().item())
         rps.append(hits / r)
     return float(sum(rps) / len(rps)) if rps else float("nan")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Single-pass bundle (use this from probe.py to avoid N argsort passes)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def compute_retrieval_metrics(
+    sim: torch.Tensor,
+    work_ids: torch.Tensor,
+    *,
+    recall_ks: list[int] | tuple[int, ...] = (10,),
+    hit_ks: list[int] | tuple[int, ...] = (),
+    include_r_precision: bool = True,
+    include_median_rank: bool = True,
+    batch: int = 2048,
+) -> dict[str, float]:
+    """Compute several retrieval metrics in a single batched pass.
+
+    Runs :func:`_iter_row_orders` exactly once and aggregates every
+    requested metric from the same per-query rankings. Memory is bounded
+    by ``batch`` (see :func:`_iter_row_orders`) so this is the only
+    metric-suite entry point that is safe for N ≳ 25 000.
+
+    Callers like ``CoverRetrievalTask.on_test_epoch_end`` should prefer
+    this over invoking ``recall_at_k`` / ``r_precision`` /
+    ``median_rank_first_hit`` / ``hit_rate_at_k`` individually — each of
+    those reruns the row sorts independently.
+
+    Args:
+        sim: ``(N, N)`` similarity matrix.
+        work_ids: ``(N,)`` group labels.
+        recall_ks: iterable of K values for ``recall@K``. K ≥ N is
+            silently dropped.
+        hit_ks: iterable of K values for ``hit_rate@K``. K ≥ N is
+            silently dropped.
+        include_r_precision: emit ``r_precision`` key.
+        include_median_rank: emit ``median_rank`` key.
+        batch: forwarded to :func:`_iter_row_orders`.
+
+    Returns:
+        Dict with keys ``recall@K`` (one per K in ``recall_ks``),
+        ``hit_rate@K`` (one per K in ``hit_ks``), and optionally
+        ``r_precision`` / ``median_rank``. Degenerate metrics (all
+        queries skipped) return ``float('nan')``.
+    """
+    N = work_ids.size(0)
+    recall_ks_eff = [int(k) for k in recall_ks if 0 < int(k) < N]
+    hit_ks_eff = [int(k) for k in hit_ks if 0 < int(k) < N]
+
+    if N == 0:
+        # Degenerate: every requested metric is undefined.
+        out: dict[str, float] = {f"recall@{k}": float("nan") for k in recall_ks_eff}
+        out.update({f"hit_rate@{k}": float("nan") for k in hit_ks_eff})
+        if include_r_precision:
+            out["r_precision"] = float("nan")
+        if include_median_rank:
+            out["median_rank"] = float("nan")
+        return out
+
+    # Vectorised n_relevant precompute: one O(N) scatter-add pass instead of
+    # N Python ``is_rel.sum().item()`` calls in the inner loop. Each query's
+    # n_relevant is "count of items with my work_id, minus self".
+    _, inverse = work_ids.unique(return_inverse=True)
+    work_counts = torch.zeros(int(inverse.max().item()) + 1, dtype=torch.long).scatter_add_(
+        0, inverse, torch.ones_like(inverse, dtype=torch.long)
+    )
+    n_rel_all = work_counts[inverse] - 1  # exclude self from each query's count
+
+    recalls: dict[int, list[float]] = {k: [] for k in recall_ks_eff}
+    hits: dict[int, list[float]] = {k: [] for k in hit_ks_eff}
+    rps: list[float] = []
+    first_ranks: list[float] = []
+
+    for i, order_i in _iter_row_orders(sim, batch=batch):
+        n_rel = int(n_rel_all[i].item())
+        if n_rel == 0:
+            continue
+        is_rel = work_ids[order_i] == work_ids[i]
+        if recall_ks_eff or hit_ks_eff or include_r_precision:
+            is_rel_list = is_rel.tolist()  # cheap one-shot; reused below
+        else:
+            is_rel_list = None
+        for k in recall_ks_eff:
+            recalls[k].append(sum(is_rel_list[:k]) / n_rel)
+        for k in hit_ks_eff:
+            hits[k].append(1.0 if any(is_rel_list[:k]) else 0.0)
+        if include_r_precision:
+            rps.append(sum(is_rel_list[:n_rel]) / n_rel)
+        if include_median_rank:
+            # 1-indexed rank of the first True in is_rel
+            first_idx = int(is_rel.nonzero(as_tuple=True)[0][0].item())
+            first_ranks.append(float(first_idx + 1))
+
+    out: dict[str, float] = {}
+    for k in recall_ks_eff:
+        vs = recalls[k]
+        out[f"recall@{k}"] = float(sum(vs) / len(vs)) if vs else float("nan")
+    for k in hit_ks_eff:
+        vs = hits[k]
+        out[f"hit_rate@{k}"] = float(sum(vs) / len(vs)) if vs else float("nan")
+    if include_r_precision:
+        out["r_precision"] = float(sum(rps) / len(rps)) if rps else float("nan")
+    if include_median_rank:
+        if first_ranks:
+            out["median_rank"] = float(
+                torch.tensor(first_ranks, dtype=torch.float).quantile(0.5).item()
+            )
+        else:
+            out["median_rank"] = float("nan")
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────
