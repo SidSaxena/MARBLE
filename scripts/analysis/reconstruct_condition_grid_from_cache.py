@@ -84,7 +84,22 @@ def _collect_per_file_embeddings(
             continue
         per_slice: list[torch.Tensor] = []
         for p in slice_paths:
-            t = torch.load(p, map_location="cpu", weights_only=True)
+            # Cache writes ``{"embedding": tensor}`` dicts (see
+            # EmbeddingCache.put in marble/utils/emb_cache.py). Older
+            # callers may have saved a bare tensor; accept both shapes.
+            blob = torch.load(p, map_location="cpu", weights_only=True)
+            if isinstance(blob, dict):
+                t = blob.get("embedding")
+                if t is None:
+                    # Fall back to the first tensor value.
+                    for v in blob.values():
+                        if isinstance(v, torch.Tensor):
+                            t = v
+                            break
+                if t is None:
+                    continue
+            else:
+                t = blob
             # Cached shape is (L, H) for pool_time=True. Mean over L to
             # replicate LayerSelector(mode='mean') + TimeAvgPool.
             if t.dim() == 2:

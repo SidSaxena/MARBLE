@@ -69,7 +69,9 @@ def _make_synthetic_cache(
                 stem = Path(audio_path).stem
                 h = _sha1_8(audio_path)  # mirrors make_clip_id
                 clip_id = f"{stem}__{h}__c0"
-                torch.save(stacked, cache_dir / f"{clip_id}.pt")
+                # Production cache writes a ``{"embedding": tensor}`` dict
+                # (see EmbeddingCache.put). Mirror that format here.
+                torch.save({"embedding": stacked}, cache_dir / f"{clip_id}.pt")
                 records.append(
                     {
                         "audio_path": audio_path,
