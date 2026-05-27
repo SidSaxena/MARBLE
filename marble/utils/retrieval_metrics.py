@@ -254,9 +254,12 @@ def compute_retrieval_metrics(
     hit_ks: list[int] | tuple[int, ...] = (),
     include_r_precision: bool = True,
     include_median_rank: bool = True,
+    include_map: bool = False,
+    map_at_ks: list[int] | tuple[int, ...] = (),
+    include_mrr: bool = False,
     batch: int = 2048,
 ) -> dict[str, float]:
-    """Compute several retrieval metrics in a single batched pass.
+    """Compute the full retrieval-metric suite in a single batched pass.
 
     Runs :func:`_iter_row_orders` exactly once and aggregates every
     requested metric from the same per-query rankings. Memory is bounded
@@ -265,8 +268,10 @@ def compute_retrieval_metrics(
 
     Callers like ``CoverRetrievalTask.on_test_epoch_end`` should prefer
     this over invoking ``recall_at_k`` / ``r_precision`` /
-    ``median_rank_first_hit`` / ``hit_rate_at_k`` individually — each of
-    those reruns the row sorts independently.
+    ``median_rank_first_hit`` / ``hit_rate_at_k`` and the probe's
+    ``_compute_map`` / ``_map_at_k`` / ``_mrr`` independently — each
+    re-runs the row sorts. Folding the MAP family in here turns a
+    20-minute extended pass over VGMIDITVar-timbre into ~7 min.
 
     Args:
         sim: ``(N, N)`` similarity matrix.
@@ -277,17 +282,30 @@ def compute_retrieval_metrics(
             silently dropped.
         include_r_precision: emit ``r_precision`` key.
         include_median_rank: emit ``median_rank`` key.
+        include_map: emit ``map`` key — full Mean Average Precision
+            over all ranks, numerically identical to
+            ``CoverRetrievalTask._compute_map``.
+        map_at_ks: iterable of K values for ``map@K``. K ≥ N is
+            silently dropped. Matches ``_map_at_k``'s non-standard
+            normalisation: divides AP@K by total ``n_relevant`` (not
+            ``min(K, n_relevant)``) — kept for back-compat with the
+            existing ``test/map@1`` wandb key.
+        include_mrr: emit ``mrr`` key — mean reciprocal rank of first
+            relevant. Matches ``_mrr``.
         batch: forwarded to :func:`_iter_row_orders`.
 
     Returns:
-        Dict with keys ``recall@K`` (one per K in ``recall_ks``),
-        ``hit_rate@K`` (one per K in ``hit_ks``), and optionally
-        ``r_precision`` / ``median_rank``. Degenerate metrics (all
-        queries skipped) return ``float('nan')``.
+        Dict with keys ``recall@K`` / ``hit_rate@K`` / ``r_precision`` /
+        ``median_rank`` / ``map`` / ``map@K`` / ``mrr`` according to
+        which kwargs were enabled. Degenerate metrics (all queries
+        skipped) return ``float('nan')`` for recall/hit/r_precision/
+        median_rank and ``0.0`` for map/map@K/mrr — matching the
+        probe's historical static-method return values.
     """
     N = work_ids.size(0)
     recall_ks_eff = [int(k) for k in recall_ks if 0 < int(k) < N]
     hit_ks_eff = [int(k) for k in hit_ks if 0 < int(k) < N]
+    map_ks_eff = [int(k) for k in map_at_ks if 0 < int(k) < N]
 
     if N == 0:
         # Degenerate: every requested metric is undefined.
@@ -297,6 +315,12 @@ def compute_retrieval_metrics(
             out["r_precision"] = float("nan")
         if include_median_rank:
             out["median_rank"] = float("nan")
+        if include_map:
+            out["map"] = 0.0  # matches _compute_map's empty-aps return
+        for k in map_ks_eff:
+            out[f"map@{k}"] = 0.0  # matches _map_at_k's empty-aps return
+        if include_mrr:
+            out["mrr"] = 0.0  # matches _mrr's empty-recip return
         return out
 
     # Vectorised n_relevant precompute: one O(N) scatter-add pass instead of
@@ -312,26 +336,62 @@ def compute_retrieval_metrics(
     hits: dict[int, list[float]] = {k: [] for k in hit_ks_eff}
     rps: list[float] = []
     first_ranks: list[float] = []
+    aps: list[float] = []
+    aps_at_k: dict[int, list[float]] = {k: [] for k in map_ks_eff}
+    recip_ranks: list[float] = []
+
+    need_is_rel_list = bool(
+        recall_ks_eff or hit_ks_eff or include_r_precision or include_map or map_ks_eff
+    )
+    max_map_k = max(map_ks_eff) if map_ks_eff else 0
 
     for i, order_i in _iter_row_orders(sim, batch=batch):
         n_rel = int(n_rel_all[i].item())
         if n_rel == 0:
             continue
         is_rel = work_ids[order_i] == work_ids[i]
-        if recall_ks_eff or hit_ks_eff or include_r_precision:
-            is_rel_list = is_rel.tolist()  # cheap one-shot; reused below
-        else:
-            is_rel_list = None
+        is_rel_list = is_rel.tolist() if need_is_rel_list else None
+
         for k in recall_ks_eff:
             recalls[k].append(sum(is_rel_list[:k]) / n_rel)
         for k in hit_ks_eff:
             hits[k].append(1.0 if any(is_rel_list[:k]) else 0.0)
         if include_r_precision:
             rps.append(sum(is_rel_list[:n_rel]) / n_rel)
-        if include_median_rank:
+
+        if include_median_rank or include_mrr:
             # 1-indexed rank of the first True in is_rel
             first_idx = int(is_rel.nonzero(as_tuple=True)[0][0].item())
-            first_ranks.append(float(first_idx + 1))
+            if include_median_rank:
+                first_ranks.append(float(first_idx + 1))
+            if include_mrr:
+                recip_ranks.append(1.0 / (first_idx + 1))
+
+        # MAP family — single per-query walk over the ranked is_rel.
+        # AP = (1/n_rel) * sum_{rank where rel} (hits_so_far / rank).
+        # Compute full-rank AP (for ``map``) and per-K AP (for
+        # ``map@K``) in the same pass. ``map@K`` uses the probe's
+        # historical normalisation: divides by total n_relevant, not
+        # min(K, n_relevant).
+        if include_map or map_ks_eff:
+            hits_so_far = 0
+            ap_full = 0.0
+            ap_at: dict[int, float] = dict.fromkeys(map_ks_eff, 0.0)
+            cap = (N - 1) if include_map else max_map_k
+            for rank_idx, rel in enumerate(is_rel_list[:cap]):
+                if not rel:
+                    continue
+                hits_so_far += 1
+                rank = rank_idx + 1
+                if include_map:
+                    ap_full += hits_so_far / rank
+                for k in map_ks_eff:
+                    if rank <= k:
+                        ap_at[k] += hits_so_far / rank
+            if include_map:
+                aps.append(ap_full / n_rel)
+            for k in map_ks_eff:
+                aps_at_k[k].append(ap_at[k] / n_rel)
 
     out: dict[str, float] = {}
     for k in recall_ks_eff:
@@ -349,6 +409,13 @@ def compute_retrieval_metrics(
             )
         else:
             out["median_rank"] = float("nan")
+    if include_map:
+        out["map"] = float(sum(aps) / len(aps)) if aps else 0.0
+    for k in map_ks_eff:
+        vs = aps_at_k[k]
+        out[f"map@{k}"] = float(sum(vs) / len(vs)) if vs else 0.0
+    if include_mrr:
+        out["mrr"] = float(sum(recip_ranks) / len(recip_ranks)) if recip_ranks else 0.0
     return out
 
 
@@ -420,7 +487,12 @@ def compute_perpair_map(
         if allowed.sum() == 0:
             continue
         sims_i = sim[i].clone()
-        sims_i[~allowed] = -2.0
+        # ``-inf`` (not ``-2.0``) for non-allowed items — same class of bug
+        # as audit-2 #6 fix in ``_compute_map``. Real cosine sims can be
+        # below -2.0 on un-normalised embeddings; a finite sentinel would
+        # rank genuine target items below the non-target "wall", silently
+        # truncating the ranking.
+        sims_i[~allowed] = float("-inf")
         order = sims_i.argsort(descending=True)
         order = order[: int(allowed.sum())]
         is_rel = (wids[order] == wids[i]) & allowed[order]
@@ -436,6 +508,90 @@ def compute_perpair_map(
         ap /= n_rel
         aps.append(ap)
     return (float(torch.tensor(aps).mean().item()) if aps else 0.0, len(aps))
+
+
+def compute_perpair_map_all(
+    sim: torch.Tensor,
+    work_ids: list[int] | torch.Tensor,
+    conditions: list[int] | torch.Tensor,
+    *,
+    query_conds: list[int] | None = None,
+    target_conds: list[int] | None = None,
+    batch: int = 2048,
+) -> dict[tuple[int, int], tuple[float, int]]:
+    """Compute all (query_condition × target_condition) MAP cells in one pass.
+
+    Equivalent to calling :func:`compute_perpair_map` for every ``(q, t)``
+    pair, but shares the per-query argsort across cells — for
+    VGMIDITVar-timbre with 8 GM programs that cuts wall-time from
+    O(64·N·argsort) to O(N·argsort + 64·N·Python). Empirically ~4 h →
+    ~3 min on N=102 960.
+
+    Args:
+        sim: ``(N, N)`` similarity matrix.
+        work_ids: ``(N,)`` group labels.
+        conditions: ``(N,)`` per-item condition labels.
+        query_conds: condition values to enumerate as query slots.
+            ``None`` → all observed condition values (sentinel ``-1``
+            included only if it actually appears in ``conditions``;
+            callers should filter beforehand if they want it dropped).
+        target_conds: condition values to enumerate as target slots.
+            ``None`` → same as ``query_conds``.
+        batch: forwarded to :func:`_iter_row_orders`.
+
+    Returns:
+        ``dict[(q_cond, t_cond)] -> (map_value, n_queries)``. Cells with
+        zero queries contributing return ``(0.0, 0)`` — same convention
+        as :func:`compute_perpair_map`. Numerical equivalence with
+        per-cell ``compute_perpair_map`` calls is asserted in tests.
+    """
+    n = sim.size(0)
+    wids = work_ids if isinstance(work_ids, torch.Tensor) else torch.tensor(work_ids)
+    conds = conditions if isinstance(conditions, torch.Tensor) else torch.tensor(conditions)
+
+    if query_conds is None:
+        query_conds = sorted({int(c) for c in conds.tolist()})
+    if target_conds is None:
+        target_conds = list(query_conds)
+    query_set = set(query_conds)
+    target_list = list(target_conds)
+
+    aps_per_cell: dict[tuple[int, int], list[float]] = {
+        (q, t): [] for q in query_conds for t in target_list
+    }
+
+    if n == 0:
+        return {k: (0.0, 0) for k in aps_per_cell}
+
+    conds_list = conds.tolist()
+
+    for i, order_i in _iter_row_orders(sim, batch=batch):
+        q_cond = conds_list[i]
+        if q_cond not in query_set:
+            continue
+        cond_in_order = conds[order_i]  # (N-1,)
+        rel_in_order = wids[order_i] == wids[i]  # (N-1,)
+        for t_cond in target_list:
+            mask = cond_in_order == t_cond
+            if not bool(mask.any().item()):
+                continue
+            sub_rel = rel_in_order[mask]
+            n_rel = int(sub_rel.sum().item())
+            if n_rel == 0:
+                continue
+            hits = 0
+            ap = 0.0
+            for rank, rel in enumerate(sub_rel.tolist(), start=1):
+                if rel:
+                    hits += 1
+                    ap += hits / rank
+            ap /= n_rel
+            aps_per_cell[(q_cond, t_cond)].append(ap)
+
+    return {
+        (q, t): (float(sum(aps) / len(aps)) if aps else 0.0, len(aps))
+        for (q, t), aps in aps_per_cell.items()
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────
