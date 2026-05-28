@@ -141,6 +141,31 @@ def _has_test_metrics(summary_path: Path) -> bool:
     return any(k.startswith("test/") for k in data)
 
 
+def _config_max_epochs(cfg_path: str | Path) -> int | None:
+    """Return ``trainer.max_epochs`` from the config YAML, or None if absent.
+
+    Used by the launcher to skip the ``cli.py fit`` stage entirely when
+    ``max_epochs == 0`` (zero-shot retrieval probes — VGMIDITVar /
+    SHS100K / Covers80 etc.). Without this, fit still runs through
+    Lightning's full setup pipeline (encoder load, wandb-init,
+    DataLoader worker spawn) only to immediately exit the fit-loop —
+    which on Windows with ``num_workers>0`` has been observed to
+    deadlock at the DataLoader-worker-spawn stage (LOCAL_RANK printed,
+    then silent hang).
+
+    Returns int or None. A None value means "couldn't parse / not
+    specified"; caller should treat that as "don't skip fit" (the
+    conservative default).
+    """
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    me = (cfg or {}).get("trainer", {}).get("max_epochs")
+    return int(me) if isinstance(me, int) else None
+
+
 def _checkpoint_dirpath_from_config(cfg_path: str | Path) -> Path | None:
     """Parse the YAML and return the ModelCheckpoint.dirpath, or None.
 
@@ -351,7 +376,18 @@ def _run_meanall_first(args, common_overrides: list[str]) -> None:
     # convention `layer-N-{fit,test}` set by gen_sweep_configs. Disambiguation
     # across encoders comes from the wandb group (`<encoder> / <task>`) +
     # tags, not the run name.
-    for stage, kind in (("fit", "fit"), ("test", "test")):
+    skip_fit_no_train = (
+        getattr(args, "skip_fit_if_no_train", False) and _config_max_epochs(cfg) == 0
+    )
+    stages: tuple[tuple[str, str], ...] = (
+        (("test", "test"),) if skip_fit_no_train else (("fit", "fit"), ("test", "test"))
+    )
+    if skip_fit_no_train:
+        print(
+            "  ↪ meanall: max_epochs=0, skipping fit per --skip-fit-if-no-train.",
+            flush=True,
+        )
+    for stage, kind in stages:
         cmd = [
             PYTHON,
             "cli.py",
@@ -546,6 +582,24 @@ def _run_one_layer(
                 with _CONSOLE_LOCK:
                     sys.stdout.write(f"[L{layer}] {msg}\n")
                     sys.stdout.flush()
+        elif getattr(args, "skip_fit_if_no_train", False) and _config_max_epochs(cfg) == 0:
+            # Zero-shot retrieval probe (max_epochs=0): nothing to train.
+            # Skip fit entirely — it would be a no-op but still pays the
+            # full Lightning setup overhead (encoder load, wandb-init,
+            # DataLoader worker spawn). On Windows with num_workers>0 the
+            # DataLoader-worker-spawn step has been observed to deadlock
+            # silently at LOCAL_RANK. See tests/test_retrieval_metrics_streaming.py.
+            msg = "  ↪ max_epochs=0: skipping fit (no training needed) per --skip-fit-if-no-train."
+            if stream_fit:
+                print(msg, flush=True)
+                log_file.write(msg + "\n")
+                log_file.flush()
+            else:
+                log_file.write(msg + "\n")
+                log_file.flush()
+                with _CONSOLE_LOCK:
+                    sys.stdout.write(f"[L{layer}] {msg}\n")
+                    sys.stdout.flush()
         else:
             fit_cmd = [
                 PYTHON,
@@ -704,6 +758,29 @@ def main():
         "so the total worker count stays bounded.",
     )
     parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Override DataLoader num_workers for every cli.py invocation, "
+        "regardless of --concurrency. Use this when the config's "
+        "num_workers value triggers a deadlock — e.g. on Windows we've "
+        "observed num_workers=8 hang at the DataLoader-worker-spawn "
+        "stage (LOCAL_RANK printed, then silent). num_workers=0 always "
+        "works and is faster than broken-spawn for cache-hit-dominated "
+        "passes. Takes precedence over --num-workers-per-proc when both "
+        "are set.",
+    )
+    parser.add_argument(
+        "--skip-fit-if-no-train",
+        action="store_true",
+        help="Skip the `cli.py fit` stage when the config has "
+        "`trainer.max_epochs: 0` (zero-shot retrieval probes). Fit is "
+        "a no-op in that case but still pays the full DataLoader + "
+        "encoder + wandb-init setup overhead, and on Windows with "
+        "num_workers>0 has been observed to deadlock at worker spawn. "
+        "Test stage runs unchanged.",
+    )
+    parser.add_argument(
         "--skip-meanall",
         action="store_true",
         help="Don't run the meanall (mean-of-all-layers) baseline before the "
@@ -773,8 +850,17 @@ def main():
     t_sweep_start = time.time()
 
     # ── 2. Resolve overrides for concurrent runs ─────────────────────────────
+    # Precedence (highest first):
+    #   1. --num-workers — explicit user override, applies in both
+    #      sequential and concurrent modes. Use this on Windows when
+    #      num_workers>0 deadlocks at worker spawn.
+    #   2. --num-workers-per-proc — back-compat alias for concurrent mode.
+    #   3. Auto-default for --concurrency>1 (max(2, 8 // concurrency)).
+    #   4. No override → config value is used.
     num_workers_override: int | None = None
-    if args.concurrency > 1:
+    if args.num_workers is not None:
+        num_workers_override = args.num_workers
+    elif args.concurrency > 1:
         num_workers_override = (
             args.num_workers_per_proc
             if args.num_workers_per_proc is not None
