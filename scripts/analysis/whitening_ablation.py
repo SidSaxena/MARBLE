@@ -525,6 +525,18 @@ def main() -> int:
     ap.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
     ap.add_argument("--batch", type=int, default=1024)
     ap.add_argument(
+        "--skip-perpair",
+        action="store_true",
+        help="Skip the 8x8 per-condition MAP grid (diag_mean/off_mean/gap "
+        "columns become NaN). The grid's CPU-side cumsum aggregation is "
+        "~8x the cost of the overall MAP pass (~9 min vs ~1 min per "
+        "treatment at N=102960). Use this for a fast first pass across "
+        "many treatments — overall map / recall@10 / r_precision still "
+        "tell you whether a treatment helps retrieval — then re-run the "
+        "promising treatments without this flag to get the cross-"
+        "instrument breakdown.",
+    )
+    ap.add_argument(
         "--max-works",
         type=int,
         default=None,
@@ -665,8 +677,8 @@ def main() -> int:
             batch=args.batch,
         )
 
-        # Per-condition grid (skip if no conditions).
-        if unique_conds:
+        # Per-condition grid (skip if no conditions OR --skip-perpair).
+        if unique_conds and not args.skip_perpair:
             cell_results = compute_perpair_map_all_streaming(
                 e_t,
                 work_ids_t,
