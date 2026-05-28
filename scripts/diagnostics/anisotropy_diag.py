@@ -185,17 +185,42 @@ def _diagnose_layer(frames: torch.Tensor, n_pairs: int) -> dict:
 
 
 def _judgement(raw: dict, centered: dict) -> str:
-    """Heuristic verdict based on the metrics."""
-    # Strong cone effect / high anisotropy in raw
-    if raw["avg_pair_cos"] > 0.5 or raw["mean_vec_norm"] > 0.5:
-        if centered["avg_pair_cos"] > 0.3:
-            return "ANISOTROPIC (severe)"
-        return "ANISOTROPIC (cone — fixable by centering)"
-    if raw["top1_sv_share"] > 0.5:
-        return "RANK-COLLAPSED"
-    if raw["effective_rank"] < raw["n_dim"] * 0.1:
-        return "LOW EFFECTIVE RANK"
-    # Mild anisotropy: pair cosine clearly above baseline
+    """Heuristic verdict based on the metrics.
+
+    Returns a label from the four-quadrant taxonomy in
+    ``docs/anisotropy.md``: cone × rank compression. Earlier versions
+    of this function called any "centering fixes pair_cos" case "cone —
+    fixable by centering" even when ``effective_rank`` showed
+    significant residual rank compression. Corrected 2026-05-28: a low
+    ``effective_rank`` post-centering means centering alone is not
+    enough; whitening or feature engineering is needed.
+    """
+    strong_cone = raw["avg_pair_cos"] > 0.5 or raw["mean_vec_norm"] > 0.5
+    moderate_cone = raw["avg_pair_cos"] > 0.2 or raw["mean_vec_norm"] > 0.2
+    # ``effective_rank`` is on centered embeddings. < 15 % of full dim
+    # is meaningful structural compression — distinct from "single
+    # dominant direction" (``top1_sv_share``).
+    rank_compressed = raw["effective_rank"] < raw["n_dim"] * 0.15
+    top1_dominates = raw["top1_sv_share"] > 0.3
+
+    # Strong residual after centering: anisotropy isn't just a shift.
+    if centered["avg_pair_cos"] > 0.3:
+        return "ANISOTROPIC (severe — centering alone insufficient)"
+
+    if strong_cone:
+        if rank_compressed:
+            return "CONE + RANK-COMPRESSED (centering helps; whitening better)"
+        return "CONE (strong — centering recommended)"
+
+    if top1_dominates:
+        return "SECOND-DIRECTION DOMINANCE (post-centering)"
+
+    if rank_compressed:
+        return "RANK-COMPRESSED (centering doesn't help; whitening might)"
+
+    if moderate_cone:
+        return "CONE (mild — centering recommended for retrieval)"
+
     if raw["avg_pair_cos"] > 5 * raw["iso_pair_std_baseline"]:
         return "MILD anisotropy"
     return "isotropic"

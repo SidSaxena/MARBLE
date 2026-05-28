@@ -56,10 +56,24 @@ Isotropic baseline for 1024-D: `1/√1024 ≈ 0.031`. Our avg_pair_cos
 runs 0.21–0.28 — **~7–9× above isotropic**, comfortably "anisotropic"
 in the literature sense but not "severe".
 
-After centering (subtracting the corpus mean): collapses to ~0.0006 →
-the anisotropy is a pure shift (cone effect), not rank collapse. Top-1
-singular value share is ~0.04 (no dominant direction); effective rank
-is ~110–135 out of 1024 (10–13% of full dim, moderate compression).
+After centering (subtracting the corpus mean): avg_pair_cos collapses
+to ~0.0006 — confirms the cone effect is real and centering eliminates
+it. Top-1 singular value share is ~0.04 (no *single* dominant direction
+post-centering).
+
+**Correction (2026-05-28):** an earlier version of this section
+concluded "the anisotropy is a pure shift (cone effect), not rank
+collapse". That was incorrect. `effective_rank ≈ 110–135 out of 1024`
+(11–13 % of full dim) IS substantial rank compression — variance is
+concentrated in ~120 of the 1024 directions even after the cone is
+removed. The low `top1_sv_share` only rules out a *single* dominant
+secondary direction; it doesn't rule out collapse across a handful of
+directions. So OMAR-RQ exhibits **both** cone collapse AND structural
+rank compression — it sits in the bottom-right of the four-quadrant
+taxonomy described in `docs/anisotropy.md`. Centering fixes the cone
+component but not the rank compression; whitening (subtract mean +
+multiply by `Σ^(-1/2)`) would address both. We don't currently log a
+whitened MAP variant.
 
 **What this explains:**
 - Retrieval results (Covers80 MAP 0.027). Cosine similarity on cone-

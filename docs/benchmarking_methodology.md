@@ -250,6 +250,12 @@ into main as part of the audit-2 batch). After this commit:
   (they already used the correct -inf pattern via
   `marble.utils.retrieval_metrics._ranking_order`).
 
+> See [docs/anisotropy.md](anisotropy.md) for the methodology behind
+> `test/anisotropy/{mean_vec_norm, avg_pair_cos, top1_sv_share, effective_rank}`
+> — what each metric measures, when to trust `map_centered` over
+> `map`, and the four-quadrant taxonomy for diagnosing an encoder's
+> embedding cloud.
+
 ### Comparability
 
 - **Pre-fix wandb runs vs post-fix wandb runs**: `test/map` values are
