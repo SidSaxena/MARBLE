@@ -7,13 +7,21 @@ exponent α=1.0, unregularised) is the best treatment for every encoder
 tested.
 
 > **Status:** result verified by an independent audit (see §5). The
-> *magnitude* carries a generalisation caveat (§6) — VGMIDITVar-timbre's
+> *magnitude* carries a generalisation caveat (§7) — VGMIDITVar-timbre's
 > clean 8-timbre balance makes timbre a cleanly-removable variance
 > direction; real-corpus gains may be smaller. The cross-instrument
 > (off-diagonal) confirmation via the per-condition grid is **pending**
 > (the per-pair run was deliberately held).
 >
-> **Date:** 2026-05-28. **Provenance:** `scripts/analysis/whitening_ablation.py`,
+> **This is a known technique, not a novel method.** Post-hoc whitening
+> of frozen embeddings to fix anisotropy and improve cosine retrieval is
+> well-established prior art across NLP and audio (§6). The contribution
+> here is *characterisation* — applying it to four music encoders and
+> measuring how much it helps cross-timbre retrieval — not the method.
+> Read §6 before describing this result as new.
+>
+> **Date:** 2026-05-28 (novelty review added 2026-05-29).
+> **Provenance:** `scripts/analysis/whitening_ablation.py`,
 > figures + CSVs in `docs/figures/whitening_ablation/`.
 
 ---
@@ -168,7 +176,45 @@ The keystone synthetic check is baked into CI as
 
 ---
 
-## 6. Caveats (read before claiming this transfers)
+## 6. Prior work & novelty (read before calling this new)
+
+The gains are real and correctly computed (§5). They are **not novel**.
+Post-hoc whitening / PCA-whitening of frozen embeddings to fix
+anisotropy ("cone collapse") and improve cosine retrieval is a named,
+repeatedly-published technique. A literature check (2026-05-29) found
+direct prior art for every treatment in this ablation:
+
+| our treatment | prior art |
+|---|---|
+| `whiten-aα` (ZCA, mean→0, cov→I) | **BERT-whitening**, Su et al. 2021 ([arXiv:2103.15316](https://arxiv.org/abs/2103.15316)) — same recipe, explicitly "for better semantics and faster retrieval"; **WhiteningBERT**, Huang et al. 2021 ([arXiv:2104.01767](https://arxiv.org/pdf/2104.01767)) |
+| `abtt-K` (subtract top-K PCs) | **All-But-The-Top**, Mu & Viswanath, ICLR 2018 ([arXiv:1702.01417](https://arxiv.org/abs/1702.01417)) — by name |
+| fractional α (`whiten-a0.5/0.7`) | **Spectral Tempering** ([arXiv:2603.19339](https://arxiv.org/pdf/2603.19339)) — scales eigenvalues by λ^(−α) with fractional α as a whitening generalisation, and reports the same noise-amplification-at-α=1 behaviour we probed with the `-erel` ridge |
+| frozen-encoder + transductive PCA whitening for **zero-shot audio retrieval** | **VocSim**, Dec 2025 ([arXiv:2512.10120](https://arxiv.org/abs/2512.10120)) — frozen encoder + pooling + label-free PCA whitening on the eval corpus, framed around the "representation cone." This is essentially our pipeline, in audio. |
+
+The cover-song / version-identification literature (e.g. **ByteCover2**)
+also routinely uses PCA whitening and centering — though on
+melody/chroma-style features, not these SSL music foundation models.
+
+**What, if anything, is left.** Narrow and incremental:
+
+- VocSim's 125k clips are speech / animal / environmental sound — it
+  **explicitly excludes music and instruments**. The specific slice
+  here (music encoders CLaMP3 / MERT / MuQ / OMARRQ × *cross-instrument*
+  retrieval on a timbre-controlled rendering) is the one gap not already
+  covered. That is a benchmark/probing-study contribution at most.
+- The measured magnitude (+109–425 %) and the leaderboard reordering.
+
+Both are gated on the result surviving an **inductive** test (§7.2) —
+our numbers are transductive, the regime that most inflates the gain.
+
+**Honest confidence:** ~99 % that the *technique* is not novel; ~50 %
+that the music/cross-timbre slice has enough unexplored space for a
+modest writeup, and only if framed as "applying a known method," never
+as a discovery.
+
+---
+
+## 7. Caveats (read before claiming this transfers)
 
 1. **Generalisation / corpus structure.** VGMIDITVar-timbre has
    *exactly* 8 timbres per piece, making timbre a cleanly-dominant,
@@ -177,13 +223,20 @@ The keystone synthetic check is baked into CI as
    shrink. **Must be tested on SHS100K / Covers80** before claiming the
    number transfers.
 
-2. **Transductive fitting.** μ and Σ are fit on the same corpus the
-   retrieval is evaluated over. This is not label leakage (the
-   transform is content-agnostic — it never sees work_ids and applies
-   the same matrix to every embedding), and it matches the existing
-   `map_centered` protocol (which also uses the corpus mean). But a
-   *strict* zero-shot deployment would fit μ, Σ on a disjoint reference
-   set; the gain might be slightly lower.
+2. **Transductive fitting — the load-bearing caveat.** μ and Σ are fit
+   on the same corpus the retrieval is evaluated over. This is not label
+   leakage (the transform is content-agnostic — it never sees work_ids
+   and applies the same matrix to every embedding), and it matches the
+   existing `map_centered` protocol (which also uses the corpus mean).
+   But this is precisely the regime where whitening gains are most
+   *inflated*: VocSim ([arXiv:2512.10120](https://arxiv.org/abs/2512.10120))
+   reports a "generalisation gap" when the corpus shifts, and Spectral
+   Tempering ([arXiv:2603.19339](https://arxiv.org/pdf/2603.19339)) shows
+   full whitening amplifies tail-eigenvalue noise that a transductive fit
+   conveniently absorbs. A *strict* zero-shot deployment would fit μ, Σ
+   on a disjoint reference set, and the gain could drop substantially.
+   **An inductive (held-out-fit) test is the gate before any stronger
+   claim** — see §6.
 
 3. **Layer choice.** We only whitened each encoder's *best-raw* layer.
    Whitening could change *which* layer is best (a heavier-cone layer
@@ -199,7 +252,7 @@ The keystone synthetic check is baked into CI as
 
 ---
 
-## 7. Recommendations / next steps
+## 8. Recommendations / next steps
 
 In rough priority:
 
@@ -211,16 +264,19 @@ In rough priority:
    `map_centered` path so every future sweep logs the whitened metric
    as a first-class number (~30-line addition to
    `marble/tasks/Covers80/probe.py`).
-4. **Generalisation test** — whitening ablation on SHS100K / Covers80
-   to see whether the gain holds when the nuisance variation isn't a
-   clean timbre axis.
+4. **Inductive generalisation test (the novelty gate, §6/§7.2)** — fit
+   μ, Σ on a disjoint reference set and evaluate on held-out works, and
+   run the ablation on SHS100K / Covers80, to see whether the gain holds
+   when (a) the fit is not transductive and (b) the nuisance variation
+   isn't a clean timbre axis. This is the experiment that decides
+   whether the result is worth any writeup beyond an internal note.
 5. **Deployment** — for a fixed retrieval database, whitening is free
    (fit μ, Σ once). For a growing database, fit on a representative
    reference set.
 
 ---
 
-## 8. Reproducibility
+## 9. Reproducibility
 
 ```bash
 # Fast pass (overall metrics, all treatments) for one encoder/layer:
