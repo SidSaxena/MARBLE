@@ -103,14 +103,21 @@ def _collect_per_file_embeddings(
             # Cached shape is (L, H) for pool_time=True. Mean over L to
             # replicate LayerSelector(mode='mean') + TimeAvgPool.
             if t.dim() == 2:
-                per_slice.append(t.mean(dim=0))  # (H,)
+                clip_emb = t.mean(dim=0)  # (H,)
             elif t.dim() == 3:
                 # frame-level cache (L, T, H) — average over both L and T.
-                per_slice.append(t.mean(dim=(0, 1)))
+                clip_emb = t.mean(dim=(0, 1))
             else:
-                per_slice.append(t.flatten())
+                clip_emb = t.flatten()
+            # L2-normalise per clip BEFORE the per-file mean. This matches
+            # the probe's forward pass (marble/tasks/Covers80/probe.py
+            # line 138 returns per-clip L2-normed embeddings). The
+            # pre-2026-05-28 version of this script L2-normed only AFTER
+            # the per-file mean, which diverges from the probe on
+            # multi-clip files (single-clip files are unaffected).
+            per_slice.append(F.normalize(clip_emb, dim=-1))
         mean_emb = torch.stack(per_slice).mean(dim=0)
-        mean_emb = F.normalize(mean_emb, dim=-1)
+        mean_emb = F.normalize(mean_emb, dim=-1)  # per-file re-normalise
         file_embs.append(mean_emb)
         file_wids.append(int(rec["work_id"]))
         cond_raw = rec.get("gm_program")

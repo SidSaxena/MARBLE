@@ -145,6 +145,116 @@ def test_reconstruct_grid_produces_csv_and_json(tmp_path: Path):
     assert (out_dir / "condition_grid.png").exists()
 
 
+def test_reconstruct_multi_clip_aggregation_matches_probe(tmp_path: Path):
+    """Regression test for the per-clip-L2-then-mean fix (2026-05-28).
+
+    Pre-fix the script computed ``F.normalize(mean(per_slice))`` — i.e.
+    L2-normed AFTER the per-file clip mean. The probe does
+    ``F.normalize(mean(F.normalize(per_clip)))`` — per-clip L2 first.
+
+    For a multi-clip file with clips that differ noticeably in magnitude,
+    the two orderings produce different per-file vectors. Test reproduces
+    the probe's logic by hand on a synthetic 2-clip file and asserts the
+    script's aggregated embedding matches.
+    """
+    import torch.nn.functional as F  # noqa: PLC0415
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    audio_path = "data/fake/multiclip_0.flac"
+    h = _sha1_8(audio_path)
+    stem = Path(audio_path).stem
+    # Cache writes (L, H) per clip. The reconstruct script averages over
+    # L (meanall convention). Build TWO clips whose post-L-mean vectors
+    # have noticeably different magnitudes — the bug only surfaces here.
+    H = 16
+    L = 2
+    torch.manual_seed(0)
+    # Clip 0: small magnitude, will normalise to roughly e_0.
+    clip0_stack = torch.zeros(L, H)
+    clip0_stack[:, 0] = 0.1
+    clip0_stack += torch.randn(L, H) * 0.001
+    # Clip 1: larger magnitude, normalises to roughly e_1.
+    clip1_stack = torch.zeros(L, H)
+    clip1_stack[:, 1] = 10.0
+    clip1_stack += torch.randn(L, H) * 0.01
+    torch.save({"embedding": clip0_stack}, cache_dir / f"{stem}__{h}__c0.pt")
+    torch.save({"embedding": clip1_stack}, cache_dir / f"{stem}__{h}__c1.pt")
+
+    # Hand-compute the probe-correct per-file embedding:
+    #   per-clip layer-mean → L2-normalise → average → re-normalise
+    clip0_layer_mean = clip0_stack.mean(dim=0)
+    clip1_layer_mean = clip1_stack.mean(dim=0)
+    clip0_unit = F.normalize(clip0_layer_mean, dim=-1)
+    clip1_unit = F.normalize(clip1_layer_mean, dim=-1)
+    expected_emb = F.normalize(torch.stack([clip0_unit, clip1_unit]).mean(dim=0), dim=-1)
+    # Pre-fix (buggy) per-file embedding for contrast — should NOT match.
+    buggy_emb = F.normalize(torch.stack([clip0_layer_mean, clip1_layer_mean]).mean(dim=0), dim=-1)
+    # Sanity: the two recipes really do diverge on this fixture.
+    divergence = (expected_emb - buggy_emb).abs().max().item()
+    assert divergence > 0.05, (
+        f"fixture failed to expose the bug — buggy and correct outputs "
+        f"diverge by only {divergence}; pick more unbalanced clips"
+    )
+
+    # Now drive the script and read the produced JSON to recover the
+    # implied per-file embedding direction. Reconstruct script needs a
+    # JSONL with at least one extra peer to compute any AP, so we add a
+    # filler file that has a single clip and a different work_id.
+    filler_path = "data/fake/filler_0.flac"
+    filler_stack = torch.randn(L, H)
+    h2 = _sha1_8(filler_path)
+    torch.save(
+        {"embedding": filler_stack},
+        cache_dir / f"{Path(filler_path).stem}__{h2}__c0.pt",
+    )
+
+    records = [
+        {
+            "audio_path": audio_path,
+            "work_id": 1,
+            "gm_program": 0,
+            "sample_rate": 24000,
+            "num_samples": 24000,
+            "channels": 1,
+        },
+        {
+            "audio_path": filler_path,
+            "work_id": 2,
+            "gm_program": 0,
+            "sample_rate": 24000,
+            "num_samples": 24000,
+            "channels": 1,
+        },
+    ]
+    jsonl = tmp_path / "rec.jsonl"
+    with open(jsonl, "w") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+    # Import the script's loader directly to inspect the produced (N, H)
+    # matrix without parsing the heatmap.
+    import importlib.util  # noqa: PLC0415
+
+    spec = importlib.util.spec_from_file_location(
+        "_reconstruct_condition_grid_from_cache",
+        REPO_ROOT / "scripts" / "analysis" / "reconstruct_condition_grid_from_cache.py",
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    embs, wids, conds = mod._collect_per_file_embeddings(records, cache_dir)
+    # Multi-clip file is records[0]; its row in `embs` is row 0.
+    actual = embs[0]
+    max_err = (actual - expected_emb).abs().max().item()
+    max_err_vs_buggy = (actual - buggy_emb).abs().max().item()
+    assert max_err < 1e-5, (
+        f"reconstruct aggregation diverges from probe convention; "
+        f"max err vs expected = {max_err:.4e}, vs buggy old behaviour = "
+        f"{max_err_vs_buggy:.4e}"
+    )
+
+
 def test_reconstruct_skips_records_missing_cache(tmp_path: Path):
     """Records whose cached .pt file is missing should be skipped with a
     warning, not crash the run."""
