@@ -67,6 +67,141 @@ holds the test phase only; in parallel mode it holds fit + test.
 
 ---
 
+## Launch sweeps from the **Console session** on Windows, not from SSH
+
+> **Headline**: on Windows, do not launch long sweeps via SSH. Every
+> `wandb.init()` call after the first few will fail with
+> `wandb-core exited with code 3221225794` (`STATUS_DLL_INIT_FAILED`).
+> Launch from a terminal on the machine's interactive desktop instead.
+
+### Symptom
+
+You launch the sweep over SSH. The first encoder might complete, but
+partway through a long run — or even immediately on a freshly-rebooted
+machine if the sweep is large enough — every `cli.py test` invocation
+fails within a few seconds. Layer logs show:
+
+```
+OMAR-RQ: 792 weights loaded for `net`
+OMAR-RQ: 2 weights loaded for `embedding_layer`
+[OMARRQ-...] torch.compile(...) requested but skipped — Triton not installed
+LayerSelector initialized with layers: [0]
+Traceback (most recent call last):
+  ...
+  File "...wandb_init.py", line 900, in init
+    service = self._wl.ensure_service()
+  ...
+wandb.sdk.lib.service.service_port_file.ServicePollForTokenError:
+  wandb-core exited with code 3221225794
+```
+
+The launcher then dutifully marches through every remaining layer
+producing `(no test metrics parsed)` for each one and exits with
+`pass=N fail=0` — currently the launcher only checks the inner script's
+exit code, not whether layers actually produced output. See
+"silent-failure follow-up" in `docs/TODO.md`.
+
+### Diagnosis
+
+Run this on Windows to inspect which session your launched processes
+are attached to:
+
+```powershell
+tasklist | findstr /I python uv wandb
+```
+
+You'll see a column that reads either **Console** or **Services**:
+
+```
+python.exe   26168 Console     1   3,754,608 K     ← launched from desktop terminal, OK
+python.exe   30272 Services    0     552,104 K     ← launched via SSH, will fail
+```
+
+If your sweep processes show `Services`, the wandb-core failure is
+imminent or already in progress.
+
+### Cause
+
+Windows allocates a small fixed-size **desktop heap** per
+[window station](https://learn.microsoft.com/en-us/windows/win32/winstation/window-stations).
+The interactive Console session gets ~3 MB; the non-interactive
+Services session gets ~512 KB. Every GUI process consumes ~10 KB of
+that heap on launch — including the `wandb-core` Go binary that
+`wandb.init()` spawns under the hood. On the Console session the heap
+holds dozens of process launches without issue. On the Services
+session it depletes after a handful of nested-subprocess wandb
+launches and `wandb-core` then exits at DLL initialization time.
+
+Win32-OpenSSH ships with `sshd` configured to launch child processes
+on the **Services** session (technically: Session 0, the non-interactive
+service session). Every command you run over SSH inherits that —
+including nested subprocesses N levels deep. The Lightning sweep
+launches a 4-deep tree (uv → run_sweep_local → cli.py test → wandb-core),
+so the heap pressure compounds.
+
+The deeper-but-related "8 workers deadlock at LOCAL_RANK" symptom is
+the same heap exhaustion — the worker spawn step needs heap to fork
+each DataLoader worker, and silently blocks when the allocation fails.
+
+### Fix
+
+Launch from a terminal on the interactive Windows desktop:
+
+```bash
+# Open Git Bash / PowerShell / Windows Terminal on my-pc's desktop.
+# DO NOT use ssh.
+cd ~/developer/python/MARBLE
+
+nohup uv run python scripts/sweeps/run_sweep_local.py \
+  --base-config configs/probe.<encoder>.<task>.yaml \
+  --num-layers 24 --model-tag <encoder> --task-tag <task> \
+  --no-skip --skip-meanall --skip-fit-if-no-train \
+  --num-workers 8 --accelerator gpu --precision bf16-mixed \
+  > tmp/sweep_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
+
+After ~30 seconds, confirm:
+
+```powershell
+tasklist | findstr /I python   # should show Console, not Services
+```
+
+The sweep can then run for hours without wandb-core failures. The 4
+overnight-sweep encoders (CLaMP3 / MERT / MuQ / OMARRQ) all ran cleanly
+this way; OMARRQ specifically failed three times in a row when
+launched via SSH and succeeded immediately when launched from
+Console.
+
+### Workarounds if you must launch via SSH
+
+Only two real options once the Services session is the entry point:
+
+1. **`WANDB_MODE=disabled`** in the env. Bypasses `wandb-core` spawn
+   entirely. Cost: no cloud sync, no `wandb-summary.json` per layer.
+   The probe's `condition_grid.csv` and the local stdout-captured
+   `[CoverRetrieval] MAP …` lines still land — analyse them by parsing
+   the local sweep log instead of wandb's summary JSON.
+
+2. **PsExec to launch into Session 1** (the interactive desktop)
+   from an SSH-launched script. Untested; `psexec -accepteula -i 1 -d <cmd>`
+   in principle works but requires PsExec installed and an unlocked
+   interactive session. Not the recommended path — just launch from
+   the desktop.
+
+### What did NOT help in practice
+
+- Killing all `python.exe`/`uv.exe`/`wandb-core.exe` processes and
+  waiting 90 s. The Services-session heap doesn't recover meaningfully
+  on that timescale — it persists across a fresh launch.
+- Setting `--num-workers 0` to bypass the DataLoader deadlock. That
+  fixes the worker-spawn variant of the heap issue but not the
+  `wandb-core` spawn variant — those use distinct heap allocations.
+- A full reboot fixes it for a short window (~the first few hours of
+  a sweep), but the heap drains again as the sweep accumulates
+  process-launch pressure. Reboot is treatment, not cure.
+
+---
+
 ## --concurrency: parallel layers on one GPU
 
 Each layer probe needs ~5–6 GB VRAM. On a 16 GB GPU two can run

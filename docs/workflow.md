@@ -133,6 +133,14 @@ modal run modal_marble.py::setup_shs100k_jsonl
 
 ## Phase 3 — Running sweeps
 
+> **Windows users**: launch from a terminal on the **interactive
+> desktop** (Console session), not from SSH. SSH-launched processes
+> attach to the Windows Services session, whose desktop heap is too
+> small to spawn `wandb-core` reliably — sweeps fail mid-run with
+> `wandb-core exited with code 3221225794`. See
+> [local_sweeps.md § "Launch sweeps from the Console session"](local_sweeps.md#launch-sweeps-from-the-console-session-on-windows-not-from-ssh)
+> for the diagnosis + fix.
+
 ### 3.1 Local sequential (default)
 
 ```bash

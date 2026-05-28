@@ -599,3 +599,40 @@ branch rather than bundling into a mechanical-fixes PR.
 **Cost.** ~1-2 hours implementation + 1 smoke sweep to validate.
 
 **Trigger.** Before the next active LeitmotifDetection sweep run.
+
+---
+
+## Launcher silent-failure when every layer fails the same way
+
+The CLaMP3 × VGMIDITVar-timbre sweep on 2026-05-28 had 24 layers
+return `(no test metrics parsed)` because the encoder dependency
+(`omar-rq` extra) wasn't installed. The launcher reported
+`pass=4 fail=0` and the outer wrapper script reported `ok
+OMARRQ-multifeature-25hz × VGMIDITVar-timbre` because the launcher's
+exit-code-only check sees only `run_sweep_local.py` returning 0
+(it iterates layers even when individual `cli.py test` invocations
+fail). We didn't notice until hours later when the user looked for
+the OMARRQ run group in wandb and saw nothing.
+
+**Design.** `run_sweep_local.py` already detects per-layer failures
+(`_extract_test_metrics(stdout)` returns `(no test metrics parsed)`
+when the layer's stdout lacks `test/...` lines). Two minimal fixes:
+
+1. Exit non-zero from `run_sweep_local.py` when **zero** of the
+   requested layers produced any test metrics. That's an unambiguous
+   total failure that warrants surfacing.
+2. Print a `WARN: N/M layers produced no test metrics` line in the
+   sweep summary table (in addition to the per-layer
+   `(no test metrics parsed)` entries) so it shows up regardless of
+   exit code policy.
+
+Optional refinement: also exit non-zero when fewer than half the
+requested layers succeeded — that's a "something is systemically
+wrong" signal even if a few layers happened to log.
+
+**Cost.** ~30 minutes. Add an integration test that runs
+`run_sweep_local.py` with a deliberately-broken config and asserts
+non-zero exit + the WARN line in stdout.
+
+**Trigger.** Next launcher edit. Standalone fix, low risk, prevents
+a future repeat of the "silent OMARRQ failure" experience.
