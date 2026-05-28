@@ -282,9 +282,9 @@ def _apply_treatment(
     if m:
         k = int(m.group(1))
         if k < 0:
-            raise ValueError(f"abtt-K requires K ≥ 0; got {k}")
+            raise ValueError(f"abtt-K requires K >= 0; got {k}")
         if k > eigvecs.shape[1]:
-            raise ValueError(f"abtt-{k} requires K ≤ H={eigvecs.shape[1]}; got K={k}")
+            raise ValueError(f"abtt-{k} requires K <= H={eigvecs.shape[1]}; got K={k}")
         centered = embs - mu
         if k == 0:
             return centered  # degenerate: equivalent to ``centered``
@@ -299,7 +299,7 @@ def _apply_treatment(
     if m:
         alpha = float(m.group(1))
         if alpha < 0.0 or alpha > 2.0:
-            raise ValueError(f"whiten-a requires α in [0, 2]; got {alpha}")
+            raise ValueError(f"whiten-a requires alpha in [0, 2]; got {alpha}")
         centered = embs - mu
         if alpha == 0.0:
             return centered  # degenerate: equivalent to ``centered``
@@ -320,9 +320,9 @@ def _apply_treatment(
         alpha = float(m.group(1))
         eps_rel = float(m.group(2))
         if alpha < 0.0 or alpha > 2.0:
-            raise ValueError(f"whiten-a requires α in [0, 2]; got {alpha}")
+            raise ValueError(f"whiten-a requires alpha in [0, 2]; got {alpha}")
         if eps_rel < 0.0:
-            raise ValueError(f"-erel-E requires E ≥ 0; got {eps_rel}")
+            raise ValueError(f"-erel-E requires E >= 0; got {eps_rel}")
         centered = embs - mu
         lambda_max = float(eigvals.max())
         # Relative Tikhonov: Λ + ε * λ_max * I. ε is dimensionless and
@@ -335,8 +335,8 @@ def _apply_treatment(
 
     raise ValueError(
         f"unrecognised treatment name {treatment!r}. Valid: raw, centered, "
-        f"abtt-K (K integer), whiten-aα (α float in [0, 2]), "
-        f"whiten-aα-erel-E (E float ≥ 0). Example: whiten-a1.0-erel-1e-3."
+        f"abtt-K (K integer), whiten-aalpha (alpha float in [0, 2]), "
+        f"whiten-aalpha-erel-E (E float >= 0). Example: whiten-a1.0-erel-1e-3."
     )
 
 
@@ -354,8 +354,8 @@ def _parse_treatments(specs: list[str]) -> list[str]:
             raise SystemExit(
                 f"ERROR: unrecognised treatment {spec!r}. Valid forms:\n"
                 f"  raw\n  centered\n  abtt-K          (K integer, e.g. abtt-1, abtt-10)\n"
-                f"  whiten-aα       (α in [0, 2], e.g. whiten-a0.5, whiten-a1.0)\n"
-                f"  whiten-aα-erel-E (relative Tikhonov; e.g. whiten-a1.0-erel-1e-3)"
+                f"  whiten-aalpha       (alpha in [0, 2], e.g. whiten-a0.5, whiten-a1.0)\n"
+                f"  whiten-aalpha-erel-E (relative Tikhonov; e.g. whiten-a1.0-erel-1e-3)"
             )
     return specs
 
@@ -599,7 +599,7 @@ def main() -> int:
         embs = embs[keep_idx]
         wids = [wids[i] for i in keep_idx]
         conds = [conds[i] for i in keep_idx]
-        print(f"  subsampled to {args.max_works} work_ids → {embs.shape[0]} files")
+        print(f"  subsampled to {args.max_works} work_ids -> {embs.shape[0]} files")
 
     if not any(c != -1 for c in conds):
         print("WARN: no records carry a condition; per-condition grid disabled.")
@@ -615,7 +615,7 @@ def main() -> int:
     nonzero_eigs = eigvals_desc[eigvals_desc > 1e-10 * lambda_max]
     lambda_min_nonzero = float(nonzero_eigs[-1]) if len(nonzero_eigs) else 0.0
     print(
-        f"  λ_max={lambda_max:.4e}  λ_min(non-zero)={lambda_min_nonzero:.4e}  "
+        f"  lambda_max={lambda_max:.4e}  lambda_min(non-zero)={lambda_min_nonzero:.4e}  "
         f"ratio={lambda_max / max(lambda_min_nonzero, 1e-20):.2e}  ({t_pca:.2f}s)"
     )
     # ``effective_rank_centered`` uses the SAME entropy-based formula as
@@ -753,11 +753,11 @@ def main() -> int:
                     tag = "OK" if delta <= 5e-4 else "FAIL"
                     print(
                         f"  --verify [{tag}] {treatment}: ours={m['map']:.6f} "
-                        f"logged={logged:.6f}  Δ={delta:.2e}"
+                        f"logged={logged:.6f}  delta={delta:.2e}"
                     )
                     if delta > 5e-4:
                         verify_failures.append(
-                            f"{treatment}: ours={m['map']:.6f} logged={logged:.6f} Δ={delta:.2e}"
+                            f"{treatment}: ours={m['map']:.6f} logged={logged:.6f} delta={delta:.2e}"
                         )
 
     print(f"\nWrote: {args.out_csv}")
