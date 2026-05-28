@@ -1,20 +1,27 @@
-# VGMIDITVar-timbre — three-encoder analysis (CLaMP3 / MERT-v1-95M / MuQ)
+# VGMIDITVar-timbre — four-encoder analysis (CLaMP3 / MERT-v1-95M / MuQ / OMARRQ-25hz)
 
-Layer-sweep results for three frozen self-supervised music encoders on
+Layer-sweep results for four frozen self-supervised music encoders on
 the VGMIDITVar-timbre zero-shot retrieval benchmark. Covers headline
 numbers, layer-depth trajectories, the negative-gap finding for MuQ,
-architectural interpretation, and a discussion of cross-layer +
-cross-encoder ensembling.
+the MuQ L7/L8-vs-L11/L12 layer trade-off, architectural interpretation,
+and a discussion of cross-layer + cross-encoder ensembling.
 
-> **Provenance**: written 2026-05-28 after the CLaMP3, MERT, and MuQ
-> sweeps finished and before OMARRQ-25hz completed. To be updated with
-> a four-encoder version once OMARRQ lands.
+> **This analysis is on the RAW (untreated) embeddings.** A separate,
+> larger finding — that post-hoc **whitening** improves every encoder's
+> cross-timbre MAP by +109 % to +425 % — is documented in
+> [docs/whitening_ablation.md](whitening_ablation.md). Read that next;
+> it changes the practical recommendations below.
+>
+> **Provenance**: originally written 2026-05-28 for CLaMP3 / MERT / MuQ;
+> updated the same day with OMARRQ-25hz (the 4th encoder) once its sweep
+> finished. (Filename keeps the legacy `3encoder` slug.)
 >
 > **Reproducibility**: figures + tables in
-> `docs/figures/vgmiditvar_timbre_3enc/`. The script that produces them
+> `docs/figures/vgmiditvar_timbre_4enc/`. The script that produces them
 > is `scripts/analysis/compare_encoders_vgmiditvar_timbre.py` —
-> parameterised to handle any subset of encoders. Re-run after OMARRQ
-> finishes with `--encoder-tag OMARRQ-multifeature-25hz` added.
+> parameterised to handle any subset of encoders:
+> `--encoder-tag CLaMP3-layers --encoder-tag MERT-v1-95M-layers
+> --encoder-tag MuQ --encoder-tag OMARRQ-multifeature-25hz`.
 
 ---
 
@@ -36,24 +43,31 @@ meaningful test.
 
 ---
 
-## TL;DR — MuQ wins decisively
+## TL;DR — MuQ wins decisively (raw); OMARRQ is a clear 2nd
 
-| Metric | CLaMP3 (L4) | MERT-v1-95M (L12) | **MuQ (L11/12)** | MuQ vs MERT |
+| Metric | CLaMP3 (L5) | MERT-v1-95M (L12) | OMARRQ-25hz (L15) | **MuQ (L12)** |
 |---|---:|---:|---:|---:|
-| `map_centered` (overall) | 0.045 | 0.068 | **0.186** | **2.7×** |
-| `map_raw` (overall) | 0.042 | 0.064 | **0.181** | **2.8×** |
-| off-diagonal mean (cross-instrument) | 0.297 @ L4 | 0.272 @ L11 | **0.477 @ L11** | **1.75×** |
-| diagonal mean (within-instrument) | 0.290 | 0.274 | 0.290 | tied |
-| **timbre gap** (diag − off; lower=better) | −0.009 | +0.002 | **−0.187** | massive |
-| `recall@10` | 0.061 | 0.076 | **0.171** | 2.3× |
-| `r_precision` | 0.081 | 0.109 | **0.247** | 2.3× |
-| min `median_rank` (1-indexed) | 4 | 4 | **3** | better |
-| max `effective_rank` (post-centered diversity) | 62 | 76 | **81** | best |
-| min `mean_vec_norm` (least cone collapse) | 0.81 | 0.89 | **0.76** | best |
+| `map_centered` (overall) | 0.045 | 0.068 | 0.076 | **0.186** |
+| `map_raw` (overall) | 0.042 | 0.064 | 0.071 | **0.181** |
+| off-diagonal mean (cross-instrument) | 0.297 @ L4 | 0.272 @ L11 | 0.389 @ L15 | **0.477 @ L11** |
+| diagonal mean (within-instrument, best-off layer) | 0.290 | 0.274 | **0.315** | 0.290 |
+| **timbre gap** (diag − off; lower=better) | −0.009 | +0.002 | −0.073 | **−0.187** |
+| `recall@10` | 0.061 | 0.076 | 0.083 | **0.171** |
+| `r_precision` | 0.081 | 0.109 | 0.119 | **0.247** |
+| min `median_rank` (1-indexed) | 4 | 4 | 4 | **3** |
+| max `effective_rank` (post-centered diversity) | 62 | 76 | 50 | **81** |
+| min `mean_vec_norm` (least cone collapse) | 0.81 | 0.89 | **0.75** | 0.76 |
 
-MuQ wins or ties on every metric. The within-instrument diagonal is
-tied with CLaMP3, so the entire 2-3× advantage comes from timbre
-invariance — see "The headline finding" below.
+**Raw-embedding ranking:** MuQ (0.186) ≫ OMARRQ (0.076) > MERT (0.068)
+> CLaMP3 (0.045). MuQ wins or ties on nearly every metric, with a
+~2.4× lead. OMARRQ is a clear 2nd — and notably has the **highest
+within-instrument diagonal** (0.315, wins 7 of 8 instruments) despite
+its modest overall MAP. The entire MuQ advantage comes from timbre
+invariance (see "The headline finding").
+
+> ⚠️ This ranking is on **raw** embeddings. Whitening reshuffles it —
+> OMARRQ leaps to near-tie with MuQ, and CLaMP3 overtakes MERT. See
+> [docs/whitening_ablation.md](whitening_ablation.md).
 
 ---
 
@@ -96,9 +110,9 @@ is not a measurement artefact. Sanity checks:
 
 ---
 
-## Layer-depth trajectories tell three different stories
+## Layer-depth trajectories tell four different stories
 
-![curves](figures/vgmiditvar_timbre_3enc/per_encoder_curves.png)
+![curves](figures/vgmiditvar_timbre_4enc/per_encoder_curves.png)
 
 - **CLaMP3 traces a U-shape on cross-condition MAP.** Peaks at L4-L5
   (off-diag ≈ 0.30) then *regresses sharply* through L12 (off-diag ≈
@@ -116,26 +130,78 @@ is not a measurement artefact. Sanity checks:
   L11. The gap goes from +0.13 at L0 to −0.19 at L11 — the encoder
   *actively learns* to ignore timbre as depth increases.
 
+- **OMARRQ traces a mid-network U-shape**, peaking at L15 (of 24 ≈ 0.63
+  depth) — structurally between CLaMP3 (peaks early, ~0.31 depth) and
+  MERT/MuQ (peak late, ~0.9 depth). Both diagonal and off-diagonal peak
+  at the *same* layer (L15), and the gap only goes negative in the
+  L11-L21 band, bottoming at −0.073. So OMARRQ is moderately
+  timbre-invariant (more than CLaMP3/MERT, far less than MuQ), with a
+  single clean best layer and no L7/L8-style trade-off.
+
 ### Implication for "which layer index"
 
 | Encoder | Recommended layer | Rationale |
 |---|---:|---|
-| CLaMP3 | **L4** | Peak cross-condition MAP; later layers regress |
+| CLaMP3 | **L4-L5** | Peak cross-condition MAP; later layers regress |
 | MERT-v1-95M | **L11 or L12** | Near-peak on all metrics; L11 has slightly lower mean_vec_norm |
-| MuQ | **L11** | Lowest gap (−0.19) + near-peak overall MAP; L12 drops `effective_rank` 81 → 70 |
+| MuQ | **L11** (cross-timbre) or **L12** (overall MAP) | See trade-off below |
+| OMARRQ-25hz | **L15** | Unambiguous — peak off-diag, lowest gap, peak overall MAP all coincide |
 
 If anyone has been benchmarking with "last layer" or a uniform
 mid-network layer across encoders, the comparison is biased — MERT
 last-layer is close to its peak, but CLaMP3 last-layer is in U-shape
 collapse territory. Always pick per-encoder.
 
+### The MuQ L7/L8 vs L11/L12 trade-off
+
+MuQ's "best layer" is genuinely ambiguous because per-cell and overall
+metrics disagree:
+
+| layer | diag | off | gap | overall MAP | recall@10 | median_rank |
+|---:|---:|---:|---:|---:|---:|---:|
+| L7 | **0.324** | 0.441 | −0.117 | 0.077 | 0.085 | 4 |
+| L8 | **0.324** | 0.456 | −0.132 | 0.089 | 0.095 | **3** |
+| L11 | 0.290 | **0.477** | **−0.187** | 0.178 | 0.163 | 3 |
+| L12 | 0.269 | 0.443 | −0.174 | **0.186** | **0.171** | 3 |
+
+**L7/L8 have the highest within-timbre diagonal (0.324)** of any MuQ
+layer, and their cross-timbre off-diagonal is close to L11's (0.44-0.46
+vs 0.48). On a per-cell basis they look like a "best of both worlds"
+choice. But the per-cell numbers are *conditional* (restrict candidates
+to one target timbre); the **overall MAP** (unconditional, the full
+102k-file pool) is ~2× higher at L11/L12 (0.18 vs 0.08), and so is
+recall@10 (~1.9×).
+
+The mechanism: at L7/L8 the encoder still has substantial
+timbre-dependent representation — useful for within-cell ranking but
+harmful for *global* discrimination (it ranks wrong-work-same-timbre
+above correct-work-different-timbre when you don't pre-filter by
+timbre). By L11/L12 the representation is more abstract / work-identity-
+centric — within-timbre matching loses one cue (slightly lower diag)
+but global ranking improves dramatically.
+
+**Which to pick depends on the deployment:**
+- **Unconstrained library retrieval** (the leitmotif use case — search
+  a heterogeneous corpus, no timbre pre-filter): **L11** (peak
+  off-diag + lowest gap) or **L12** (peak overall MAP). recall@10 is
+  ~1.9× higher than L7/L8.
+- **Pre-filtered retrieval** (you tag the library by instrumentation and
+  restrict candidates to a chosen target timbre at query time) **or
+  same-instrument variation discovery**: **L8** (highest within-timbre
+  diagonal; edges out L7 on every secondary metric).
+
+This trade-off is also why MuQ {L8, L11, L12} are the natural
+candidates for a cross-layer ensemble (L8's diagonal strength + L11's
+global strength) — and a whitening layer-study (does the optimal layer
+shift after whitening?).
+
 ---
 
 ## Best-layer 8×8 heatmaps
 
-![grids](figures/vgmiditvar_timbre_3enc/best_layer_grids.png)
+![grids](figures/vgmiditvar_timbre_4enc/best_layer_grids.png)
 
-Same color scale across all three so visual comparison is valid.
+Same color scale across all four so visual comparison is valid.
 
 Reading the heatmaps:
 - **CLaMP3 L4 and MERT L11** look broadly similar — moderate brightness
@@ -151,7 +217,7 @@ Reading the heatmaps:
 
 ## Cone collapse and effective rank
 
-All three encoders are cone-collapsed (`mean_vec_norm` ∈ 0.76 – 0.94,
+All four encoders are cone-collapsed (`mean_vec_norm` ∈ 0.76 – 0.94,
 vs the isotropic floor `1/√N ≈ 0.003`). But the magnitudes and
 trajectories differ:
 
@@ -171,10 +237,10 @@ that should make retrieval work, and it does.
 
 ## Per-instrument breakdown
 
-![per-inst](figures/vgmiditvar_timbre_3enc/per_instrument.png)
+![per-inst](figures/vgmiditvar_timbre_4enc/per_instrument.png)
 
 Within-timbre diagonal MAP per GM instrument at each encoder's best
-layer. All three encoders agree on the easy→hard ranking:
+layer. All four encoders agree on the easy→hard ranking:
 
 ```
 Piano > Guitar > Strings ≈ Lead ≈ Horn ≈ Choir > Flute > Pad
@@ -192,7 +258,7 @@ two encoders. Another timbre-invariance signature.
 
 ## Asymmetry analysis
 
-![asym](figures/vgmiditvar_timbre_3enc/best_layer_asymmetry.png)
+![asym](figures/vgmiditvar_timbre_4enc/best_layer_asymmetry.png)
 
 `cell[q, t] − cell[t, q]` should be near zero in a timbre-invariant
 encoder (the retrieval direction shouldn't matter).
@@ -254,7 +320,7 @@ overhead.
   fundamentally weaker baseline than "MERT last-layer." Comparing the
   two at fixed layer index understates CLaMP3. Always pick best-layer
   per encoder.
-- **None of the three encoders are isotropic** (`mean_vec_norm` ≥ 0.76).
+- **None of the four encoders are isotropic** (`mean_vec_norm` ≥ 0.76).
   The cone is real but doesn't dominate ranking — the residual
   `(δ_a · δ_b)` term is what's discriminative. See
   `docs/anisotropy.md` for the math.
@@ -396,6 +462,13 @@ In order of expected information per minute of compute:
    `Σ^(-1/2)` before cosine. Should close any remaining cone-induced
    precision floor.
 
+   > **Update — this was run, and it dwarfs ensembling.** Full
+   > whitening (`α=1.0`) lifts MuQ-L12 overall MAP from 0.181 → ~0.38
+   > and lifts *every* encoder by +109 % to +425 %. That is 1-2 orders
+   > of magnitude larger than the 1-5 % ensemble bumps predicted below.
+   > Whitening is the lever; ensembling is a rounding error on top of
+   > it. See [docs/whitening_ablation.md](whitening_ablation.md).
+
 All three operate purely on cached embeddings — no encoder forward
 needed. A single small Python script `scripts/analysis/ensemble_eval.py`
 can do all of them.
@@ -421,7 +494,7 @@ without re-weighting. Both will reduce MAP below MuQ alone.
 ## Reproducibility
 
 Figures and tables in this analysis live under
-`docs/figures/vgmiditvar_timbre_3enc/`. To regenerate (or extend to 4+
+`docs/figures/vgmiditvar_timbre_4enc/`. To regenerate (or extend to 4+
 encoders):
 
 ```bash
@@ -433,12 +506,12 @@ uv run python scripts/analysis/compare_encoders_vgmiditvar_timbre.py \
   --out-dir docs/figures/vgmiditvar_timbre_4enc
 ```
 
-When OMARRQ completes, run the command above and update this doc with
-a 4-encoder leaderboard.
+The 4-encoder leaderboard above (TL;DR) was produced by that command
+once the OMARRQ-25hz sweep finished.
 
 ### Per-encoder full tables
 
-`docs/figures/vgmiditvar_timbre_3enc/per_layer_tables.txt`
+`docs/figures/vgmiditvar_timbre_4enc/per_layer_tables.txt`
 
 | File | Content |
 |---|---|
@@ -451,6 +524,10 @@ a 4-encoder leaderboard.
 
 ### Related docs
 
+- `docs/whitening_ablation.md` — **the bigger finding**: post-hoc
+  whitening lifts every encoder's cross-timbre MAP by +109 % to +425 %
+  and reorders the leaderboard. Strictly dominates the ensembling ideas
+  below in bang-for-buck; read it before acting on the recommendations.
 - `docs/anisotropy.md` — methodology behind the four anisotropy metrics
 - `docs/benchmarking_methodology.md` — overall retrieval-metric stack
 - `docs/local_sweeps.md` — how the sweeps were launched (including the
