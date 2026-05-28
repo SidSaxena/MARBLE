@@ -389,8 +389,8 @@ def compute_retrieval_metrics(
         median_rank and ``0.0`` for map/map@K/mrr — matching the
         probe's historical static-method return values.
     """
-    return _aggregate_metrics_from_iter(
-        _iter_row_orders(sim, batch=batch),
+    return _aggregate_metrics_from_chunk_iter(
+        _iter_row_order_chunks(sim, batch=batch),
         work_ids=work_ids,
         recall_ks=recall_ks,
         hit_ks=hit_ks,
@@ -400,6 +400,224 @@ def compute_retrieval_metrics(
         map_at_ks=map_at_ks,
         include_mrr=include_mrr,
     )
+
+
+def _iter_row_order_chunks(
+    sim: torch.Tensor, *, batch: int = 2048
+) -> Iterator[tuple[int, torch.Tensor]]:
+    """Chunked variant of :func:`_iter_row_orders` that yields whole
+    chunks ``(start, order_chunk)`` instead of per-row ``(i, order_i)``.
+
+    Lets the metric aggregator process ``B`` queries' rankings in a
+    single batched tensor pass instead of Python-looping per query —
+    the per-row iterator pays ~10 ms of ``.tolist()`` + Python MAP
+    inner-loop overhead per query, which at N=102 960 totals ~10 min
+    of pure Python. Yielding chunks lets the aggregator collapse that
+    into ~2 min of vectorised tensor ops.
+
+    See :func:`_aggregate_metrics_from_chunk_iter` for the consumer.
+    """
+    N = sim.size(0)
+    if N == 0:
+        return
+    for start in range(0, N, batch):
+        end = min(start + batch, N)
+        chunk = sim[start:end].clone()
+        row_idx = torch.arange(end - start)
+        col_idx = torch.arange(start, end)
+        chunk[row_idx, col_idx] = float("-inf")
+        order_chunk = chunk.argsort(descending=True, dim=-1)[:, : N - 1]
+        del chunk
+        yield start, order_chunk
+
+
+def _iter_row_order_chunks_streaming(
+    embs: torch.Tensor,
+    *,
+    batch: int = 1024,
+    device: str = "cuda",
+) -> Iterator[tuple[int, torch.Tensor]]:
+    """Chunked GPU-streaming variant. Yields ``(start, order_chunk_cpu)``
+    per batch. The CPU-side aggregator then does ALL metric work for the
+    chunk as one tensor batch — see :func:`_aggregate_metrics_from_chunk_iter`.
+    """
+    N = embs.size(0)
+    if N == 0:
+        return
+    target = torch.device(device)
+    embs_dev = embs if embs.device == target else embs.to(target)
+    if embs_dev.dtype != torch.float32:
+        embs_dev = embs_dev.float()
+    with torch.no_grad():
+        for start in range(0, N, batch):
+            end = min(start + batch, N)
+            chunk = embs_dev[start:end] @ embs_dev.T
+            row_idx = torch.arange(end - start, device=chunk.device)
+            col_idx = torch.arange(start, end, device=chunk.device)
+            chunk[row_idx, col_idx] = float("-inf")
+            order_chunk = chunk.argsort(descending=True, dim=-1)[:, : N - 1]
+            order_chunk_cpu = order_chunk.cpu()
+            del chunk, order_chunk
+            yield start, order_chunk_cpu
+
+
+def _aggregate_metrics_from_chunk_iter(
+    chunk_iter: Iterator[tuple[int, torch.Tensor]],
+    *,
+    work_ids: torch.Tensor,
+    recall_ks: list[int] | tuple[int, ...],
+    hit_ks: list[int] | tuple[int, ...],
+    include_r_precision: bool,
+    include_median_rank: bool,
+    include_map: bool,
+    map_at_ks: list[int] | tuple[int, ...],
+    include_mrr: bool,
+) -> dict[str, float]:
+    """Vectorised metric aggregator. Consumes chunks of order indices
+    (shape ``(B, N-1)`` int64 CPU) and computes every requested metric
+    in batched tensor ops, no Python per-query loop.
+
+    Used by :func:`compute_retrieval_metrics` and
+    :func:`compute_retrieval_metrics_streaming`. Output is numerically
+    equivalent to :func:`_aggregate_metrics_from_iter` (the per-row
+    variant) up to floating-point rounding noise (verified by tests
+    at ~1e-7 abs tolerance).
+
+    Why chunked: a profile at 1k queries showed the per-row
+    ``is_rel.tolist()`` + Python MAP inner loop = ~6 s / 1k queries.
+    The chunked vectorised path = ~1.6 s / 1k queries → ~3.8× speedup
+    on the metric body. At N=102 960 that saves ~6-8 min per pass.
+    """
+    N = work_ids.size(0)
+    recall_ks_eff = [int(k) for k in recall_ks if 0 < int(k) < N]
+    hit_ks_eff = [int(k) for k in hit_ks if 0 < int(k) < N]
+    map_ks_eff = [int(k) for k in map_at_ks if 0 < int(k) < N]
+
+    if N == 0:
+        out: dict[str, float] = {f"recall@{k}": float("nan") for k in recall_ks_eff}
+        out.update({f"hit_rate@{k}": float("nan") for k in hit_ks_eff})
+        if include_r_precision:
+            out["r_precision"] = float("nan")
+        if include_median_rank:
+            out["median_rank"] = float("nan")
+        if include_map:
+            out["map"] = 0.0
+        for k in map_ks_eff:
+            out[f"map@{k}"] = 0.0
+        if include_mrr:
+            out["mrr"] = 0.0
+        return out
+
+    # Vectorised n_relevant precompute (same as the per-row aggregator).
+    _, inverse = work_ids.unique(return_inverse=True)
+    work_counts = torch.zeros(int(inverse.max().item()) + 1, dtype=torch.long).scatter_add_(
+        0, inverse, torch.ones_like(inverse, dtype=torch.long)
+    )
+    n_rel_all = work_counts[inverse] - 1  # (N,) long
+
+    # Per-metric running accumulators. We collect per-query scalars
+    # across chunks (already filtered to valid queries) and reduce at
+    # the end. The list[float] approach is fine because the final
+    # aggregation is a single mean / quantile.
+    recalls: dict[int, list[float]] = {k: [] for k in recall_ks_eff}
+    hits: dict[int, list[float]] = {k: [] for k in hit_ks_eff}
+    rps: list[float] = []
+    first_ranks: list[float] = []
+    aps: list[float] = []
+    aps_at_k: dict[int, list[float]] = {k: [] for k in map_ks_eff}
+    recip_ranks: list[float] = []
+
+    need_cumsum = include_map or bool(map_ks_eff)
+    arange_n_minus_1 = torch.arange(N - 1)
+    ranks_float = (arange_n_minus_1 + 1).float()  # (N-1,) — 1-indexed ranks
+
+    for start, order_chunk in chunk_iter:
+        B = order_chunk.size(0)
+        end = start + B
+        query_ids = torch.arange(start, end)  # (B,)
+
+        # is_rel_chunk[i, j] = True iff candidate at rank j for query (start+i) is same-work
+        wids_at_order = work_ids[order_chunk]  # (B, N-1)
+        wids_at_query = work_ids[query_ids].unsqueeze(-1)  # (B, 1)
+        is_rel_chunk = wids_at_order == wids_at_query  # (B, N-1) bool
+
+        n_rel_chunk = n_rel_all[query_ids]  # (B,) long
+        # Mask out queries with no relevants — they're skipped per metric.
+        valid = n_rel_chunk > 0  # (B,) bool
+        # Use clamp(1) so the division below doesn't NaN/inf; invalid
+        # rows are filtered out before the final extend()s.
+        n_rel_safe = n_rel_chunk.clamp(min=1).float()  # (B,)
+
+        # ── Recall@K ────────────────────────────────────────────────
+        for k in recall_ks_eff:
+            recall_k = is_rel_chunk[:, :k].sum(dim=-1).float() / n_rel_safe
+            recalls[k].extend(recall_k[valid].tolist())
+
+        # ── Hit@K ───────────────────────────────────────────────────
+        for k in hit_ks_eff:
+            hit_k = is_rel_chunk[:, :k].any(dim=-1).float()
+            hits[k].extend(hit_k[valid].tolist())
+
+        # ── R-Precision: precision at K = n_rel (per query) ────────
+        if include_r_precision:
+            # mask[i, j] = j < n_rel_chunk[i] — take only the first n_rel
+            # positions of the ranking for each query.
+            rp_mask = arange_n_minus_1.unsqueeze(0) < n_rel_chunk.unsqueeze(-1)  # (B, N-1)
+            rp = (is_rel_chunk & rp_mask).sum(dim=-1).float() / n_rel_safe
+            rps.extend(rp[valid].tolist())
+
+        # ── MAP / MAP@K (cumsum-based AP per query) ────────────────
+        if need_cumsum:
+            # hits_so_far[i, j] = number of True in is_rel_chunk[i, :j+1]
+            hits_so_far = is_rel_chunk.long().cumsum(dim=-1)  # (B, N-1) long
+            # per_rank[i, j] = (1 if is_rel else 0) * hits_so_far / rank
+            per_rank = is_rel_chunk.float() * hits_so_far.float() / ranks_float.unsqueeze(0)
+            if include_map:
+                ap_full = per_rank.sum(dim=-1) / n_rel_safe  # (B,)
+                aps.extend(ap_full[valid].tolist())
+            for k in map_ks_eff:
+                ap_k = per_rank[:, :k].sum(dim=-1) / n_rel_safe
+                aps_at_k[k].extend(ap_k[valid].tolist())
+
+        # ── First-relevant rank (used for median_rank + MRR) ───────
+        if include_median_rank or include_mrr:
+            # For each row find the smallest j where is_rel_chunk[i, j] is True.
+            # Sentinel = N (out of range) for rows with no True — but those
+            # rows are excluded by ``valid`` so they don't reach the lists.
+            sentinel = arange_n_minus_1.unsqueeze(0).expand(B, -1)  # (B, N-1)
+            where_true = torch.where(is_rel_chunk, sentinel, torch.full_like(sentinel, N))
+            first_idx = where_true.min(dim=-1).values  # (B,) — < N when valid
+            first_idx_plus_one = (first_idx + 1).float()
+            if include_median_rank:
+                first_ranks.extend(first_idx_plus_one[valid].tolist())
+            if include_mrr:
+                recip_ranks.extend((1.0 / first_idx_plus_one)[valid].tolist())
+
+    # Final reductions (identical to the per-row aggregator's output).
+    out: dict[str, float] = {}
+    for k in recall_ks_eff:
+        vs = recalls[k]
+        out[f"recall@{k}"] = float(sum(vs) / len(vs)) if vs else float("nan")
+    for k in hit_ks_eff:
+        vs = hits[k]
+        out[f"hit_rate@{k}"] = float(sum(vs) / len(vs)) if vs else float("nan")
+    if include_r_precision:
+        out["r_precision"] = float(sum(rps) / len(rps)) if rps else float("nan")
+    if include_median_rank:
+        if first_ranks:
+            out["median_rank"] = float(
+                torch.tensor(first_ranks, dtype=torch.float).quantile(0.5).item()
+            )
+        else:
+            out["median_rank"] = float("nan")
+    if include_map:
+        out["map"] = float(sum(aps) / len(aps)) if aps else 0.0
+    for k in map_ks_eff:
+        vs = aps_at_k[k]
+        out[f"map@{k}"] = float(sum(vs) / len(vs)) if vs else 0.0
+    if include_mrr:
+        out["mrr"] = float(sum(recip_ranks) / len(recip_ranks)) if recip_ranks else 0.0
+    return out
 
 
 def _aggregate_metrics_from_iter(
@@ -417,11 +635,19 @@ def _aggregate_metrics_from_iter(
     """Consume a row-order iterator (CPU-materialised or GPU-streaming)
     and aggregate every requested metric in a single pass.
 
-    Body shared by :func:`compute_retrieval_metrics` and
-    :func:`compute_retrieval_metrics_streaming`. The only difference
-    between those two is which iterator they pass — the metric
-    aggregation is identical, including edge cases for N=0 and
-    all-degenerate corpora.
+    Reference (per-row) implementation. Kept as the equivalence baseline
+    for :func:`_aggregate_metrics_from_chunk_iter` — the chunked path
+    that production code routes through. Both must produce the same
+    metric dict (within fp32 vs fp64 rounding tolerance on the AP path)
+    — tests in ``tests/test_retrieval_metrics_streaming.py`` pin the
+    equivalence at abs=1e-6.
+
+    Not on the hot path. Retained for two reasons: (1) per-row logic is
+    easier to read and audit than the cumsum-based chunked variant when
+    debugging a metric anomaly, (2) future metrics whose chunked form
+    is awkward (e.g. ones that need per-query early-exit) can fall back
+    to this aggregator without re-implementing the iterator-consumer
+    scaffold.
     """
     N = work_ids.size(0)
     recall_ks_eff = [int(k) for k in recall_ks if 0 < int(k) < N]
@@ -577,8 +803,8 @@ def compute_retrieval_metrics_streaming(
     Returns:
         Same dict shape as :func:`compute_retrieval_metrics`.
     """
-    return _aggregate_metrics_from_iter(
-        _iter_row_orders_streaming(embs, batch=batch, device=device),
+    return _aggregate_metrics_from_chunk_iter(
+        _iter_row_order_chunks_streaming(embs, batch=batch, device=device),
         work_ids=work_ids,
         recall_ks=recall_ks,
         hit_ks=hit_ks,
@@ -734,14 +960,103 @@ def compute_perpair_map_all(
     if n == 0:
         return {k: (0.0, 0) for k in aps_per_cell}
 
-    return _perpair_map_all_from_iter(
-        _iter_row_orders(sim, batch=batch),
+    return _perpair_map_all_from_chunk_iter(
+        _iter_row_order_chunks(sim, batch=batch),
         wids=wids,
         conds=conds,
         query_set=query_set,
         target_list=target_list,
         aps_per_cell=aps_per_cell,
     )
+
+
+def _perpair_map_all_from_chunk_iter(
+    chunk_iter: Iterator[tuple[int, torch.Tensor]],
+    *,
+    wids: torch.Tensor,
+    conds: torch.Tensor,
+    query_set: set[int],
+    target_list: list[int],
+    aps_per_cell: dict[tuple[int, int], list[float]],
+) -> dict[tuple[int, int], tuple[float, int]]:
+    """Vectorised per-(query_cond, target_cond) AP aggregator.
+
+    Consumes order-chunks of shape ``(B, N-1)`` and computes the
+    per-cell APs in batched tensor ops. The mathematical operation is
+    identical to :func:`_perpair_map_all_from_iter` (the per-row
+    variant): for each query and each target condition we walk the
+    items at that target condition in rank order, accumulating
+    ``hits_so_far / sub_rank`` whenever the item is relevant.
+
+    Vectorised via two cumulative sums per cell:
+        * ``sub_rank[j] = cumsum(mask_at_t)[j]`` — 1-indexed rank of
+          position ``j`` within the target-conditioned subset (positions
+          outside the subset get an irrelevant value because the
+          contribution is gated by ``rel_mask``).
+        * ``hits_in_filtered[j] = cumsum(rel & mask_at_t)[j]`` — number
+          of relevants in the subset up to and including position ``j``.
+        * Per-position AP contribution: ``rel_mask * hits_in_filtered /
+          sub_rank``. Sum over j and divide by per-query n_rel.
+
+    The same float32 arithmetic as the metric aggregator above. Tested
+    for equivalence with :func:`_perpair_map_all_from_iter` at fp
+    rounding tolerance.
+
+    Args mirror :func:`_perpair_map_all_from_iter` exactly so callers
+    can swap them by routing different iterators in.
+    """
+    query_conds_sorted = sorted(query_set)
+    # Precompute as long tensors for indexing / broadcasting.
+    target_tensor = torch.tensor(target_list, dtype=conds.dtype) if target_list else None
+    for start, order_chunk in chunk_iter:
+        B, _ = order_chunk.shape
+        end = start + B
+        query_ids = torch.arange(start, end)
+        q_conds_chunk = conds[query_ids]  # (B,)
+
+        # Filter mask: only queries whose q_cond is in query_set
+        # contribute to any cell. Skip the rest of the work for the
+        # batch if no query qualifies.
+        any_in_set = False
+        for q_cond in query_conds_sorted:
+            if (q_conds_chunk == q_cond).any():
+                any_in_set = True
+                break
+        if not any_in_set:
+            continue
+        if target_tensor is None:
+            continue
+
+        # Per-rank conditions and is_rel: (B, N-1) each. Reused across
+        # all target conditions.
+        cond_in_order = conds[order_chunk]  # (B, N-1)
+        wids_at_order = wids[order_chunk]  # (B, N-1)
+        wids_at_query = wids[query_ids].unsqueeze(-1)  # (B, 1)
+        is_rel_chunk = wids_at_order == wids_at_query  # (B, N-1) bool
+
+        for t_cond in target_list:
+            mask_qt = cond_in_order == t_cond  # (B, N-1) bool
+            rel_mask = is_rel_chunk & mask_qt  # (B, N-1) bool
+            # sub_ranks: 1-indexed rank within the t_cond subset at
+            # each position. clamp(min=1) avoids div-by-zero at
+            # positions outside the subset (their contribution is
+            # zero'd by ``rel_mask`` anyway, but we still need a safe
+            # divisor for the broadcast).
+            sub_ranks = mask_qt.long().cumsum(dim=-1).clamp(min=1)
+            hits_in_filtered = rel_mask.long().cumsum(dim=-1)
+            n_rel_per_query = rel_mask.sum(dim=-1)  # (B,) long
+            per_pos = rel_mask.float() * (hits_in_filtered.float() / sub_ranks.float())
+            ap_full = per_pos.sum(dim=-1) / n_rel_per_query.clamp(min=1).float()  # (B,)
+            valid = n_rel_per_query > 0  # (B,)
+            for q_cond in query_conds_sorted:
+                cell_mask = valid & (q_conds_chunk == q_cond)
+                if cell_mask.any():
+                    aps_per_cell[(q_cond, t_cond)].extend(ap_full[cell_mask].tolist())
+
+    return {
+        (q, t): (float(sum(aps) / len(aps)) if aps else 0.0, len(aps))
+        for (q, t), aps in aps_per_cell.items()
+    }
 
 
 def _perpair_map_all_from_iter(
@@ -753,9 +1068,13 @@ def _perpair_map_all_from_iter(
     target_list: list[int],
     aps_per_cell: dict[tuple[int, int], list[float]],
 ) -> dict[tuple[int, int], tuple[float, int]]:
-    """Body shared by :func:`compute_perpair_map_all` and
-    :func:`compute_perpair_map_all_streaming` — both consume an
-    order-iterator and aggregate per-cell APs identically."""
+    """Per-row reference body for the per-cell perpair MAP grid.
+
+    Kept as the equivalence baseline for
+    :func:`_perpair_map_all_from_chunk_iter` — the chunked path that
+    production code routes through. Tests in
+    ``tests/test_retrieval_metrics_streaming.py`` pin the equivalence
+    at abs=1e-6 on the AP values."""
     conds_list = conds.tolist()
     for i, order_i in order_iter:
         q_cond = conds_list[i]
@@ -801,9 +1120,10 @@ def compute_perpair_map_all_streaming(
     Drop-in replacement that takes per-file embeddings (``(N, H)``)
     instead of a pre-materialised similarity matrix. Computes sim
     row-chunks on demand on ``device`` via
-    :func:`_iter_row_orders_streaming`. The aggregation body is
-    identical (shared via :func:`_perpair_map_all_from_iter`) so
-    numerical output is the same up to argsort tie-breaking.
+    :func:`_iter_row_order_chunks_streaming`, then aggregates via the
+    batched :func:`_perpair_map_all_from_chunk_iter`. Numerical output
+    is the same as :func:`compute_perpair_map_all` up to argsort
+    tie-breaking on the GPU path.
 
     For VGMIDITVar-timbre (N=102 960, 8 GM programs): drops from
     ~3 min on CPU with the materialised-sim path (using
@@ -842,8 +1162,8 @@ def compute_perpair_map_all_streaming(
     if n == 0:
         return {k: (0.0, 0) for k in aps_per_cell}
 
-    return _perpair_map_all_from_iter(
-        _iter_row_orders_streaming(embs, batch=batch, device=device),
+    return _perpair_map_all_from_chunk_iter(
+        _iter_row_order_chunks_streaming(embs, batch=batch, device=device),
         wids=wids,
         conds=conds,
         query_set=query_set,

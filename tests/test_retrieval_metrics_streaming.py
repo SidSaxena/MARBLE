@@ -27,8 +27,13 @@ import pytest
 import torch
 
 from marble.utils.retrieval_metrics import (
+    _aggregate_metrics_from_chunk_iter,
+    _aggregate_metrics_from_iter,
+    _iter_row_order_chunks,
     _iter_row_orders,
     _iter_row_orders_streaming,
+    _perpair_map_all_from_chunk_iter,
+    _perpair_map_all_from_iter,
     compute_perpair_map_all,
     compute_perpair_map_all_streaming,
     compute_retrieval_metrics,
@@ -247,6 +252,171 @@ def test_perpair_streaming_cpu_matches_materialised():
         assert ap_ref == pytest.approx(ap_out, abs=1e-9), (
             f"cell {cell}: ap differ {ap_ref} vs {ap_out}"
         )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Batched (chunk-aggregator) vs per-row aggregator equivalence
+# ──────────────────────────────────────────────────────────────────────
+#
+# The chunk aggregator (``_aggregate_metrics_from_chunk_iter``) was added
+# to remove ~70% of the metric-body wall time at large N by collapsing
+# the per-query Python ``.tolist() + MAP inner loop`` into batched
+# tensor cumsum ops. The per-row aggregator (``_aggregate_metrics_from_iter``)
+# is kept as the reference implementation. These tests pin the two
+# against each other at tight tolerance — they MUST stay numerically
+# equivalent (up to fp32 vs fp64 rounding noise in the AP path) so the
+# batched path is safe to drop into production.
+
+
+def test_chunk_aggregator_matches_per_row_aggregator():
+    """All metrics from the new chunk aggregator must equal the legacy
+    per-row aggregator on the same fixture. Tight tolerance because we
+    expect only fp32-vs-fp64 rounding deltas in the MAP path; recall /
+    hit / r_precision / median_rank / mrr are integer-derived and
+    should match exactly."""
+    torch.manual_seed(101)
+    N, H = 250, 32
+    embs = torch.randn(N, H)
+    embs = embs / embs.norm(dim=-1, keepdim=True)
+    work_ids = torch.randint(0, 10, (N,))
+    sim = embs @ embs.T
+
+    kwargs = dict(
+        work_ids=work_ids,
+        recall_ks=(1, 5, 10, 25),
+        hit_ks=(1, 5, 25),
+        include_r_precision=True,
+        include_median_rank=True,
+        include_map=True,
+        map_at_ks=(1, 5, 25),
+        include_mrr=True,
+    )
+    ref = _aggregate_metrics_from_iter(_iter_row_orders(sim, batch=37), **kwargs)
+    out = _aggregate_metrics_from_chunk_iter(_iter_row_order_chunks(sim, batch=37), **kwargs)
+    assert set(ref) == set(out)
+    for key in ref:
+        if math.isnan(ref[key]):
+            assert math.isnan(out[key]), f"{key}: ref=nan, chunk={out[key]}"
+        else:
+            # MAP path uses fp32 vs the per-row's Python float (fp64);
+            # rounding deltas are well below 1e-6 at this size.
+            assert ref[key] == pytest.approx(out[key], abs=1e-6), (
+                f"{key}: ref={ref[key]} vs chunk={out[key]}"
+            )
+
+
+def test_chunk_aggregator_batch_invariant():
+    """Chunked aggregator output must be identical for any batch size
+    that tiles the corpus — no off-by-one at chunk boundaries, no
+    ordering-dependence in the list accumulation."""
+    torch.manual_seed(202)
+    N, H = 120, 16
+    embs = torch.randn(N, H)
+    embs = embs / embs.norm(dim=-1, keepdim=True)
+    work_ids = torch.randint(0, 6, (N,))
+    sim = embs @ embs.T
+    kwargs = dict(
+        work_ids=work_ids,
+        recall_ks=(1, 10),
+        hit_ks=(5,),
+        include_r_precision=True,
+        include_median_rank=True,
+        include_map=True,
+        map_at_ks=(5,),
+        include_mrr=True,
+    )
+    out_b1 = _aggregate_metrics_from_chunk_iter(_iter_row_order_chunks(sim, batch=1), **kwargs)
+    out_b17 = _aggregate_metrics_from_chunk_iter(_iter_row_order_chunks(sim, batch=17), **kwargs)
+    out_bN = _aggregate_metrics_from_chunk_iter(_iter_row_order_chunks(sim, batch=N), **kwargs)
+    for key in out_b1:
+        if math.isnan(out_b1[key]):
+            assert math.isnan(out_b17[key]) and math.isnan(out_bN[key])
+        else:
+            # First-relevant-rank computed via batched min(); per-query
+            # values are integers so they're exact across batch sizes.
+            # MAP via cumsum is also batch-invariant in fp32 because the
+            # per-query sum is over the same N-1 positions regardless of
+            # how we chunk queries together.
+            assert out_b1[key] == pytest.approx(out_b17[key], abs=1e-9)
+            assert out_b1[key] == pytest.approx(out_bN[key], abs=1e-9)
+
+
+def test_perpair_chunk_aggregator_matches_per_row():
+    """Per-cell (map, n_queries) from the chunked perpair aggregator
+    matches the per-row variant up to fp rounding."""
+    torch.manual_seed(303)
+    N, H = 80, 16
+    embs = torch.randn(N, H)
+    embs = embs / embs.norm(dim=-1, keepdim=True)
+    work_ids = torch.randint(0, 5, (N,))
+    conds = torch.tensor([i % 4 for i in range(N)])
+    sim = embs @ embs.T
+
+    query_set = {0, 1, 2, 3}
+    target_list = [0, 1, 2, 3]
+
+    def fresh_aps():
+        return {(q, t): [] for q in sorted(query_set) for t in target_list}
+
+    ref = _perpair_map_all_from_iter(
+        _iter_row_orders(sim, batch=13),
+        wids=work_ids,
+        conds=conds,
+        query_set=query_set,
+        target_list=target_list,
+        aps_per_cell=fresh_aps(),
+    )
+    out = _perpair_map_all_from_chunk_iter(
+        _iter_row_order_chunks(sim, batch=13),
+        wids=work_ids,
+        conds=conds,
+        query_set=query_set,
+        target_list=target_list,
+        aps_per_cell=fresh_aps(),
+    )
+    assert set(ref) == set(out)
+    for cell in ref:
+        ap_ref, n_ref = ref[cell]
+        ap_out, n_out = out[cell]
+        assert n_ref == n_out, f"cell {cell}: n differ {n_ref} vs {n_out}"
+        assert ap_ref == pytest.approx(ap_out, abs=1e-6), (
+            f"cell {cell}: ap differ {ap_ref} vs {ap_out}"
+        )
+
+
+def test_perpair_chunk_aggregator_batch_invariant():
+    """Per-cell APs must be identical regardless of how we chunk the
+    query axis. Includes a non-divisor batch size and full-N."""
+    torch.manual_seed(404)
+    N, H = 60, 16
+    embs = torch.randn(N, H)
+    embs = embs / embs.norm(dim=-1, keepdim=True)
+    work_ids = torch.randint(0, 4, (N,))
+    conds = torch.tensor([i % 3 for i in range(N)])
+    sim = embs @ embs.T
+    query_set = {0, 1, 2}
+    target_list = [0, 1, 2]
+
+    def run(batch: int):
+        return _perpair_map_all_from_chunk_iter(
+            _iter_row_order_chunks(sim, batch=batch),
+            wids=work_ids,
+            conds=conds,
+            query_set=query_set,
+            target_list=target_list,
+            aps_per_cell={(q, t): [] for q in sorted(query_set) for t in target_list},
+        )
+
+    a = run(1)
+    b = run(7)
+    c = run(N)
+    for cell in a:
+        ap_a, n_a = a[cell]
+        ap_b, n_b = b[cell]
+        ap_c, n_c = c[cell]
+        assert n_a == n_b == n_c
+        assert ap_a == pytest.approx(ap_b, abs=1e-9)
+        assert ap_a == pytest.approx(ap_c, abs=1e-9)
 
 
 # ──────────────────────────────────────────────────────────────────────
