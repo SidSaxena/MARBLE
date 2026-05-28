@@ -137,14 +137,20 @@ def test_covers80_style_skips_condition_metrics():
         "test/hit_rate@10",
         "test/median_rank_centered",
         "test/r_precision_centered",
-        "test/anisotropy/avg_pair_cos",
-        "test/anisotropy/top1_sv_share",
     ):
         assert absent not in log, f"unexpected extended key {absent}"
 
-    # Anisotropy trim — mean_vec_norm + effective_rank only.
-    assert "test/anisotropy/mean_vec_norm" in log
-    assert "test/anisotropy/effective_rank" in log
+    # All four anisotropy metrics fire by default. (Previously
+    # avg_pair_cos + top1_sv_share were gated behind the extended flag
+    # — moved out 2026-05-28 after an audit showed they're cheap and
+    # serve as independent cross-checks on mean_vec_norm.)
+    for key in (
+        "test/anisotropy/mean_vec_norm",
+        "test/anisotropy/effective_rank",
+        "test/anisotropy/avg_pair_cos",
+        "test/anisotropy/top1_sv_share",
+    ):
+        assert key in log, f"missing anisotropy key {key}"
 
     # Per-condition — must NOT fire (no conditions).
     assert "test/map_same_condition" not in log

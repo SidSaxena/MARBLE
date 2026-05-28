@@ -453,6 +453,94 @@ def test_anisotropy_metrics_deterministic_under_seed():
         assert m1[key] == pytest.approx(m2[key]), f"non-deterministic at key {key}"
 
 
+def test_anisotropy_mean_vec_norm_matches_theoretical_for_isotropic():
+    """For N L2-normalised iid-Gaussian vectors in H dims, the mean
+    vector has expected norm ≈ 1/√N (the "random walk on the sphere"
+    result). This is the canonical anisotropy baseline. We assert
+    the function lands within ~3× the theoretical bound (Monte-Carlo
+    fluctuations for finite N).
+
+    Pinning this catches subtle regressions like normalising rows
+    AFTER taking the mean (which would give a constant 1.0 regardless
+    of the data) or forgetting to L2-normalise at all (which would
+    make ``mean_vec_norm`` depend on the input scale)."""
+    torch.manual_seed(0)
+    N, H = 5000, 64
+    embs = torch.randn(N, H)
+    m = anisotropy_metrics(embs, seed=0)
+    theoretical = 1.0 / math.sqrt(N)
+    # Tight bound: empirical std around 1/√N for isotropic Gaussian is
+    # O(1/√(N·H)) — at N=5000, H=64 we expect ~0.014 ± 0.002. The 3×
+    # multiplier covers H-dependent prefactors without false positives.
+    assert m["mean_vec_norm"] == pytest.approx(theoretical, abs=3 * theoretical), (
+        f"mean_vec_norm={m['mean_vec_norm']:.4f} not within 3× of "
+        f"theoretical 1/√N = {theoretical:.4f}"
+    )
+
+
+def test_anisotropy_pair_cos_matches_mvn_squared():
+    """For L2-normalised inputs the expected pair cosine equals the
+    squared mean-vec-norm: E[cos(a, b)] = ||μ||² (a basic identity
+    for unit vectors on the sphere).
+
+    This is the **headline cross-check** between two anisotropy metrics
+    that should be measuring related quantities. If they diverge, the
+    implementation has a bug — either the pair-sampling is biased,
+    the L2-normalisation step is broken, or one of the metrics is
+    computing on a different scale than documented.
+
+    Pinned at abs=0.005 — well above Monte-Carlo noise (n_pairs=5000)
+    but tight enough to catch a real implementation drift."""
+    torch.manual_seed(0)
+    # Construct embeddings with a deliberately non-trivial anisotropy
+    # level so the equivalence is a meaningful constraint (not just
+    # "both ≈ 0").
+    N, H = 2000, 128
+    bias_strength = 1.5
+    bias = torch.zeros(H)
+    bias[0] = bias_strength
+    embs = bias.unsqueeze(0) + 0.7 * torch.randn(N, H)
+    embs = embs / embs.norm(dim=-1, keepdim=True)
+
+    m = anisotropy_metrics(embs, seed=0, n_pairs=10_000)
+    expected_apc = m["mean_vec_norm"] ** 2
+    assert m["avg_pair_cos"] == pytest.approx(expected_apc, abs=0.005), (
+        f"avg_pair_cos = {m['avg_pair_cos']:.4f} should ≈ "
+        f"mean_vec_norm² = {expected_apc:.4f} (Δ={m['avg_pair_cos'] - expected_apc:+.4f})"
+    )
+
+
+def test_anisotropy_effective_rank_high_for_pure_cone_collapse():
+    """Documents the subtle property: ``effective_rank`` does NOT
+    detect cone collapse — it measures rank diversity AFTER centering.
+    For a pure cone (all rows along one axis + iid Gaussian noise),
+    centering removes the cone direction, leaving ~uniform noise across
+    the remaining H-1 dimensions → effective_rank stays near H-1.
+
+    Anyone reading the metric expecting "low rank = anisotropic" needs
+    to instead consult ``mean_vec_norm`` — the docstring spells this out
+    but pinning it in a test is the safest contract."""
+    torch.manual_seed(0)
+    N, H = 1000, 64
+    base = torch.zeros(N, H)
+    base[:, 0] = 1.0  # everyone points at +e0
+    embs = base + 0.01 * torch.randn(N, H)  # tiny iid noise for well-posed SVD
+    m = anisotropy_metrics(embs, seed=0)
+    # Cone collapse: mean_vec_norm ≈ 1
+    assert m["mean_vec_norm"] > 0.95, f"mvn={m['mean_vec_norm']}"
+    # But effective_rank stays HIGH (not low) — this is the property
+    # we're pinning. Tolerance: with Marchenko-Pastur eigenvalue spread
+    # at N/H=15.6, the effective rank lands ~0.85 × min(N, H) = ~54.
+    # Lower bound 40 guards against "implementation suddenly reports
+    # rank=1 for cone collapse" regressions.
+    assert m["effective_rank"] > 40.0, (
+        f"effective_rank={m['effective_rank']} unexpectedly low — "
+        f"effective_rank should NOT collapse for pure cone collapse; "
+        f"if it does, either the SVD is being run on uncentered input "
+        f"or there's a numerical issue. See docstring."
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # General invariants
 # ──────────────────────────────────────────────────────────────────────

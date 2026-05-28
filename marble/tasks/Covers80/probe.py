@@ -460,26 +460,38 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         from marble.utils.retrieval_metrics import anisotropy_metrics
 
         ani = anisotropy_metrics(embs)
-        # Default trim: mean_vec_norm (cone-effect headline) + effective_rank
-        # (rank collapse). avg_pair_cos and top1_sv_share are correlated
-        # with these and gated behind the extended flag.
+        # Log all four anisotropy metrics by default. Each is <1 ms to
+        # compute and serves a distinct diagnostic role:
+        #   - mean_vec_norm  : cone-collapse headline (single shared direction)
+        #   - effective_rank : structural rank diversity (how many independent
+        #                      directions carry signal after centering)
+        #   - avg_pair_cos   : cross-check on mean_vec_norm (should ≈ mvn²
+        #                      for L2-normalised input). Useful as an
+        #                      independent confirmation that the cone-collapse
+        #                      number is real and not a numerical artefact.
+        #   - top1_sv_share  : fraction of post-centering variance explained
+        #                      by the leading singular direction. Distinct
+        #                      from mean_vec_norm because it's measured AFTER
+        #                      removing the corpus mean.
+        # Audit (2026-05-28) found avg_pair_cos and top1_sv_share were gated
+        # behind log_extended_retrieval_metrics — that silently dropped them
+        # from default sweeps and made anisotropy plots incomplete. Moved out.
         self.log("test/anisotropy/mean_vec_norm", float(ani["mean_vec_norm"]), rank_zero_only=True)
         self.log(
             "test/anisotropy/effective_rank",
             float(ani["effective_rank"]),
             rank_zero_only=True,
         )
-        if self.log_extended_retrieval_metrics:
-            self.log(
-                "test/anisotropy/avg_pair_cos",
-                float(ani["avg_pair_cos"]),
-                rank_zero_only=True,
-            )
-            self.log(
-                "test/anisotropy/top1_sv_share",
-                float(ani["top1_sv_share"]),
-                rank_zero_only=True,
-            )
+        self.log(
+            "test/anisotropy/avg_pair_cos",
+            float(ani["avg_pair_cos"]),
+            rank_zero_only=True,
+        )
+        self.log(
+            "test/anisotropy/top1_sv_share",
+            float(ani["top1_sv_share"]),
+            rank_zero_only=True,
+        )
         print(
             f"[CoverRetrieval] Anisotropy: mean_vec_norm={ani['mean_vec_norm']:.3f}  "
             f"avg_pair_cos={ani['avg_pair_cos']:.3f}  "

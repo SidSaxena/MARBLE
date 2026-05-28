@@ -1188,36 +1188,75 @@ def anisotropy_metrics(
     so the same numbers that motivated MARBLE's centered-MAP variant are
     available as live wandb metrics rather than post-hoc diagnostics.
 
-    Returns a dict with four numbers, all computed on L2-normalised input:
-      - ``mean_vec_norm`` (float in [0, 1]): norm of the corpus mean.
-        Near 0 ⇒ isotropic; near 1 ⇒ all embeddings live in a thin cone.
-        OMARRQ historically registers ~0.5 on retrieval tasks; that
-        anisotropy is what motivates ``test/map_centered``.
+    Returns four numbers measuring **complementary** aspects of the
+    embedding distribution. They are NOT redundant:
+
+      - ``mean_vec_norm`` (float in [0, 1]): norm of the corpus mean
+        AFTER L2-normalising each row. Measures **cone collapse** — a
+        single dominant direction shared by all embeddings.
+          * Isotropic: ``≈ 1 / √N`` (verified in tests).
+          * Pure cone collapse (all rows along one axis): ``≈ 1``.
+          * CLaMP3 audio embeddings on VGMIDITVar-timbre: ~0.85 across
+            all layers — heavy cone collapse but stable across depth.
+
       - ``avg_pair_cos`` (float in [-1, 1]): mean cosine similarity over
-        ``n_pairs`` random off-diagonal pairs. Should be ≈ 0 for isotropic
-        embeddings; > 0 indicates the cone-effect inflates all similarities.
-      - ``top1_sv_share`` (float in [0, 1]): leading singular value² as a
-        fraction of total variance (post-centering). > 0.3 = significant
-        rank collapse on the top direction.
-      - ``effective_rank`` (float in [1, min(N, H)]): exp(entropy of
-        normalised SV² spectrum). Lower ⇒ more anisotropic / lower-rank.
-        Noisy at small N (e.g. Covers80 with N=160).
+        ``n_pairs`` random off-diagonal pairs of L2-normalised rows.
+        **Theoretically related to ``mean_vec_norm``** via
+        ``E[cos(a, b)] ≈ ||μ||² = mean_vec_norm²`` for unit vectors.
+        Used as an **independent cross-check** that ``mean_vec_norm`` is
+        a real cone effect and not a numerical artefact. If the two
+        numbers diverge meaningfully, something is wrong with the
+        implementation (see test_anisotropy_pair_cos_matches_mvn_squared).
+
+      - ``top1_sv_share`` (float in [0, 1]): leading singular value²
+        as a fraction of total variance, computed on **centered** (not
+        L2-normalised) embeddings. Measures **rank collapse on the
+        top-1 direction post-centering** — i.e. is there a second
+        dominant direction after removing the corpus mean?
+          * Isotropic random: ``~1/H`` (Marchenko-Pastur edge).
+          * Cone collapse alone: small (the dominant direction was
+            killed by centering — the metric does NOT measure cone
+            collapse).
+          * Two-cluster structure: large (the cluster-separation axis
+            is now the dominant direction).
+
+      - ``effective_rank`` (float in [1, min(N, H)]): ``exp(entropy of
+        normalised SV² spectrum)`` on **centered** embeddings.
+        Measures **structural diversity** — how many directions carry
+        meaningful variance after removing the cone. It does NOT
+        directly measure cone collapse (a pure cone has effective_rank
+        near H-1 after centering because the noise is uniform across
+        the remaining axes).
+          * Isotropic Gaussian: ``≈ min(N, H)`` (with Marchenko-Pastur
+            reduction; e.g. ~700 at H=768).
+          * Single dominant cluster: high (cone gets removed → flat
+            residual).
+          * Multiple meaningful directions: moderate.
+          * Single rank-1 subspace (after cone removal): low.
+          For retrieval tasks, **a peak in effective_rank often
+          coincides with the best-MAP layer** — see the CLaMP3 sweep
+          where layer 4 (peak effective_rank=62) matches the best
+          cross-condition MAP.
+
+    Quick interpretation guide
+    --------------------------
+    The four metrics decompose anisotropy into:
+      ``mean_vec_norm`` → "is there a shared common direction?"
+      ``top1_sv_share`` → "is there a second dominant direction after
+                          removing the first?"
+      ``effective_rank`` → "how spread out is the residual variance?"
+      ``avg_pair_cos`` → sanity check on ``mean_vec_norm``.
 
     Notes
     -----
     - SVD is capped at 4096 samples for speed (matches the offline script);
       larger corpora subsample randomly with ``seed`` for reproducibility.
-    - The function operates on whatever scale the caller passes in. When
-      called from ``CoverRetrievalTask.on_test_epoch_end`` the input is
-      already L2-normalised per-file mean-pooled embeddings — so the SVD
-      below measures variance of unit vectors on the sphere, which is
-      arguably MORE relevant for cosine retrieval than the raw-embedding
-      SVD used by ``scripts/diagnostics/anisotropy_diag.py``. The two
-      numbers are mathematically distinct; ``mean_vec_norm`` and
-      ``avg_pair_cos`` are scale-invariant and agree across both inputs.
-    - Returns NaN-filled dict on degenerate input (N < 2) — single-point
-      corpora can't define pairwise cosine or SVD; the probe still logs
-      these values and downstream wandb filters can drop them.
+    - ``mean_vec_norm`` and ``avg_pair_cos`` are scale-invariant
+      (internal L2 normalisation). ``top1_sv_share`` and
+      ``effective_rank`` are NOT scale-invariant — they operate on the
+      raw input scale. When called from ``CoverRetrievalTask`` the input
+      is already L2-normalised, so this distinction is moot in practice.
+    - Returns NaN-filled dict on degenerate input (N < 2).
     """
     e = embs.detach().cpu().float().numpy()
     n, c = e.shape
