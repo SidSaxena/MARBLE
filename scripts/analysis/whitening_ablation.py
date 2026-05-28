@@ -21,6 +21,21 @@ under several **embedding transformations**:
                      ``centered``; α=1 is full whitening (residual cov
                      = I before the L2-norm step). Default sweep:
                      α ∈ {0.5, 0.7, 1.0}.
+
+                     **Caveat for cone-collapsed encoders** (which is
+                     all of CLaMP3 / MERT / MuQ / OMARRQ on
+                     VGMIDITVar-timbre): ``whiten-a1.0`` without
+                     regularisation amplifies every direction whose
+                     eigenvalue is near zero by ``1/√λ`` — for the
+                     ~700 effectively-zero directions in a 768-dim
+                     cone-collapsed embedding, that's a 1e6× boost
+                     on pure noise. The post-L2-norm result then has
+                     the signal directions drowned out. Compare
+                     ``whiten-a1.0`` to ``whiten-a1.0-erel-1e-3`` to
+                     measure the noise penalty. The fractional
+                     variants (α < 1) are intermediate and usually
+                     more stable than pure whitening.
+
     whiten-a1.0-erel-E
                    — full whitening with relative Tikhonov ridge:
                      ``e_w = U (Λ + E · λ_max · I)^(−1/2) U^T (e − μ)``.
@@ -399,12 +414,25 @@ CSV_COLUMNS = [
 
 
 def _write_csv_row(csv_path: Path, row: dict, append: bool) -> None:
+    """Write one row; truncate-and-rewrite when ``append=False``, else extend.
+
+    Subtle: an earlier version used ``mode = "a" if (append or file_exists) else "w"``
+    which silently appended on every re-run of a default-flagged invocation
+    (because the file already existed from the previous run). The correct
+    semantics — and what the CLI docs claim — is "overwrite on a fresh run,
+    append only when --force-append OR when the same run has already
+    written its first row".
+    """
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    file_exists = csv_path.exists()
-    mode = "a" if (append or file_exists) else "w"
+    if append:
+        mode = "a"
+        write_header = not csv_path.exists()
+    else:
+        mode = "w"  # truncate prior contents
+        write_header = True
     with open(csv_path, mode, newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
-        if mode == "w" or not file_exists:
+        if write_header:
             w.writeheader()
         w.writerow(row)
 
@@ -560,9 +588,21 @@ def main() -> int:
         f"  λ_max={lambda_max:.4e}  λ_min(non-zero)={lambda_min_nonzero:.4e}  "
         f"ratio={lambda_max / max(lambda_min_nonzero, 1e-20):.2e}  ({t_pca:.2f}s)"
     )
-    eff_rank_centered = float(
-        nonzero_eigs.sum() ** 2 / (nonzero_eigs**2).sum() if len(nonzero_eigs) else float("nan")
-    )
+    # ``effective_rank_centered`` uses the SAME entropy-based formula as
+    # ``anisotropy_metrics.effective_rank`` (exp of normalised-eigenvalue
+    # spectrum entropy). Computed on the FULL-corpus eigenvalues here vs
+    # the 4096-sample subsample used by anisotropy_metrics — the two
+    # are close (the spectrum stabilises well below 4096 samples for
+    # our H≥768 encoders) but not bit-identical. An earlier draft used
+    # (Σλ)² / Σλ² (the *stable rank*) by mistake — that's a different
+    # metric. Corrected 2026-05-28; pinned by
+    # ``test_effective_rank_centered_matches_anisotropy_metrics_formula``.
+    if len(nonzero_eigs):
+        share = nonzero_eigs / nonzero_eigs.sum()
+        h_entropy = -(share * (share + 1e-12).log()).sum()
+        eff_rank_centered = float(h_entropy.exp())
+    else:
+        eff_rank_centered = float("nan")
 
     if args.dry_run:
         print("--dry-run: shapes + PCA fit OK; skipping metric pass.")

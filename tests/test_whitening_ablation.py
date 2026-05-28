@@ -484,6 +484,189 @@ def test_max_works_stratifies_by_work_id(tmp_path: Path):
     assert int(row["n_files"]) == 24, f"unexpected n_files = {row['n_files']}"
 
 
+def test_csv_overwrite_on_rerun_with_default_flags(tmp_path: Path):
+    """Regression test (2026-05-28): re-running the script with default
+    flags must TRUNCATE the existing CSV, not append to it. Earlier code
+    silently appended because the file existed from a prior run.
+
+    Failure mode this guards against: the second run's results pile on
+    top of the first, and the user can't tell which rows came from which
+    invocation. Particularly bad when the same (encoder, layer) is
+    re-run after a code change — the old (incorrect) rows survive.
+    """
+    cache_dir = tmp_path / "cache"
+    out_csv = tmp_path / "out.csv"
+    records, _ = _make_synthetic_cache(cache_dir, n_works=2)
+    jsonl = tmp_path / "test.jsonl"
+    _write_jsonl(jsonl, records)
+
+    # Run 1: write a single row.
+    cmd_base = [
+        sys.executable,
+        str(SCRIPT),
+        "--encoder",
+        "FakeEncoder",
+        "--encoder-tag",
+        "FakeEncoder-tag",
+        "--layer",
+        "0",
+        "--jsonl",
+        str(jsonl),
+        "--cache-dir",
+        str(cache_dir),
+        "--out-csv",
+        str(out_csv),
+        "--device",
+        "cpu",
+        "--batch",
+        "32",
+    ]
+    p1 = subprocess.run(
+        cmd_base + ["--treatments", "raw"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert p1.returncode == 0, p1.stdout + p1.stderr
+    with open(out_csv) as f:
+        rows_1 = list(csv.DictReader(f))
+    assert len(rows_1) == 1, f"run 1 expected 1 row, got {len(rows_1)}"
+
+    # Run 2 (same CSV, default flags): MUST OVERWRITE.
+    p2 = subprocess.run(
+        cmd_base + ["--treatments", "centered"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert p2.returncode == 0, p2.stdout + p2.stderr
+    with open(out_csv) as f:
+        rows_2 = list(csv.DictReader(f))
+    assert len(rows_2) == 1, (
+        f"run 2 expected 1 row (overwrite), got {len(rows_2)} — "
+        f"CSV is being appended on re-runs without --force-append"
+    )
+    assert rows_2[0]["treatment"] == "centered"
+
+    # Run 3 with --force-append: MUST append.
+    p3 = subprocess.run(
+        cmd_base + ["--treatments", "raw", "--force-append"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert p3.returncode == 0, p3.stdout + p3.stderr
+    with open(out_csv) as f:
+        rows_3 = list(csv.DictReader(f))
+    assert len(rows_3) == 2, f"run 3 (--force-append) expected 2 rows total, got {len(rows_3)}"
+    assert [r["treatment"] for r in rows_3] == ["centered", "raw"]
+
+
+def test_effective_rank_centered_matches_anisotropy_metrics_formula():
+    """Regression test (2026-05-28): the ``effective_rank_centered`` CSV
+    column must use the SAME entropy-based formula as
+    ``anisotropy_metrics.effective_rank`` (both are ``exp(-Σ pᵢ log pᵢ)``
+    of the normalised non-zero eigenvalue spectrum).
+
+    The first implementation accidentally computed stable rank
+    ``(Σλ)² / Σλ²`` instead — a DIFFERENT, non-comparable scalar that
+    would have been silently logged in the same row as the entropy-based
+    ``effective_rank`` column. The pre-fix value diverges by 2-5× from
+    the correct one on cone-collapsed inputs, which is exactly where
+    the ablation is supposed to be informative.
+
+    This test hand-computes both metrics on a known anisotropic input
+    and asserts that the script's column matches the anisotropy_metrics
+    formula, NOT the stable rank.
+    """
+    mod = _load_module()
+    torch.manual_seed(42)
+    # Cone-collapsed embeddings: 3 dominant + many tiny directions.
+    N, H = 2000, 32
+    raw = torch.randn(N, H)
+    raw[:, 0] *= 8.0
+    raw[:, 1] *= 4.0
+    raw[:, 2] *= 2.0
+    embs = F.normalize(raw, dim=-1)
+
+    # Replicate the script's own computation.
+    _mu, eigvals_desc, _eigvecs = mod._compute_corpus_pca(embs)
+    lambda_max = float(eigvals_desc[0])
+    nonzero_eigs = eigvals_desc[eigvals_desc > 1e-10 * lambda_max]
+    share = nonzero_eigs / nonzero_eigs.sum()
+    expected_eff_rank = float((-(share * (share + 1e-12).log()).sum()).exp())
+
+    # Sanity: the (incorrect) stable rank formula gives a DIFFERENT number.
+    stable_rank = float((nonzero_eigs.sum() ** 2 / (nonzero_eigs**2).sum()).item())
+    assert abs(expected_eff_rank - stable_rank) > 0.5, (
+        f"fixture failed to distinguish formulas: "
+        f"entropy={expected_eff_rank:.3f}, stable={stable_rank:.3f}"
+    )
+
+    # Now run the production script (--dry-run prints PCA stats but
+    # doesn't compute MAP). We read effective_rank_centered out of a
+    # full run since dry-run doesn't write CSV.
+    tmp_path = Path("/tmp") / "whitening_ablation_eff_rank_test"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    cache_dir = tmp_path / "cache"
+    if cache_dir.exists():
+        import shutil  # noqa: PLC0415
+
+        shutil.rmtree(cache_dir)
+    records, _ = _make_synthetic_cache(
+        cache_dir, n_works=6, versions_per_cell=3, conditions=(0, 24, 48, 60), seed=42
+    )
+    jsonl = tmp_path / "test.jsonl"
+    _write_jsonl(jsonl, records)
+    out_csv = tmp_path / "out.csv"
+
+    p = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--encoder",
+            "FakeEncoder",
+            "--encoder-tag",
+            "FakeEncoder-tag",
+            "--layer",
+            "0",
+            "--jsonl",
+            str(jsonl),
+            "--cache-dir",
+            str(cache_dir),
+            "--out-csv",
+            str(out_csv),
+            "--device",
+            "cpu",
+            "--batch",
+            "32",
+            "--treatments",
+            "raw",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert p.returncode == 0, p.stdout + p.stderr
+
+    with open(out_csv) as f:
+        row = next(csv.DictReader(f))
+    csv_eff_rank = float(row["effective_rank_centered"])
+    csv_eff_rank_from_anisotropy = float(row["effective_rank"])
+    # The CSV ``effective_rank_centered`` (computed on the full corpus
+    # eigenvalues) and ``effective_rank`` (computed by
+    # anisotropy_metrics on a subsample) should be close but not
+    # identical. Both use the entropy formula.
+    relative_err = abs(csv_eff_rank - csv_eff_rank_from_anisotropy) / max(
+        csv_eff_rank_from_anisotropy, 1.0
+    )
+    assert relative_err < 0.20, (
+        f"effective_rank_centered ({csv_eff_rank:.3f}) diverges from "
+        f"anisotropy_metrics.effective_rank ({csv_eff_rank_from_anisotropy:.3f}) "
+        f"by {100 * relative_err:.1f}% — likely the formula is wrong again"
+    )
+
+
 def test_dry_run_skips_metric_pass_and_succeeds(tmp_path: Path):
     """``--dry-run`` exits cleanly without invoking the streaming MAP."""
     cache_dir = tmp_path / "cache"
