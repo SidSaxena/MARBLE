@@ -65,6 +65,7 @@ import json
 import re
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -115,11 +116,28 @@ def _load_per_file_embeddings(
     n_missing = 0
     n_total = 0
 
+    # Build a base_id → [clip paths] index in a SINGLE directory scan.
+    # Globbing once per record (the obvious approach) is O(N_records ×
+    # N_files): at 102,960 records × 121,941 cache files that's ~1.3e10
+    # string comparisons (~20 min just to enumerate). One scan + dict
+    # lookups is O(N_files + N_records).
+    clip_index: dict[str, list[Path]] = defaultdict(list)
+    for entry in cache_dir.iterdir():
+        name = entry.name
+        if not name.endswith(".pt"):
+            continue
+        # Strip ".pt", then strip the trailing "__c<slice_idx>". rsplit on
+        # the LAST "__c" so a stem that happens to contain "__c" doesn't
+        # break the base-id recovery — symmetric with the make_clip_id
+        # parse below.
+        base = name[:-3].rsplit("__c", 1)[0]
+        clip_index[base].append(entry)
+
     for rec in records:
         n_total += 1
         # Clip id format: <stem>__<sha1(audio_path)[:8]>__c<slice_idx>
         base_id = make_clip_id(rec["audio_path"], 0).rsplit("__c", 1)[0]
-        slice_paths = sorted(cache_dir.glob(f"{base_id}__c*.pt"))
+        slice_paths = sorted(clip_index.get(base_id, []))
         if not slice_paths:
             n_missing += 1
             continue

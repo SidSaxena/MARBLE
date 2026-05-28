@@ -40,6 +40,7 @@ import argparse
 import csv
 import json
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -69,16 +70,26 @@ def _collect_per_file_embeddings(
     n_missing = 0
     n_total = 0
 
+    # Single-scan index: base_id → [clip paths]. Globbing once per record
+    # is O(N_records × N_files); at 102,960 records × 121,941 cache files
+    # that's ~1.3e10 string comparisons (~20 min). One scan is O(N).
+    clip_index: dict[str, list[Path]] = defaultdict(list)
+    for entry in cache_dir.iterdir():
+        name = entry.name
+        if not name.endswith(".pt"):
+            continue
+        base = name[:-3].rsplit("__c", 1)[0]
+        clip_index[base].append(entry)
+
     for rec in records:
         n_total += 1
         # clip_id format: <stem>__<sha1(audio_path)[:8]>__c<slice_idx>
         base_id = make_clip_id(rec["audio_path"], 0).rsplit("__c", 1)[0]
-        # Glob all slices for this file.
-        slice_paths = sorted(cache_dir.glob(f"{base_id}__c*.pt"))
         # Defensive: cache stores filesystem-safe names. The path_for
         # method in emb_cache.py replaces / and \ with _, which can
         # affect the stem if the audio_path stem itself contained those.
         # For VGMIDITVar-timbre stems they're letters/digits/dashes only.
+        slice_paths = sorted(clip_index.get(base_id, []))
         if not slice_paths:
             n_missing += 1
             continue
