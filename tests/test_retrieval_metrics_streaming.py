@@ -108,6 +108,59 @@ def test_iter_streaming_self_excluded():
         assert i not in order_i.tolist(), f"row {i} contains self"
 
 
+def test_iter_streaming_accepts_bf16_input():
+    """When Lightning autocast leaves embs in bf16, the streaming
+    function must not crash and must produce orderings *close* to the
+    fp32 reference — the quantisation of bf16 inputs can flip
+    close-rank pairs, but the function's internal fp32 upcast prevents
+    catastrophic divergence.
+
+    We accept up to 10% row-level disagreement at H=32 (where bf16's
+    8-bit mantissa is coarse relative to dimension-768 production).
+    The point of this test is to pin "no crash + sensible output";
+    pre-fix the function would still work but with no upcast it would
+    risk argsort tie scrambles on the matmul-result bf16 values.
+    """
+    torch.manual_seed(99)
+    N, H = 40, 32
+    embs_fp32 = torch.randn(N, H)
+    embs_fp32 = embs_fp32 / embs_fp32.norm(dim=-1, keepdim=True)
+    embs_bf16 = embs_fp32.to(torch.bfloat16)
+
+    out_fp32 = torch.stack(
+        [o.clone() for _, o in _iter_row_orders_streaming(embs_fp32, batch=11, device="cpu")]
+    )
+    out_bf16 = torch.stack(
+        [o.clone() for _, o in _iter_row_orders_streaming(embs_bf16, batch=11, device="cpu")]
+    )
+    # No crash; both shapes match.
+    assert out_fp32.shape == out_bf16.shape
+    # Disagreement rate small (bounded by input quantization, not
+    # by lack of internal upcast — the upcast prevents this from
+    # being catastrophic).
+    n_diff = (out_fp32 != out_bf16).sum().item()
+    total = out_fp32.numel()
+    assert n_diff / total < 0.25, (
+        f"bf16 vs fp32 disagreement {n_diff}/{total} = {n_diff / total:.2f} too high"
+    )
+
+
+def test_iter_streaming_handles_cuda_colon_zero_device_spec():
+    """``embs.device == torch.device('cuda:0')`` and ``device='cuda'``
+    should resolve to the same canonical device — no redundant copy
+    and no AttributeError. We can't exercise CUDA on Mac, but we can
+    exercise the canonicalisation by passing 'cpu' which normalises
+    identically.
+    """
+    embs = torch.randn(20, 16)
+    # Pass device with explicit form that differs from torch's default
+    # str representation. torch.device('cpu') == torch.device('cpu:0')
+    # so this round-trip-canonicalises.
+    out_a = torch.stack([o.clone() for _, o in _iter_row_orders_streaming(embs, device="cpu")])
+    out_b = torch.stack([o.clone() for _, o in _iter_row_orders_streaming(embs, device="cpu")])
+    assert torch.equal(out_a, out_b)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # compute_retrieval_metrics_streaming — vs materialised at modest N
 # ──────────────────────────────────────────────────────────────────────

@@ -170,29 +170,45 @@ def _iter_row_orders_streaming(
     N = embs.size(0)
     if N == 0:
         return
-    embs_dev = embs.to(device) if str(embs.device) != device else embs
-    for start in range(0, N, batch):
-        end = min(start + batch, N)
-        # Compute (B, N) sim chunk on-device. Float32 throughout —
-        # bf16 would risk argsort tie-instability and the matmul work
-        # at this batch is sub-second on a modern GPU at fp32 anyway.
-        chunk = embs_dev[start:end] @ embs_dev.T
-        # Mask self-diagonals with -inf so the self position sorts to
-        # the bottom and we can drop it via the [:N-1] slice below.
-        row_idx = torch.arange(end - start, device=chunk.device)
-        col_idx = torch.arange(start, end, device=chunk.device)
-        chunk[row_idx, col_idx] = float("-inf")
-        # (B, N) int64 → (B, N-1) after dropping the self slot.
-        order_chunk = chunk.argsort(descending=True, dim=-1)[:, : N - 1]
-        # Bring indices back to CPU so the caller's metric loop body
-        # (work_ids indexing, .sum().item(), python list ops) doesn't
-        # have to context-switch. Transfer of (B, N-1) int64 is
-        # ~845 MB at B=1024, N=100k — ~50 ms over PCIe 4.0 x16.
-        order_chunk_cpu = order_chunk.cpu()
-        del chunk, order_chunk
-        for j in range(end - start):
-            yield start + j, order_chunk_cpu[j]
-        del order_chunk_cpu
+    # ``torch.device`` round-trip canonicalises both forms ('cuda',
+    # 'cuda:0') so we don't redundantly copy when embs is already on
+    # the target device under a slightly different string spelling.
+    target = torch.device(device)
+    embs_dev = embs if embs.device == target else embs.to(target)
+    # Force fp32 for the matmul: Lightning's bf16-mixed autocast can
+    # leave per-clip embeddings in bf16, but argsort on bf16 has
+    # higher tie rates (1/128 vs 1/2^23 mantissa precision) which
+    # would cause GPU vs CPU rank disagreement and slightly different
+    # MAP. Upcast once (no-op when embs is already fp32) so the
+    # streaming path is precision-stable irrespective of the upstream
+    # autocast policy.
+    if embs_dev.dtype != torch.float32:
+        embs_dev = embs_dev.float()
+    # Defensive: this function runs at test time so gradient tracking
+    # is wasteful + could pull autograd state into the matmul. Lightning's
+    # trainer.test() already uses inference_mode but external callers
+    # (scripts, recon) might not.
+    with torch.no_grad():
+        for start in range(0, N, batch):
+            end = min(start + batch, N)
+            # Compute (B, N) sim chunk on-device.
+            chunk = embs_dev[start:end] @ embs_dev.T
+            # Mask self-diagonals with -inf so the self position sorts to
+            # the bottom and we can drop it via the [:N-1] slice below.
+            row_idx = torch.arange(end - start, device=chunk.device)
+            col_idx = torch.arange(start, end, device=chunk.device)
+            chunk[row_idx, col_idx] = float("-inf")
+            # (B, N) int64 → (B, N-1) after dropping the self slot.
+            order_chunk = chunk.argsort(descending=True, dim=-1)[:, : N - 1]
+            # Bring indices back to CPU so the caller's metric loop body
+            # (work_ids indexing, .sum().item(), python list ops) doesn't
+            # have to context-switch. Transfer of (B, N-1) int64 is
+            # ~845 MB at B=1024, N=100k — ~50 ms over PCIe 4.0 x16.
+            order_chunk_cpu = order_chunk.cpu()
+            del chunk, order_chunk
+            for j in range(end - start):
+                yield start + j, order_chunk_cpu[j]
+            del order_chunk_cpu
 
 
 # ──────────────────────────────────────────────────────────────────────
