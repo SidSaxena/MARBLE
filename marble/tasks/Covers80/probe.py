@@ -66,6 +66,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         cache_embeddings: bool = False,
         cache_pool_time: bool = True,
         log_extended_retrieval_metrics: bool = False,
+        metric_device: str = "auto",
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -92,6 +93,19 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # ~26 additional keys. Useful for leitmotif/no-ground-truth runs
         # where the K-sweep is the actual scientific question.
         self.log_extended_retrieval_metrics = bool(log_extended_retrieval_metrics)
+
+        # Where to run the heavy metric-block work (sim + argsort + per-cell
+        # grid). For VGMIDITVar-timbre (N=102 960, sim = 42 GB on CPU
+        # which overflows into pagefile on a 32 GB-RAM box), the GPU
+        # streaming path drops the metric block from ~50 min to ~30-60 s
+        # by computing sim row-chunks on demand on the GPU and never
+        # materialising the full (N, N) matrix. See
+        # ``marble.utils.retrieval_metrics.compute_retrieval_metrics_streaming``.
+        #
+        # ``"auto"`` picks ``"cuda"`` when ``torch.cuda.is_available()``
+        # else ``"cpu"``. Force ``"cpu"`` to reproduce pre-streaming
+        # numbers bit-for-bit (no argsort tie-break delta).
+        self.metric_device = str(metric_device)
 
     def setup(self, stage: str | None = None) -> None:
         """Hook into Lightning's per-stage setup to wire the cache check
@@ -235,8 +249,26 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # 6 redundant passes over ``sim``).
         from marble.utils.retrieval_metrics import (
             compute_perpair_map_all,
+            compute_perpair_map_all_streaming,
             compute_retrieval_metrics,
+            compute_retrieval_metrics_streaming,
         )
+
+        # Resolve metric device. ``"auto"`` → cuda if available, else cpu.
+        # GPU path: streams sim row-chunks on demand on the GPU, never
+        # materialises the full (N, N) sim. Drops the metric block from
+        # ~50 min to ~30-60 s for VGMIDITVar-timbre at N=102 960.
+        # See docs/layer_sweeps_plan.md + tests/test_retrieval_metrics_streaming.py.
+        # ``getattr`` fallback supports test fixtures that build the
+        # task via ``__new__`` without running ``__init__``.
+        _md = getattr(self, "metric_device", "auto")
+        if _md == "auto":
+            _md = "cuda" if torch.cuda.is_available() else "cpu"
+        use_streaming = _md == "cuda"
+        if use_streaming:
+            print(f"[CoverRetrieval] metric_device = {_md} (streaming GPU path)")
+        else:
+            print(f"[CoverRetrieval] metric_device = {_md} (materialised CPU sim)")
 
         # Default trim set: recall@10, r_precision, median_rank — all raw.
         # Centered variants of the secondary metrics are rarely flipped
@@ -249,11 +281,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         )
         map_at_ks_raw: list[int] = [1] if self.log_extended_retrieval_metrics and N > 1 else []
 
-        # ── cosine similarity (embeddings already L2-normalised) ─────────────
-        sim = embs @ embs.T  # (N, N) — ~42 GB at N=102 960
-        metrics_raw = compute_retrieval_metrics(
-            sim,
-            work_ids,
+        raw_kwargs = dict(
             recall_ks=recall_ks_raw,
             hit_ks=hit_ks_raw,
             include_r_precision=True,
@@ -262,10 +290,21 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             map_at_ks=map_at_ks_raw,
             include_mrr=self.log_extended_retrieval_metrics,
         )
-        # Free the raw similarity matrix before allocating ``sim_c`` — on a
-        # 32 GB RAM + 81 GB pagefile machine, holding both simultaneously
-        # (84 GB) overruns the commit limit. Halves peak memory.
-        del sim
+
+        if use_streaming:
+            # No (N, N) sim allocation at all — chunks on GPU only.
+            metrics_raw = compute_retrieval_metrics_streaming(
+                embs, work_ids, device=_md, **raw_kwargs
+            )
+        else:
+            # ── cosine similarity (embeddings already L2-normalised) ──
+            sim = embs @ embs.T  # (N, N) — ~42 GB at N=102 960
+            metrics_raw = compute_retrieval_metrics(sim, work_ids, **raw_kwargs)
+            # Free the raw similarity matrix before allocating ``sim_c`` — on
+            # a 32 GB RAM + 81 GB pagefile machine, holding both
+            # simultaneously (84 GB) overruns the commit limit. Halves
+            # peak memory.
+            del sim
 
         map_raw = metrics_raw["map"]
         print(f"[CoverRetrieval] MAP (raw)      = {map_raw:.4f}")
@@ -296,16 +335,13 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # and centered MAP so the comparison is automatic for every encoder.
         embs_c = embs - embs.mean(dim=0, keepdim=True)
         embs_c = F.normalize(embs_c, dim=-1)
-        sim_c = embs_c @ embs_c.T
 
         recall_ks_c = (
             [k for k in (1, 5, 10, 50, 100) if k < N] if self.log_extended_retrieval_metrics else []
         )
         hit_ks_c = [k for k in (1, 5, 10) if k < N] if self.log_extended_retrieval_metrics else []
         map_at_ks_c = [1] if self.log_extended_retrieval_metrics and N > 1 else []
-        metrics_c = compute_retrieval_metrics(
-            sim_c,
-            work_ids,
+        centered_kwargs = dict(
             recall_ks=recall_ks_c,
             hit_ks=hit_ks_c,
             include_r_precision=self.log_extended_retrieval_metrics,
@@ -314,6 +350,14 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             map_at_ks=map_at_ks_c,
             include_mrr=self.log_extended_retrieval_metrics,
         )
+        if use_streaming:
+            metrics_c = compute_retrieval_metrics_streaming(
+                embs_c, work_ids, device=_md, **centered_kwargs
+            )
+            sim_c = None  # streaming path doesn't materialise sim_c
+        else:
+            sim_c = embs_c @ embs_c.T
+            metrics_c = compute_retrieval_metrics(sim_c, work_ids, **centered_kwargs)
         map_centered = metrics_c["map"]
         print(f"[CoverRetrieval] MAP (centered) = {map_centered:.4f}")
         self.log("test/map_centered", map_centered, prog_bar=False, rank_zero_only=True)
@@ -356,13 +400,24 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             # pass and slices per (q, t) cell — for VGMIDITVar-timbre
             # (8 GM programs → 64 cells, N=102 960) this drops the grid
             # from ~4 h of unbatched per-cell sorts to ~3 min.
-            cell_results = compute_perpair_map_all(
-                sim_c,
-                file_work_ids,
-                file_conditions,
-                query_conds=unique_conds,
-                target_conds=unique_conds,
-            )
+            if use_streaming:
+                # Streaming path: chunk sim_c on GPU on-the-fly via embs_c.
+                cell_results = compute_perpair_map_all_streaming(
+                    embs_c,
+                    file_work_ids,
+                    file_conditions,
+                    query_conds=unique_conds,
+                    target_conds=unique_conds,
+                    device=_md,
+                )
+            else:
+                cell_results = compute_perpair_map_all(
+                    sim_c,
+                    file_work_ids,
+                    file_conditions,
+                    query_conds=unique_conds,
+                    target_conds=unique_conds,
+                )
             same_aps: list[float] = []
             cross_aps: list[float] = []
             for q in unique_conds:

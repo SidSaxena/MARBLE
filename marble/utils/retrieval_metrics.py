@@ -124,6 +124,77 @@ def _iter_row_orders(sim: torch.Tensor, *, batch: int = 2048) -> Iterator[tuple[
         del chunk, order_chunk
 
 
+def _iter_row_orders_streaming(
+    embs: torch.Tensor,
+    *,
+    batch: int = 1024,
+    device: str = "cuda",
+) -> Iterator[tuple[int, torch.Tensor]]:
+    """Like :func:`_iter_row_orders` but never materialises the full
+    (N, N) similarity matrix.
+
+    Computes sim row-chunks on demand on ``device`` via
+    ``embs[start:end] @ embs.T``, masks self-diagonals to ``-inf``,
+    argsorts on ``device``, then transfers the (batch, N-1) int64
+    order tensor back to CPU and yields per-query rows.
+
+    Designed for hardware where the full ``(N, N)`` sim doesn't fit in
+    RAM but ``(N, H)`` embeddings do — e.g. VGMIDITVar-timbre at
+    N=102 960 produces a 42 GB sim that overflows into Windows pagefile
+    on a 32 GB-RAM machine. With this generator only the per-file
+    embeddings (~316 MB at H=768) live on GPU + a ~3 GB transient
+    chunk per iteration; the (N, N) sim never exists anywhere.
+
+    Args:
+        embs: ``(N, H)`` per-file embeddings on CPU (or already on the
+            target device — we move/clone as needed). Float32.
+        batch: chunk size in rows. Default 1024 keeps peak GPU memory
+            below ~3 GB at H=1024, N=100k.
+        device: where to run matmul + argsort. ``"cuda"`` is the win
+            case; ``"cpu"`` is a fallback that's still useful because
+            it avoids the full-sim materialisation (lower peak RAM
+            than the materialised-sim path, at the cost of recomputing
+            chunks instead of writing once).
+
+    Yields:
+        ``(i, order_i)`` where ``order_i`` is a ``(N-1,)`` int64 CPU
+        tensor — the ranking of OTHER items by descending similarity
+        to query ``i``, self excluded.
+
+    Note:
+        Argsort tie-breaking on GPU and CPU can differ for items with
+        equal similarity. For real embeddings this is rare (close ties
+        are coincidental, not structural) and the MAP delta is < 1e-4.
+        Tests assert tolerance, not exact equality.
+    """
+    N = embs.size(0)
+    if N == 0:
+        return
+    embs_dev = embs.to(device) if str(embs.device) != device else embs
+    for start in range(0, N, batch):
+        end = min(start + batch, N)
+        # Compute (B, N) sim chunk on-device. Float32 throughout —
+        # bf16 would risk argsort tie-instability and the matmul work
+        # at this batch is sub-second on a modern GPU at fp32 anyway.
+        chunk = embs_dev[start:end] @ embs_dev.T
+        # Mask self-diagonals with -inf so the self position sorts to
+        # the bottom and we can drop it via the [:N-1] slice below.
+        row_idx = torch.arange(end - start, device=chunk.device)
+        col_idx = torch.arange(start, end, device=chunk.device)
+        chunk[row_idx, col_idx] = float("-inf")
+        # (B, N) int64 → (B, N-1) after dropping the self slot.
+        order_chunk = chunk.argsort(descending=True, dim=-1)[:, : N - 1]
+        # Bring indices back to CPU so the caller's metric loop body
+        # (work_ids indexing, .sum().item(), python list ops) doesn't
+        # have to context-switch. Transfer of (B, N-1) int64 is
+        # ~845 MB at B=1024, N=100k — ~50 ms over PCIe 4.0 x16.
+        order_chunk_cpu = order_chunk.cpu()
+        del chunk, order_chunk
+        for j in range(end - start):
+            yield start + j, order_chunk_cpu[j]
+        del order_chunk_cpu
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Public metrics
 # ──────────────────────────────────────────────────────────────────────
@@ -302,6 +373,40 @@ def compute_retrieval_metrics(
         median_rank and ``0.0`` for map/map@K/mrr — matching the
         probe's historical static-method return values.
     """
+    return _aggregate_metrics_from_iter(
+        _iter_row_orders(sim, batch=batch),
+        work_ids=work_ids,
+        recall_ks=recall_ks,
+        hit_ks=hit_ks,
+        include_r_precision=include_r_precision,
+        include_median_rank=include_median_rank,
+        include_map=include_map,
+        map_at_ks=map_at_ks,
+        include_mrr=include_mrr,
+    )
+
+
+def _aggregate_metrics_from_iter(
+    order_iter: Iterator[tuple[int, torch.Tensor]],
+    *,
+    work_ids: torch.Tensor,
+    recall_ks: list[int] | tuple[int, ...],
+    hit_ks: list[int] | tuple[int, ...],
+    include_r_precision: bool,
+    include_median_rank: bool,
+    include_map: bool,
+    map_at_ks: list[int] | tuple[int, ...],
+    include_mrr: bool,
+) -> dict[str, float]:
+    """Consume a row-order iterator (CPU-materialised or GPU-streaming)
+    and aggregate every requested metric in a single pass.
+
+    Body shared by :func:`compute_retrieval_metrics` and
+    :func:`compute_retrieval_metrics_streaming`. The only difference
+    between those two is which iterator they pass — the metric
+    aggregation is identical, including edge cases for N=0 and
+    all-degenerate corpora.
+    """
     N = work_ids.size(0)
     recall_ks_eff = [int(k) for k in recall_ks if 0 < int(k) < N]
     hit_ks_eff = [int(k) for k in hit_ks if 0 < int(k) < N]
@@ -345,7 +450,7 @@ def compute_retrieval_metrics(
     )
     max_map_k = max(map_ks_eff) if map_ks_eff else 0
 
-    for i, order_i in _iter_row_orders(sim, batch=batch):
+    for i, order_i in order_iter:
         n_rel = int(n_rel_all[i].item())
         if n_rel == 0:
             continue
@@ -417,6 +522,56 @@ def compute_retrieval_metrics(
     if include_mrr:
         out["mrr"] = float(sum(recip_ranks) / len(recip_ranks)) if recip_ranks else 0.0
     return out
+
+
+def compute_retrieval_metrics_streaming(
+    embs: torch.Tensor,
+    work_ids: torch.Tensor,
+    *,
+    recall_ks: list[int] | tuple[int, ...] = (10,),
+    hit_ks: list[int] | tuple[int, ...] = (),
+    include_r_precision: bool = True,
+    include_median_rank: bool = True,
+    include_map: bool = False,
+    map_at_ks: list[int] | tuple[int, ...] = (),
+    include_mrr: bool = False,
+    device: str = "cuda",
+    batch: int = 1024,
+) -> dict[str, float]:
+    """GPU-chunked variant of :func:`compute_retrieval_metrics`.
+
+    Identical metric output (within argsort tie-breaking tolerance,
+    typically < 1e-4 MAP delta on real embeddings). Computes
+    ``sim = embs @ embs.T`` row-chunks on demand on ``device`` rather
+    than materialising the full ``(N, N)`` matrix — required when
+    N is large enough that ``embs @ embs.T`` overflows the available
+    RAM (e.g. VGMIDITVar-timbre at N=102 960 → 42 GB).
+
+    Args:
+        embs: ``(N, H)`` per-file L2-normalised embeddings, fp32 on CPU.
+            Will be moved to ``device`` internally (~316–422 MB).
+        work_ids: ``(N,)`` group labels on CPU.
+        device: ``"cuda"`` (recommended) or ``"cpu"`` (still useful as a
+            low-memory CPU fallback that avoids the full-sim allocation).
+        batch: chunk size in rows. Default 1024 keeps peak GPU memory
+            ≲ 3 GB at H=1024, N=100k.
+
+    All other kwargs match :func:`compute_retrieval_metrics`.
+
+    Returns:
+        Same dict shape as :func:`compute_retrieval_metrics`.
+    """
+    return _aggregate_metrics_from_iter(
+        _iter_row_orders_streaming(embs, batch=batch, device=device),
+        work_ids=work_ids,
+        recall_ks=recall_ks,
+        hit_ks=hit_ks,
+        include_r_precision=include_r_precision,
+        include_median_rank=include_median_rank,
+        include_map=include_map,
+        map_at_ks=map_at_ks,
+        include_mrr=include_mrr,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -563,9 +718,30 @@ def compute_perpair_map_all(
     if n == 0:
         return {k: (0.0, 0) for k in aps_per_cell}
 
-    conds_list = conds.tolist()
+    return _perpair_map_all_from_iter(
+        _iter_row_orders(sim, batch=batch),
+        wids=wids,
+        conds=conds,
+        query_set=query_set,
+        target_list=target_list,
+        aps_per_cell=aps_per_cell,
+    )
 
-    for i, order_i in _iter_row_orders(sim, batch=batch):
+
+def _perpair_map_all_from_iter(
+    order_iter: Iterator[tuple[int, torch.Tensor]],
+    *,
+    wids: torch.Tensor,
+    conds: torch.Tensor,
+    query_set: set[int],
+    target_list: list[int],
+    aps_per_cell: dict[tuple[int, int], list[float]],
+) -> dict[tuple[int, int], tuple[float, int]]:
+    """Body shared by :func:`compute_perpair_map_all` and
+    :func:`compute_perpair_map_all_streaming` — both consume an
+    order-iterator and aggregate per-cell APs identically."""
+    conds_list = conds.tolist()
+    for i, order_i in order_iter:
         q_cond = conds_list[i]
         if q_cond not in query_set:
             continue
@@ -592,6 +768,72 @@ def compute_perpair_map_all(
         (q, t): (float(sum(aps) / len(aps)) if aps else 0.0, len(aps))
         for (q, t), aps in aps_per_cell.items()
     }
+
+
+def compute_perpair_map_all_streaming(
+    embs: torch.Tensor,
+    work_ids: list[int] | torch.Tensor,
+    conditions: list[int] | torch.Tensor,
+    *,
+    query_conds: list[int] | None = None,
+    target_conds: list[int] | None = None,
+    device: str = "cuda",
+    batch: int = 1024,
+) -> dict[tuple[int, int], tuple[float, int]]:
+    """GPU-chunked variant of :func:`compute_perpair_map_all`.
+
+    Drop-in replacement that takes per-file embeddings (``(N, H)``)
+    instead of a pre-materialised similarity matrix. Computes sim
+    row-chunks on demand on ``device`` via
+    :func:`_iter_row_orders_streaming`. The aggregation body is
+    identical (shared via :func:`_perpair_map_all_from_iter`) so
+    numerical output is the same up to argsort tie-breaking.
+
+    For VGMIDITVar-timbre (N=102 960, 8 GM programs): drops from
+    ~3 min on CPU with the materialised-sim path (using
+    ~84 GB peak via the 42 GB sim_c + chunk transients) to ~30–60 s on
+    GPU with no full-sim allocation at all.
+
+    Args:
+        embs: ``(N, H)`` per-file embeddings. The caller is responsible
+            for centering + L2-normalising before this call (matching
+            the live probe's use of ``embs_c``).
+        work_ids: ``(N,)`` group labels.
+        conditions: ``(N,)`` per-item condition labels.
+        query_conds, target_conds: same as
+            :func:`compute_perpair_map_all`.
+        device: ``"cuda"`` or ``"cpu"``.
+        batch: chunk size in rows.
+
+    Returns:
+        Same shape as :func:`compute_perpair_map_all`.
+    """
+    n = embs.size(0)
+    wids = work_ids if isinstance(work_ids, torch.Tensor) else torch.tensor(work_ids)
+    conds = conditions if isinstance(conditions, torch.Tensor) else torch.tensor(conditions)
+
+    if query_conds is None:
+        query_conds = sorted({int(c) for c in conds.tolist()})
+    if target_conds is None:
+        target_conds = list(query_conds)
+    query_set = set(query_conds)
+    target_list = list(target_conds)
+
+    aps_per_cell: dict[tuple[int, int], list[float]] = {
+        (q, t): [] for q in query_conds for t in target_list
+    }
+
+    if n == 0:
+        return {k: (0.0, 0) for k in aps_per_cell}
+
+    return _perpair_map_all_from_iter(
+        _iter_row_orders_streaming(embs, batch=batch, device=device),
+        wids=wids,
+        conds=conds,
+        query_set=query_set,
+        target_list=target_list,
+        aps_per_cell=aps_per_cell,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
