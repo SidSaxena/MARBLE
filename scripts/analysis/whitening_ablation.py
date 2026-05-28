@@ -71,6 +71,18 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+# Windows cp1252 stdout can't encode the non-ASCII characters (λ, μ, ×,
+# −, ≈, α, Δ) used in this script's diagnostic prints — without this the
+# first such print raises UnicodeEncodeError mid-run (after the ~8 min
+# cache load, which is expensive to repeat). Force UTF-8. Mirrors
+# scripts/sweeps/run_sweep_local.py. Safe over an SSH stdout redirect.
+# Unlike CoverRetrievalTask (which had to go fully ASCII because wandb's
+# console-capture wrapper replaced sys.stdout after reconfigure), this
+# script has no such wrapper, so reconfigure stays in effect.
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
