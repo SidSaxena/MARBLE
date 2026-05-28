@@ -112,6 +112,118 @@ def test_apply_treatment_whiten_a1_produces_identity_covariance():
     assert err < 0.05, f"whitened cov not ≈ I: max diff = {err}"
 
 
+def test_whitening_recovers_buried_signal_vs_independent_numpy():
+    """Keystone audit (2026-05-28), baked into CI.
+
+    Validates the whitening *finding* — not just the transform math — on
+    synthetic ground truth, against a fully independent numpy
+    implementation that shares no code with the script.
+
+    Construction: a timbre-dominated cone where the work-identity signal
+    lives in LOW-variance directions (timbre amplitude 8x work amplitude).
+    Raw cosine is dominated by timbre -> poor same-work retrieval.
+    Whitening downweights the high-variance timbre directions -> should
+    recover same-work retrieval.
+
+    Three assertions:
+      1. Independent numpy whitening + brute-force MAP shows
+         whiten >> raw (the mechanism is real).
+      2. The script's whitening transform produces the SAME cosine
+         geometry as independent numpy ZCA (implementation correct).
+      3. The script's streaming MAP matches the independent brute-force
+         MAP (metric correct end-to-end).
+
+    This is the regression form of the manual audit that confirmed the
+    +109-425% real-data gains were not a code artifact.
+    """
+    import numpy as np  # noqa: PLC0415
+
+    from marble.utils.retrieval_metrics import (  # noqa: PLC0415
+        compute_retrieval_metrics_streaming,
+    )
+
+    mod = _load_module()
+    rng = np.random.default_rng(0)
+    n_works, n_timbres, n_var, H = 120, 8, 3, 64
+    timbre_amp, work_amp, noise = 8.0, 1.0, 0.5
+    work_vecs = rng.standard_normal((n_works, H))
+    timbre_vecs = rng.standard_normal((n_timbres, H))
+    embs, wids = [], []
+    for w in range(n_works):
+        for _v in range(n_var):
+            mvec = work_vecs[w] + 0.15 * rng.standard_normal(H)
+            for c in range(n_timbres):
+                embs.append(
+                    timbre_amp * timbre_vecs[c] + work_amp * mvec + noise * rng.standard_normal(H)
+                )
+                wids.append(w)
+    embs = np.asarray(embs, dtype=np.float64)
+    embs = embs / np.linalg.norm(embs, axis=1, keepdims=True)
+    wids = np.asarray(wids)
+
+    def indep_whiten(X, alpha=1.0):
+        mu = X.mean(0, keepdims=True)
+        Xc = X - mu
+        cov = (Xc.T @ Xc) / X.shape[0]
+        ev, U = np.linalg.eigh(np.clip(cov, None, None))
+        ev = np.clip(ev, 0, None)
+        scale = np.power(np.clip(ev, 1e-12, None), -alpha / 2.0)
+        return Xc @ ((U * scale) @ U.T)
+
+    def indep_map(X, work_ids):
+        X = X / np.linalg.norm(X, axis=1, keepdims=True)
+        sim = X @ X.T
+        np.fill_diagonal(sim, -np.inf)
+        aps = []
+        for i in range(X.shape[0]):
+            order = np.argsort(-sim[i])
+            order = order[order != i]  # drop self from ranking
+            rel = work_ids[order] == work_ids[i]
+            nr = int(rel.sum())
+            if nr == 0:
+                continue
+            hits = np.cumsum(rel)
+            ranks = np.arange(1, len(rel) + 1)
+            aps.append(float((rel * hits / ranks).sum() / nr))
+        return float(np.mean(aps))
+
+    # 1. Mechanism: independent whitening recovers work-identity.
+    raw_map = indep_map(embs, wids)
+    w_indep = indep_whiten(embs, 1.0)
+    whit_map = indep_map(w_indep, wids)
+    assert whit_map > raw_map * 2.0, (
+        f"whitening should recover buried signal: raw={raw_map:.3f} whit={whit_map:.3f}"
+    )
+
+    # 2. Script transform == independent transform (sign/rotation-invariant
+    # comparison via the similarity matrix on a subset). Cast to float32
+    # to match the real loader (which stores fp32 per-file embeddings).
+    embs_t = torch.from_numpy(embs).float()
+    mu, eigvals, eigvecs = mod._compute_corpus_pca(embs_t)
+    w_script = mod._apply_treatment("whiten-a1.0", embs_t, mu, eigvals, eigvecs).numpy()
+    sw = w_script / np.linalg.norm(w_script, axis=1, keepdims=True)
+    iw = w_indep / np.linalg.norm(w_indep, axis=1, keepdims=True)
+    sub = rng.choice(embs.shape[0], size=300, replace=False)
+    sim_diff = np.abs((sw[sub] @ sw[sub].T) - (iw[sub] @ iw[sub].T)).max()
+    assert sim_diff < 1e-3, f"script vs independent whitening geometry diff {sim_diff:.2e}"
+
+    # 3. Script streaming MAP == independent brute-force MAP.
+    wids_t = torch.tensor(wids, dtype=torch.long)
+    script_map = compute_retrieval_metrics_streaming(
+        F.normalize(torch.from_numpy(w_script), dim=-1),
+        wids_t,
+        recall_ks=(),
+        include_r_precision=False,
+        include_median_rank=False,
+        include_map=True,
+        device="cpu",
+        batch=256,
+    )["map"]
+    assert abs(script_map - whit_map) < 0.01, (
+        f"script streaming MAP {script_map:.4f} != independent {whit_map:.4f}"
+    )
+
+
 def test_apply_treatment_abtt_removes_top_k_pc_variance():
     """After ABTT-K, the variance along the top-K principal directions
     should be (nearly) zero in the residual."""
