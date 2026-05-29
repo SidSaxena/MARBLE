@@ -238,10 +238,28 @@ as a discovery.
    **An inductive (held-out-fit) test is the gate before any stronger
    claim** — see §6.
 
-3. **Layer choice.** We only whitened each encoder's *best-raw* layer.
-   Whitening could change *which* layer is best (a heavier-cone layer
-   might overtake once whitened). Untested. A focused follow-up: whiten
-   3-4 candidate layers per encoder (e.g. MuQ {L8, L11, L12}).
+3. **Layer choice — tested for MuQ; the optimal layer does *not* shift.**
+   We whitened MuQ {L8, L11, L12} (overall MAP, `--skip-perpair`):
+
+   | layer | raw MAP | whiten-a1.0 MAP | gain |
+   |---|---:|---:|---:|
+   | L8 | 0.082 | 0.351 | **+327 %** (×4.3) |
+   | L11 | 0.170 | 0.382 | +125 % (×2.3) |
+   | L12 | 0.181 | 0.385 | +113 % (×2.1) |
+
+   Three findings: (a) **the optimal layer doesn't move** — L12 ≥ L11 >
+   L8 both raw and whitened, and `whiten-a1.0` is the best treatment at
+   every layer. (b) **Whitening collapses the inter-layer gap**: raw
+   spread is 2.2× (L8 is 45 % of L12), whitened spread is just 1.1× (L8
+   is 91 % of L12) — layer choice goes from critical to nearly
+   irrelevant. (c) **Gain scales inversely with raw quality**: the
+   weakest, most timbre-dominated layer (L8, which had the *highest*
+   within-timbre diagonal raw) benefits most, because whitening has the
+   most nuisance variance to flatten. Post-whitening all three converge
+   to effective-rank ~903–905 (near full 1024-dim). Net: stick with
+   L11/L12 (tied whitened); no reason to switch layers after whitening.
+   Per-encoder layer studies for CLaMP3/MERT/OMARRQ not yet run, but the
+   MuQ pattern (convergence, no shift) is the expectation.
 
 4. **Cross-instrument confirmation pending.** These are *overall* MAP
    numbers (mixing within- and cross-timbre). The overall gain almost
@@ -257,9 +275,11 @@ as a discovery.
 In rough priority:
 
 1. **Run the per-condition grid for whiten-a1.0** (the held per-pair
-   run) — confirm and quantify the cross-instrument gain.
-2. **Layer study** — whiten MuQ {L8, L11, L12} and the other encoders'
-   candidate layers; see whether the optimal layer shifts.
+   run) — confirm and quantify the cross-instrument gain. *In progress:*
+   running at each encoder's cross-instrument-optimal layer (CLaMP3 L4,
+   MERT L11, MuQ L11, OMARRQ L15).
+2. ~~**Layer study**~~ — **done for MuQ** (§7.3): optimal layer does not
+   shift; whitening converges the layers. Other encoders not yet swept.
 3. **Bake `test/map_whitened` into the probe** — mirror the existing
    `map_centered` path so every future sweep logs the whitened metric
    as a first-class number (~30-line addition to
