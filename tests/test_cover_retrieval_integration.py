@@ -113,7 +113,7 @@ def test_covers80_style_skips_condition_metrics():
     task.on_test_epoch_end()
 
     # Headline trim set (default — log_extended_retrieval_metrics=False).
-    for key in ("test/map", "test/map_centered"):
+    for key in ("test/map", "test/map_centered", "test/map_whitened"):
         assert key in log, f"missing headline key {key}"
 
     # Headline secondary metrics — raw only, no _centered duplicates.

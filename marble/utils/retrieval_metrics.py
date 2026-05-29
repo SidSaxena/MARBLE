@@ -1311,3 +1311,42 @@ def anisotropy_metrics(
         "top1_sv_share": top1,
         "effective_rank": eff_rank,
     }
+
+
+def zca_whiten(
+    embs: torch.Tensor,
+    alpha: float = 1.0,
+    eps_floor: float = 1e-12,
+) -> torch.Tensor:
+    """ZCA-whiten a ``(N, H)`` embedding matrix for cosine retrieval.
+
+    Computes ``e_w = U Λ^(−α/2) Uᵀ (e − μ)`` where ``(μ, Λ, U)`` are the
+    corpus mean and the eigendecomposition of the centered covariance.
+    ``α=1.0`` is full whitening; ``α=0.0`` collapses to plain centering.
+    The result is **not** L2-normalised — the caller renormalises before
+    the metric pass (whitening here is a cosine-retrieval preprocessing
+    step, not an identity-covariance guarantee on the sphere).
+
+    The eigendecomposition runs in **fp64** for stability: cone-collapsed
+    encoders have ``λ_min/λ_max < 1e-6`` and ``Λ^(−1/2)`` blows up tiny
+    eigenvalues in fp32. ``eps_floor`` clamps the eigenvalues before the
+    negative power so the ~zero tail doesn't divide by zero. Output is
+    returned in the input dtype.
+
+    This is a **transductive** transform (μ, Σ fit on ``embs`` itself),
+    matching the centered-MAP protocol. It is a known technique, not a
+    novel one — see ``docs/whitening_ablation.md`` for prior art
+    (BERT-whitening, All-But-The-Top) and the generalisation caveat.
+    """
+    if embs.dim() != 2:
+        raise ValueError(f"Expected 2D (N, H) embeddings; got {tuple(embs.shape)}")
+    n = embs.shape[0]
+    embs64 = embs.detach().to(torch.float64)
+    centered = embs64 - embs64.mean(dim=0, keepdim=True)
+    sigma = (centered.T @ centered) / float(n)
+    # eigh: ascending eigenvalues; PSD by construction (clamp fp roundoff).
+    eigvals, eigvecs = torch.linalg.eigh(sigma)
+    eigvals = eigvals.clamp(min=0.0)
+    scale = eigvals.clamp(min=eps_floor).pow(-alpha / 2.0)
+    whitened = ((centered @ eigvecs) * scale.unsqueeze(0)) @ eigvecs.T
+    return whitened.to(embs.dtype)

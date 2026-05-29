@@ -23,6 +23,7 @@ from marble.utils.retrieval_metrics import (
     median_rank_first_hit,
     r_precision,
     recall_at_k,
+    zca_whiten,
 )
 
 # ──────────────────────────────────────────────────────────────────────
@@ -765,3 +766,53 @@ def test_metrics_are_bounded_in_unit_interval():
     assert 0.0 <= r_precision(sim, work_ids) <= 1.0
     med = median_rank_first_hit(sim, work_ids)
     assert 1.0 <= med <= float(N - 1)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# zca_whiten
+# ──────────────────────────────────────────────────────────────────────
+def test_zca_whiten_alpha0_equals_centering():
+    """α=0 must reduce to plain mean-centering (no rescaling)."""
+    torch.manual_seed(0)
+    embs = torch.randn(200, 16) * torch.arange(1, 17).float() + 3.0
+    out = zca_whiten(embs, alpha=0.0)
+    expected = embs - embs.mean(dim=0, keepdim=True)
+    assert torch.allclose(out, expected, atol=1e-6)
+
+
+def test_zca_whiten_alpha1_gives_identity_covariance():
+    """Full whitening (α=1) must produce ≈ identity covariance (pre-norm)."""
+    torch.manual_seed(1)
+    # Strongly anisotropic: independent columns with very different scales.
+    base = torch.randn(2000, 8)
+    embs = base * torch.tensor([10.0, 5.0, 1.0, 0.3, 8.0, 2.0, 0.1, 4.0])
+    w = zca_whiten(embs, alpha=1.0).double()
+    wc = w - w.mean(dim=0, keepdim=True)
+    cov = (wc.T @ wc) / wc.shape[0]
+    assert torch.allclose(cov, torch.eye(8, dtype=torch.float64), atol=5e-2)
+
+
+def test_zca_whiten_matches_independent_numpy():
+    """Cosine geometry must match an independent numpy ZCA implementation."""
+    import numpy as np
+
+    torch.manual_seed(2)
+    embs = torch.randn(300, 12) * torch.arange(1, 13).float()
+    out = torch.nn.functional.normalize(zca_whiten(embs, alpha=1.0), dim=-1)
+
+    X = embs.double().numpy()
+    Xc = X - X.mean(axis=0, keepdims=True)
+    cov = (Xc.T @ Xc) / X.shape[0]
+    evals, evecs = np.linalg.eigh(cov)
+    scale = np.clip(evals, 1e-12, None) ** -0.5
+    iw = (Xc @ evecs) * scale @ evecs.T
+    iw = iw / np.linalg.norm(iw, axis=1, keepdims=True)
+    # Sign/rotation-invariant comparison via the similarity matrix.
+    sim_ours = (out @ out.T).numpy()
+    sim_np = iw @ iw.T
+    assert np.abs(sim_ours - sim_np).max() < 1e-5
+
+
+def test_zca_whiten_rejects_non_2d():
+    with pytest.raises(ValueError):
+        zca_whiten(torch.randn(4, 5, 6))

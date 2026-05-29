@@ -84,13 +84,13 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         self.cache_pool_time = bool(cache_pool_time)
         self._init_cache_state()
 
-        # Default trim set logs ~7 retrieval metrics (map, map_centered,
-        # recall@10, r_precision, median_rank, anisotropy/{mean_vec_norm,
-        # effective_rank}) plus the per-condition triplet when present.
-        # Set this True to also log map@1, mrr, the full recall@K range
-        # (1/5/10/50/100), hit_rate@K, the _centered duplicates of
-        # secondary metrics, and the two extra anisotropy lines —
-        # ~26 additional keys. Useful for leitmotif/no-ground-truth runs
+        # Default trim set logs ~8 retrieval metrics (map, map_centered,
+        # map_whitened, recall@10, r_precision, median_rank,
+        # anisotropy/{mean_vec_norm, effective_rank}) plus the per-condition
+        # triplet when present. Set this True to also log map@1, mrr, the
+        # full recall@K range (1/5/10/50/100), hit_rate@K, the _centered and
+        # _whitened duplicates of secondary metrics, and the two extra
+        # anisotropy lines. Useful for leitmotif/no-ground-truth runs
         # where the K-sweep is the actual scientific question.
         self.log_extended_retrieval_metrics = bool(log_extended_retrieval_metrics)
 
@@ -252,6 +252,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             compute_perpair_map_all_streaming,
             compute_retrieval_metrics,
             compute_retrieval_metrics_streaming,
+            zca_whiten,
         )
 
         # Resolve metric device. ``"auto"`` → cuda if available, else cpu.
@@ -375,6 +376,54 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             if "map@1" in metrics_c:
                 self.log("test/map@1_centered", metrics_c["map@1"], rank_zero_only=True)
             self.log("test/mrr_centered", metrics_c["mrr"], rank_zero_only=True)
+
+        # ── Whitening variant: ZCA-whiten then cosine ───────────────────────
+        # Full whitening (α=1.0) rescales every principal direction to unit
+        # variance before the L2-norm — up-weighting the low-variance
+        # directions that carry work-identity and downweighting the
+        # high-variance nuisance (e.g. timbre) directions. On the
+        # cone-collapsed music encoders this lifts cross-condition retrieval
+        # MAP substantially (docs/whitening_ablation.md). Transductive fit on
+        # the test corpus — same protocol as map_centered. Known technique
+        # (BERT-whitening, Su 2021); logged as a first-class metric.
+        embs_w = F.normalize(zca_whiten(embs, alpha=1.0), dim=-1)
+        recall_ks_w = (
+            [k for k in (1, 5, 10, 50, 100) if k < N] if self.log_extended_retrieval_metrics else []
+        )
+        hit_ks_w = [k for k in (1, 5, 10) if k < N] if self.log_extended_retrieval_metrics else []
+        map_at_ks_w = [1] if self.log_extended_retrieval_metrics and N > 1 else []
+        whiten_kwargs = dict(
+            recall_ks=recall_ks_w,
+            hit_ks=hit_ks_w,
+            include_r_precision=self.log_extended_retrieval_metrics,
+            include_median_rank=self.log_extended_retrieval_metrics,
+            include_map=True,
+            map_at_ks=map_at_ks_w,
+            include_mrr=self.log_extended_retrieval_metrics,
+        )
+        if use_streaming:
+            metrics_w = compute_retrieval_metrics_streaming(
+                embs_w, work_ids, device=_md, **whiten_kwargs
+            )
+        else:
+            metrics_w = compute_retrieval_metrics(embs_w @ embs_w.T, work_ids, **whiten_kwargs)
+        map_whitened = metrics_w["map"]
+        print(f"[CoverRetrieval] MAP (whitened) = {map_whitened:.4f}")
+        self.log("test/map_whitened", map_whitened, prog_bar=False, rank_zero_only=True)
+        if self.log_extended_retrieval_metrics:
+            for k in (1, 5, 10, 50, 100):
+                key = f"recall@{k}"
+                if key in metrics_w:
+                    self.log(f"test/{key}_whitened", metrics_w[key], rank_zero_only=True)
+            for k in (1, 5, 10):
+                key = f"hit_rate@{k}"
+                if key in metrics_w:
+                    self.log(f"test/{key}_whitened", metrics_w[key], rank_zero_only=True)
+            self.log("test/r_precision_whitened", metrics_w["r_precision"], rank_zero_only=True)
+            self.log("test/median_rank_whitened", metrics_w["median_rank"], rank_zero_only=True)
+            if "map@1" in metrics_w:
+                self.log("test/map@1_whitened", metrics_w["map@1"], rank_zero_only=True)
+            self.log("test/mrr_whitened", metrics_w["mrr"], rank_zero_only=True)
 
         # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
         # Only meaningful when the dataset carries a per-item condition
