@@ -825,6 +825,46 @@ def test_zca_whiten_rejects_bad_alpha():
         zca_whiten(torch.randn(50, 8), alpha=2.5)
 
 
+def test_zca_whiten_rejects_negative_eps_rel():
+    with pytest.raises(ValueError):
+        zca_whiten(torch.randn(50, 8), eps_rel=-1e-3)
+
+
+def test_zca_whiten_eps_rel_zero_is_default():
+    """eps_rel=0 must be identical to the pure (unregularised) transform."""
+    torch.manual_seed(0)
+    embs = torch.randn(200, 12) * torch.arange(1, 13).float()
+    assert torch.allclose(zca_whiten(embs, 1.0), zca_whiten(embs, 1.0, eps_rel=0.0), atol=0)
+
+
+def test_zca_whiten_eps_rel_changes_result_and_stays_finite():
+    """On a rank-deficient input (N < H), the regularised transform must be
+    finite and meaningfully different from pure whitening — the ridge changes
+    how the small/near-null eigen-directions are rescaled, which is the whole
+    point of the small-corpus rescue (retrieval-quality evidence lives in the
+    probe integration + the real-data Covers80 numbers, not in this norm)."""
+    torch.manual_seed(1)
+    embs = torch.nn.functional.normalize(torch.randn(20, 256), dim=-1)  # N=20 < H=256
+    pure = zca_whiten(embs, 1.0, eps_rel=0.0)
+    reg = zca_whiten(embs, 1.0, eps_rel=1e-2)
+    assert torch.isfinite(reg).all()
+    # The ridge changes how near-null directions are rescaled, so the output
+    # must differ from pure whitening (magnitude of the retrieval rescue is
+    # validated on real Covers80 + the probe integration test, not here).
+    assert not torch.allclose(pure, reg, atol=1e-4), "eps_rel had no effect"
+
+
+def test_zca_whiten_large_eps_rel_approaches_centering():
+    """As eps_rel → large the ridge dominates every eigenvalue, so the scale
+    becomes ~constant and whitening collapses back to plain centering (up to
+    L2-norm). A clean limiting check on the regularisation knob."""
+    torch.manual_seed(2)
+    embs = torch.randn(300, 16) * torch.arange(1, 17).float()
+    heavy = torch.nn.functional.normalize(zca_whiten(embs, 1.0, eps_rel=1e6), dim=-1)
+    centered = torch.nn.functional.normalize(embs - embs.mean(0, keepdim=True), dim=-1)
+    assert torch.allclose(heavy, centered, atol=1e-3)
+
+
 def test_zca_whiten_correlated_covariance_gives_identity():
     """Identity-cov must hold for a genuinely *rotated* (correlated)
     covariance, not just a diagonal one — this exercises the U Uᵀ rotation,

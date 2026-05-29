@@ -1316,39 +1316,49 @@ def anisotropy_metrics(
 def zca_whiten(
     embs: torch.Tensor,
     alpha: float = 1.0,
+    eps_rel: float = 0.0,
     eps_floor: float = 1e-12,
 ) -> torch.Tensor:
     """ZCA-whiten a ``(N, H)`` embedding matrix for cosine retrieval.
 
-    Computes ``e_w = U Λ^(−α/2) Uᵀ (e − μ)`` where ``(μ, Λ, U)`` are the
-    corpus mean and the eigendecomposition of the centered covariance.
-    ``α=1.0`` is full whitening; ``α=0.0`` collapses to plain centering.
-    The result is **not** L2-normalised — the caller renormalises before
-    the metric pass (whitening here is a cosine-retrieval preprocessing
-    step, not an identity-covariance guarantee on the sphere).
+    Computes ``e_w = U (Λ + ε·λ_max·I)^(−α/2) Uᵀ (e − μ)`` where
+    ``(μ, Λ, U)`` are the corpus mean and the eigendecomposition of the
+    centered covariance. ``α=1.0`` is full whitening; ``α=0.0`` collapses
+    to plain centering. The result is **not** L2-normalised — the caller
+    renormalises (whitening here is a cosine-retrieval preprocessing step,
+    not an identity-covariance guarantee on the sphere).
+
+    ``eps_rel`` adds a **relative Tikhonov ridge** ``ε·λ_max`` to every
+    eigenvalue before the negative power. ``eps_rel=0`` (default) is pure
+    whitening. A positive ε is the fix for the small-corpus regime below:
+    it damps the amplification of near-zero (null-space) eigenvalues.
 
     The eigendecomposition runs in **fp64** for stability: cone-collapsed
     encoders have ``λ_min/λ_max < 1e-6`` and ``Λ^(−1/2)`` blows up tiny
-    eigenvalues in fp32. ``eps_floor`` clamps the eigenvalues before the
+    eigenvalues in fp32. ``eps_floor`` clamps eigenvalues before the
     negative power so the ~zero tail doesn't divide by zero. Output is
     returned in the input dtype.
 
     This is a **transductive** transform (μ, Σ fit on ``embs`` itself),
     matching the centered-MAP protocol. It is a known technique, not a
     novel one — see ``docs/whitening_ablation.md`` for prior art
-    (BERT-whitening, All-But-The-Top) and the generalisation caveat.
+    (BERT-whitening, All-But-The-Top, Spectral Tempering).
 
-    **Small-corpus caveat.** Σ is an ``(H, H)`` matrix estimated from
-    ``N`` rows. When ``N`` is not >> ``H`` the estimate is rank-deficient
-    / ill-conditioned and the transform overfits the input (it can make
-    retrieval *worse* than raw). This function still returns a finite
-    result there, but callers should gate downstream use on ``N >> H``
-    (the probe skips ``map_whitened`` below ``2*H``).
+    **Small-corpus regime.** Σ is ``(H, H)`` estimated from ``N`` rows.
+    When ``N < H`` it is rank-deficient: ~``H−(N−1)`` directions have
+    near-zero variance, and **pure** whitening (``eps_rel=0``) rescales
+    them to unit variance — amplifying pure estimation noise and
+    *collapsing* retrieval (verified on Covers80: α=1.0 MAP 0.04 vs raw
+    0.17). A relative ridge (``eps_rel≈1e-2``) rescues it (MAP back to
+    ~0.25, > raw) by leaving the null directions small. The probe uses
+    ``eps_rel=1e-2`` when ``N < 2*H`` and pure whitening otherwise.
     """
     if embs.dim() != 2:
         raise ValueError(f"Expected 2D (N, H) embeddings; got {tuple(embs.shape)}")
     if not 0.0 <= alpha <= 2.0:
         raise ValueError(f"zca_whiten: alpha must be in [0, 2]; got {alpha}")
+    if eps_rel < 0.0:
+        raise ValueError(f"zca_whiten: eps_rel must be >= 0; got {eps_rel}")
     n = embs.shape[0]
     embs64 = embs.detach().to(torch.float64)
     centered = embs64 - embs64.mean(dim=0, keepdim=True)
@@ -1356,6 +1366,8 @@ def zca_whiten(
     # eigh: ascending eigenvalues; PSD by construction (clamp fp roundoff).
     eigvals, eigvecs = torch.linalg.eigh(sigma)
     eigvals = eigvals.clamp(min=0.0)
+    if eps_rel > 0.0:
+        eigvals = eigvals + eps_rel * float(eigvals.max())
     scale = eigvals.clamp(min=eps_floor).pow(-alpha / 2.0)
     whitened = ((centered @ eigvecs) * scale.unsqueeze(0)) @ eigvecs.T
     return whitened.to(embs.dtype)

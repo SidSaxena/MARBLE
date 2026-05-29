@@ -113,14 +113,12 @@ def test_covers80_style_skips_condition_metrics():
     task.on_test_epoch_end()
 
     # Headline trim set (default — log_extended_retrieval_metrics=False).
-    for key in ("test/map", "test/map_centered"):
+    # map_whitened IS logged here too: N=20 < 2*H=32 (Covers80-style small
+    # corpus) takes the REGULARISED whitening path (eps_rel>0) rather than
+    # being skipped — the rank-deficient collapse is damped by the ridge.
+    for key in ("test/map", "test/map_centered", "test/map_whitened"):
         assert key in log, f"missing headline key {key}"
-
-    # map_whitened is GATED: N=20 < 2*H=32 here (Covers80-style small
-    # corpus), so the under-determined-covariance guard skips it.
-    assert "test/map_whitened" not in log, (
-        "map_whitened must be skipped when N < 2*H (degenerate covariance)"
-    )
+    assert 0.0 <= log["test/map_whitened"] <= 1.0
 
     # Headline secondary metrics — raw only, no _centered duplicates.
     assert "test/recall@10" in log

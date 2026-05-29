@@ -283,11 +283,10 @@ In rough priority:
    shift; whitening converges the layers. Other encoders not yet swept.
 3. ~~**Bake `test/map_whitened` into the probe**~~ — **done**: `zca_whiten`
    in `retrieval_metrics.py`, logged as `test/map_whitened` by
-   `CoverRetrievalTask` alongside `map_centered`. **Gated to N ≥ 2·H** —
-   skipped (with a warning) on small corpora like Covers80 (N≈160 < H),
-   where the (H,H) covariance is under-determined and transductive
-   whitening overfits / can fall below raw (verified: 0.080 vs 0.136 on
-   a 160×1024 cone). The validated regime is N=102 960 ≫ H=1024.
+   `CoverRetrievalTask` alongside `map_centered`. Small corpora (N < 2·H)
+   use **regularised** whitening (`eps_rel=1e-2`) to avoid the
+   rank-deficient collapse; N ≥ 2·H uses pure whitening unchanged. See
+   §10 for the α-degeneration study that motivated this policy.
 4. **Inductive generalisation test (the novelty gate, §6/§7.2)** — fit
    μ, Σ on a disjoint reference set and evaluate on held-out works, and
    run the ablation on SHS100K / Covers80, to see whether the gain holds
@@ -343,7 +342,54 @@ the remaining gate.
 
 ---
 
-## 10. Reproducibility
+## 10. Small-corpus regime — α-degeneration and the regularised guard
+
+Covers80 (N=160 ≪ H=768/1024) is the rank-deficient regime the probe
+guard targets. We swept the full α grid + ABTT + relative-Tikhonov
+regularisation across all four encoders (cached, CPU). Overall MAP:
+
+| encoder (H) | raw | whiten α=0.9 | whiten α=1.0 | best regularised (erel) |
+|---|---:|---:|---:|---:|
+| CLaMP3 (768) | 0.235 | 0.283 | **0.059** | 0.276 |
+| MERT-v1-95M (768) | 0.169 | 0.261 | **0.043** | 0.249 |
+| MuQ (1024) | 0.373 | 0.545 | **0.067** | **0.559** |
+| OMARRQ-25hz (1024) | 0.194 | 0.340 | **0.067** | 0.372 |
+
+Findings (universal across H=768 and 1024):
+
+1. **Knife-edge collapse at α=1.0.** Fractional whitening (α≤0.9) *helps*
+   +20–75 % over raw even at N<H; **pure α=1.0 collapses** to ~0.04–0.07
+   (well below raw). It is not a gradual fade — α=0.9 is near-peak, α=1.0
+   falls off a cliff.
+2. **Root cause is rank-deficiency, not precision.** With N<H, ~H−(N−1)
+   eigen-directions have ~zero variance; α=1.0 rescales them to unit
+   variance, amplifying pure estimation noise that swamps the cosine
+   after L2-norm. The probe's **fp64** path collapses *identically* to
+   the script's fp32 (Covers80 MERT L7: 0.0405 vs 0.043) — confirming
+   it's rank, not rounding.
+3. **Regularisation rescues it.** A relative-Tikhonov ridge
+   (`whiten-a1.0-erel-1e-2`) restores MAP to ≥ the α=0.9 level for every
+   encoder (MuQ/OMARRQ with `erel-1e-3` even *exceed* α=0.9). Verified in
+   the probe's fp64 path (MERT L7: 0.249 vs raw 0.169).
+
+**Guard policy change.** The probe previously *skipped* `map_whitened`
+when N < 2·H. It now **regularises instead**: `zca_whiten` gained an
+`eps_rel` (relative-Tikhonov) parameter, and `CoverRetrievalTask` uses
+`eps_rel=1e-2` when N < 2·H, pure whitening (`eps_rel=0`) otherwise. So
+`map_whitened` is always logged and trustworthy: at N≫H (the validated
+VGMIDITVar regime) behaviour is unchanged; at N<H it gets the rescuing
+ridge instead of a collapsed number or a missing metric.
+
+> **Scope caveat.** These Covers80 numbers are **diagnostic of the
+> degeneration boundary**, not a deployment result — tuning α/ε on the
+> eval set is transductive double-dipping. The takeaway is the *policy*
+> (regularise when small-N), not the specific MAPs. Note also that the
+> N<H collapse is purely a small-corpus artifact: at N≫H (e.g.
+> frame-level leitmotif retrieval, N in the 100k+) pure α=1.0 is safe.
+
+---
+
+## 11. Reproducibility
 
 ```bash
 # Fast pass (overall metrics, all treatments) for one encoder/layer:

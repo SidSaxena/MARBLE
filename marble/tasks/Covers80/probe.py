@@ -387,61 +387,62 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # the test corpus — same protocol as map_centered. Known technique
         # (BERT-whitening, Su 2021); logged as a first-class metric.
         #
-        # GATE: whitening estimates an (H, H) covariance from N rows. When N
-        # is not >> H the estimate is rank-deficient / ill-conditioned and the
-        # transductive transform overfits the eval set — map_whitened can fall
-        # *below* raw and is seed-unstable (verified on a Covers80-like
-        # 160×1024 cone: 0.080 vs 0.136 raw). Only compute it when N >= 2*H so
-        # the number is trustworthy; the validated regime is N=102960 >> H.
+        # SMALL-CORPUS REGULARISATION: whitening estimates an (H, H)
+        # covariance from N rows. When N < ~H it is rank-deficient and PURE
+        # whitening rescales the ~H-(N-1) near-zero directions to unit
+        # variance — amplifying estimation noise and *collapsing* retrieval
+        # (verified on Covers80, N=160<H=768: pure alpha=1.0 MAP 0.04 vs raw
+        # 0.17). A relative-Tikhonov ridge eps_rel rescues it: regularised
+        # whitening lifts MAP +16-67% over raw even at N<H across all four
+        # encoders. So instead of skipping, regularise when N < 2*H; keep
+        # pure whitening (best at N>>H, the validated VGMIDITVar regime)
+        # otherwise. eps_rel=1e-2 robustly rescues all tested encoders
+        # (docs/whitening_ablation.md).
         H_dim = embs.shape[1]
-        if 2 * H_dim > N:
+        whiten_eps_rel = 1e-2 if 2 * H_dim > N else 0.0
+        if whiten_eps_rel:
             print(
-                f"[CoverRetrieval] skipping map_whitened: N={N} < 2*H={2 * H_dim} "
-                f"(covariance under-determined; whitening unreliable for small corpora)"
+                f"[CoverRetrieval] map_whitened: N={N} < 2*H={2 * H_dim} -> regularised "
+                f"whitening (eps_rel={whiten_eps_rel}) to avoid rank-deficient collapse"
+            )
+        embs_w = F.normalize(zca_whiten(embs, alpha=1.0, eps_rel=whiten_eps_rel), dim=-1)
+        recall_ks_w = (
+            [k for k in (1, 5, 10, 50, 100) if k < N] if self.log_extended_retrieval_metrics else []
+        )
+        hit_ks_w = [k for k in (1, 5, 10) if k < N] if self.log_extended_retrieval_metrics else []
+        map_at_ks_w = [1] if self.log_extended_retrieval_metrics and N > 1 else []
+        whiten_kwargs = dict(
+            recall_ks=recall_ks_w,
+            hit_ks=hit_ks_w,
+            include_r_precision=self.log_extended_retrieval_metrics,
+            include_median_rank=self.log_extended_retrieval_metrics,
+            include_map=True,
+            map_at_ks=map_at_ks_w,
+            include_mrr=self.log_extended_retrieval_metrics,
+        )
+        if use_streaming:
+            metrics_w = compute_retrieval_metrics_streaming(
+                embs_w, work_ids, device=_md, **whiten_kwargs
             )
         else:
-            embs_w = F.normalize(zca_whiten(embs, alpha=1.0), dim=-1)
-            recall_ks_w = (
-                [k for k in (1, 5, 10, 50, 100) if k < N]
-                if self.log_extended_retrieval_metrics
-                else []
-            )
-            hit_ks_w = (
-                [k for k in (1, 5, 10) if k < N] if self.log_extended_retrieval_metrics else []
-            )
-            map_at_ks_w = [1] if self.log_extended_retrieval_metrics and N > 1 else []
-            whiten_kwargs = dict(
-                recall_ks=recall_ks_w,
-                hit_ks=hit_ks_w,
-                include_r_precision=self.log_extended_retrieval_metrics,
-                include_median_rank=self.log_extended_retrieval_metrics,
-                include_map=True,
-                map_at_ks=map_at_ks_w,
-                include_mrr=self.log_extended_retrieval_metrics,
-            )
-            if use_streaming:
-                metrics_w = compute_retrieval_metrics_streaming(
-                    embs_w, work_ids, device=_md, **whiten_kwargs
-                )
-            else:
-                metrics_w = compute_retrieval_metrics(embs_w @ embs_w.T, work_ids, **whiten_kwargs)
-            map_whitened = metrics_w["map"]
-            print(f"[CoverRetrieval] MAP (whitened) = {map_whitened:.4f}")
-            self.log("test/map_whitened", map_whitened, prog_bar=False, rank_zero_only=True)
-            if self.log_extended_retrieval_metrics:
-                for k in (1, 5, 10, 50, 100):
-                    key = f"recall@{k}"
-                    if key in metrics_w:
-                        self.log(f"test/{key}_whitened", metrics_w[key], rank_zero_only=True)
-                for k in (1, 5, 10):
-                    key = f"hit_rate@{k}"
-                    if key in metrics_w:
-                        self.log(f"test/{key}_whitened", metrics_w[key], rank_zero_only=True)
-                self.log("test/r_precision_whitened", metrics_w["r_precision"], rank_zero_only=True)
-                self.log("test/median_rank_whitened", metrics_w["median_rank"], rank_zero_only=True)
-                if "map@1" in metrics_w:
-                    self.log("test/map@1_whitened", metrics_w["map@1"], rank_zero_only=True)
-                self.log("test/mrr_whitened", metrics_w["mrr"], rank_zero_only=True)
+            metrics_w = compute_retrieval_metrics(embs_w @ embs_w.T, work_ids, **whiten_kwargs)
+        map_whitened = metrics_w["map"]
+        print(f"[CoverRetrieval] MAP (whitened) = {map_whitened:.4f}")
+        self.log("test/map_whitened", map_whitened, prog_bar=False, rank_zero_only=True)
+        if self.log_extended_retrieval_metrics:
+            for k in (1, 5, 10, 50, 100):
+                key = f"recall@{k}"
+                if key in metrics_w:
+                    self.log(f"test/{key}_whitened", metrics_w[key], rank_zero_only=True)
+            for k in (1, 5, 10):
+                key = f"hit_rate@{k}"
+                if key in metrics_w:
+                    self.log(f"test/{key}_whitened", metrics_w[key], rank_zero_only=True)
+            self.log("test/r_precision_whitened", metrics_w["r_precision"], rank_zero_only=True)
+            self.log("test/median_rank_whitened", metrics_w["median_rank"], rank_zero_only=True)
+            if "map@1" in metrics_w:
+                self.log("test/map@1_whitened", metrics_w["map@1"], rank_zero_only=True)
+            self.log("test/mrr_whitened", metrics_w["mrr"], rank_zero_only=True)
 
         # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
         # Only meaningful when the dataset carries a per-item condition
