@@ -273,6 +273,47 @@ def test_parse_treatments_accepts_valid_and_rejects_invalid():
             raise AssertionError(f"expected SystemExit for treatment {bad!r}")
 
 
+def test_work_disjoint_split_no_work_in_both_sides():
+    """The inductive split must partition by work id — no work may appear in
+    both the fit and eval sets, and the union must cover every file."""
+    mod = _load_module()
+    # 12 works, 3 files each (e.g. 3 renditions), interleaved.
+    work_ids = [w for w in range(12) for _ in range(3)]
+    fit_idx, eval_idx = mod._work_disjoint_split(work_ids, fit_frac=0.5, seed=0)
+
+    fit_works = {work_ids[i] for i in fit_idx}
+    eval_works = {work_ids[i] for i in eval_idx}
+    assert fit_works.isdisjoint(eval_works), "work leaked across fit/eval"
+    assert fit_works | eval_works == set(work_ids), "split dropped works"
+    assert sorted(fit_idx + eval_idx) == list(range(len(work_ids))), "files lost"
+    # All renditions of a chosen work stay together → no singletons in eval.
+    from collections import Counter
+
+    eval_counts = Counter(work_ids[i] for i in eval_idx)
+    assert all(c == 3 for c in eval_counts.values()), "eval work lost renditions"
+
+
+def test_work_disjoint_split_deterministic_under_seed():
+    mod = _load_module()
+    work_ids = [w for w in range(20) for _ in range(2)]
+    a = mod._work_disjoint_split(work_ids, 0.5, seed=7)
+    b = mod._work_disjoint_split(work_ids, 0.5, seed=7)
+    c = mod._work_disjoint_split(work_ids, 0.5, seed=8)
+    assert a == b, "same seed must give identical split"
+    assert a != c, "different seed should (almost surely) differ"
+
+
+def test_work_disjoint_split_rejects_bad_frac():
+    mod = _load_module()
+    for bad in (0.0, 1.0, -0.2, 1.5):
+        try:
+            mod._work_disjoint_split([0, 0, 1, 1], bad, seed=0)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for fit_frac={bad}")
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Integration: synthetic-cache subprocess run
 # ──────────────────────────────────────────────────────────────────────
@@ -410,6 +451,78 @@ def test_smoke_run_produces_csv_with_all_treatments(tmp_path: Path):
         assert int(row["n_files"]) > 0
         assert float(row["lambda_max"]) > 0.0
         assert 0.0 <= float(row["map"]) <= 1.0
+    # Default run is transductive: fit set == eval set.
+    assert all(r["fit_mode"] == "transductive" for r in rows)
+    assert all(int(r["n_fit"]) == int(r["n_files"]) for r in rows)
+
+
+def test_smoke_run_inductive_fit_frac(tmp_path: Path):
+    """--fit-frac fits PCA on a work-disjoint held-out slice and evaluates on
+    the complement: fit_mode is recorded, n_fit + n_files (eval) partition the
+    corpus, and works don't leak across the split."""
+    cache_dir = tmp_path / "cache"
+    out_csv = tmp_path / "out.csv"
+    records, _ = _make_synthetic_cache(cache_dir)  # 6 works x 12 files = 72
+    jsonl = tmp_path / "test.jsonl"
+    _write_jsonl(jsonl, records)
+
+    def _run(fit_on: str, out: Path):
+        p = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--encoder",
+                "FakeEncoder",
+                "--encoder-tag",
+                "FakeEncoder-tag",
+                "--task-tag",
+                "VGMIDITVar-timbre",
+                "--layer",
+                "0",
+                "--jsonl",
+                str(jsonl),
+                "--cache-dir",
+                str(cache_dir),
+                "--out-csv",
+                str(out),
+                "--device",
+                "cpu",
+                "--batch",
+                "32",
+                "--treatments",
+                "raw",
+                "whiten-a1.0",
+                "--fit-frac",
+                "0.5",
+                "--fit-seed",
+                "0",
+                "--fit-on",
+                fit_on,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert p.returncode == 0, p.stdout + "\n---\n" + p.stderr
+        with open(out) as f:
+            return list(csv.DictReader(f))
+
+    ind_rows = _run("complement", out_csv)
+    trans_rows = _run("self", tmp_path / "out_self.csv")
+    assert ind_rows and trans_rows
+    # 6 works split 50/50 → 3 fit + 3 eval works → 36 files each.
+    for r in ind_rows:
+        assert r["fit_mode"].startswith("inductive"), r["fit_mode"]
+        assert int(r["n_fit"]) == 36 and int(r["n_files"]) == 36
+        assert 0.0 <= float(r["map"]) <= 1.0
+    # fit_on=self → transductive baseline on the SAME eval set.
+    for r in trans_rows:
+        assert r["fit_mode"].startswith("transductive-eval"), r["fit_mode"]
+        assert int(r["n_files"]) == 36
+    # raw is fit-independent → identical eval set → identical raw MAP.
+    ind_raw = next(float(r["map"]) for r in ind_rows if r["treatment"] == "raw")
+    trans_raw = next(float(r["map"]) for r in trans_rows if r["treatment"] == "raw")
+    assert abs(ind_raw - trans_raw) < 1e-6, "same eval set must give same raw MAP"
 
 
 def test_smoke_run_whitening_changes_top_k_ranking(tmp_path: Path):

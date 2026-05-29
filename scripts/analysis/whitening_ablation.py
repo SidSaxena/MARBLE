@@ -420,6 +420,8 @@ CSV_COLUMNS = [
     "layer",
     "n_files",
     "n_unique_conditions",
+    "fit_mode",
+    "n_fit",
     # PCA diagnostics
     "lambda_max",
     "lambda_min",
@@ -486,6 +488,31 @@ def _stratified_max_works(
     return [i for i, w in enumerate(work_ids) if w in chosen]
 
 
+def _work_disjoint_split(
+    work_ids: list[int],
+    fit_frac: float,
+    seed: int,
+) -> tuple[list[int], list[int]]:
+    """Partition file indices into (fit, eval) by **work id**, so no work
+    appears in both sides.
+
+    ``fit_frac`` of the *unique works* go to the fit set; the rest to eval.
+    Splitting by work (not by file) means every eval work keeps ALL its
+    renditions/covers — so each eval query retains its full set of relevant
+    peers and no singleton works are created. Deterministic under ``seed``.
+    """
+    if not 0.0 < fit_frac < 1.0:
+        raise ValueError(f"fit_frac must be in (0, 1); got {fit_frac}")
+    rng = torch.Generator().manual_seed(seed)
+    unique = sorted(set(work_ids))
+    perm = torch.randperm(len(unique), generator=rng).tolist()
+    n_fit = max(1, round(fit_frac * len(unique)))
+    fit_works = {unique[i] for i in perm[:n_fit]}
+    fit_idx = [i for i, w in enumerate(work_ids) if w in fit_works]
+    eval_idx = [i for i, w in enumerate(work_ids) if w not in fit_works]
+    return fit_idx, eval_idx
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -544,6 +571,45 @@ def main() -> int:
         "stratified). Useful for smoke testing.",
     )
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--fit-frac",
+        type=float,
+        default=None,
+        help="INDUCTIVE: hold out this fraction of *works* (work-disjoint) "
+        "to fit mu/Sigma on; evaluate retrieval on the complement. "
+        "Default (None) fits transductively on the eval corpus. Each eval "
+        "work keeps all its renditions, so peers are preserved.",
+    )
+    ap.add_argument(
+        "--fit-seed",
+        type=int,
+        default=0,
+        help="Seed for the --fit-frac work-disjoint split (deterministic).",
+    )
+    ap.add_argument(
+        "--fit-on",
+        choices=("complement", "self"),
+        default="complement",
+        help="With --fit-frac, which side fits mu/Sigma. 'complement' "
+        "(default) = INDUCTIVE: fit on the held-out works, eval on the rest. "
+        "'self' = TRANSDUCTIVE baseline on the SAME eval set (fit on the eval "
+        "works themselves). Run both with the same --fit-frac/--fit-seed to "
+        "compare inductive vs transductive on an identical eval set.",
+    )
+    ap.add_argument(
+        "--fit-jsonl",
+        type=Path,
+        default=None,
+        help="CROSS-CORPUS inductive: fit mu/Sigma on this separate corpus "
+        "(requires --fit-cache), apply the frozen transform to the eval "
+        "corpus (--jsonl). Mutually exclusive with --fit-frac.",
+    )
+    ap.add_argument(
+        "--fit-cache",
+        type=Path,
+        default=None,
+        help="Cache dir for --fit-jsonl's corpus (same encoder/layer).",
+    )
     ap.add_argument(
         "--dry-run",
         action="store_true",
@@ -613,15 +679,66 @@ def main() -> int:
         conds = [conds[i] for i in keep_idx]
         print(f"  subsampled to {args.max_works} work_ids -> {embs.shape[0]} files")
 
+    # ── Determine the PCA fit set (transductive vs inductive) ────────
+    # Default: fit mu/Sigma on the eval corpus itself (transductive — the
+    # protocol used for all prior whitening numbers). --fit-frac holds out
+    # a work-disjoint slice to fit on (inductive); --fit-jsonl fits on a
+    # separate corpus entirely (cross-corpus). Only the FIT set feeds
+    # _compute_corpus_pca; the eval set (embs/wids/conds) feeds the
+    # treatments + metric pass.
+    if args.fit_jsonl is not None and args.fit_frac is not None:
+        raise SystemExit("--fit-frac and --fit-jsonl are mutually exclusive.")
+
+    fit_embs = embs
+    fit_mode = "transductive"
+    if args.fit_jsonl is not None:
+        if args.fit_cache is None or not args.fit_cache.is_dir():
+            raise SystemExit("--fit-jsonl requires a valid --fit-cache dir.")
+        print(f"Loading FIT corpus (cross-corpus) from {args.fit_jsonl}")
+        fit_records = load_jsonl(str(args.fit_jsonl))
+        fit_embs, _, _, _, _ = _load_per_file_embeddings(fit_records, args.fit_cache, args.layer)
+        if fit_embs.shape[1] != embs.shape[1]:
+            raise SystemExit(
+                f"fit/eval H mismatch: {fit_embs.shape[1]} vs {embs.shape[1]} "
+                f"(different encoder/layer?)."
+            )
+        fit_mode = f"cross-corpus:{args.fit_jsonl.stem}"
+        print(f"  fit N={fit_embs.shape[0]}, eval N={embs.shape[0]}")
+    elif args.fit_frac is not None:
+        fit_idx, eval_idx = _work_disjoint_split(wids, args.fit_frac, args.fit_seed)
+        eval_embs = embs[eval_idx]
+        # Both modes evaluate on the IDENTICAL eval set; only the PCA fit
+        # source differs — so inductive vs transductive is a clean A/B.
+        if args.fit_on == "self":
+            fit_embs = eval_embs  # transductive baseline on the eval set
+            fit_mode = f"transductive-eval:frac{args.fit_frac}:seed{args.fit_seed}"
+        else:
+            fit_embs = embs[fit_idx]  # inductive: fit on the held-out works
+            fit_mode = f"inductive:frac{args.fit_frac}:seed{args.fit_seed}"
+        embs = eval_embs
+        wids = [wids[i] for i in eval_idx]
+        conds = [conds[i] for i in eval_idx]
+        print(
+            f"  work-disjoint split (fit_on={args.fit_on}): fit N={fit_embs.shape[0]}, "
+            f"eval N={embs.shape[0]} ({len(set(wids))} eval works)"
+        )
+
+    H_dim = fit_embs.shape[1]
+    if fit_embs.shape[0] < 2 * H_dim:
+        print(
+            f"  WARN: fit-set N={fit_embs.shape[0]} < 2*H={2 * H_dim}; the "
+            f"covariance is under-determined and whitening may be unreliable."
+        )
+
     if not any(c != -1 for c in conds):
         print("WARN: no records carry a condition; per-condition grid disabled.")
     unique_conds = sorted({c for c in conds if c != -1})
     print(f"  {len(unique_conds)} unique conditions: {unique_conds}")
 
-    # ── PCA fit ──────────────────────────────────────────────────────
-    print("Fitting PCA in fp64 ...")
+    # ── PCA fit (on the FIT set) ─────────────────────────────────────
+    print(f"Fitting PCA in fp64 (fit_mode={fit_mode}) ...")
     t0 = time.perf_counter()
-    mu, eigvals_desc, eigvecs_desc = _compute_corpus_pca(embs)
+    mu, eigvals_desc, eigvecs_desc = _compute_corpus_pca(fit_embs)
     t_pca = time.perf_counter() - t0
     lambda_max = float(eigvals_desc[0])
     nonzero_eigs = eigvals_desc[eigvals_desc > 1e-10 * lambda_max]
@@ -720,6 +837,8 @@ def main() -> int:
             "layer": args.layer,
             "n_files": embs.shape[0],
             "n_unique_conditions": len(unique_conds),
+            "fit_mode": fit_mode,
+            "n_fit": fit_embs.shape[0],
             "lambda_max": lambda_max,
             "lambda_min": lambda_min_nonzero,
             "lambda_ratio": lambda_max / max(lambda_min_nonzero, 1e-20),
@@ -746,7 +865,12 @@ def main() -> int:
         written_so_far = True
 
         # ── --verify cross-check ──────────────────────────────────────
-        if args.verify and treatment in ("raw", "centered"):
+        # Only valid transductively: the logged wandb MAP is over the FULL
+        # corpus, but inductive/cross-corpus runs evaluate on an eval subset
+        # (or fit elsewhere), so raw/centered MAP legitimately won't match.
+        if args.verify and fit_mode != "transductive" and treatment in ("raw", "centered"):
+            print(f"  --verify skipped for fit_mode={fit_mode} (eval set != logged full corpus).")
+        elif args.verify and treatment in ("raw", "centered"):
             summary_path = _find_wandb_summary(REPO, args.task_tag, args.encoder_tag, args.layer)
             if summary_path is None:
                 print(
