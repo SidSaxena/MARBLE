@@ -1337,9 +1337,18 @@ def zca_whiten(
     matching the centered-MAP protocol. It is a known technique, not a
     novel one — see ``docs/whitening_ablation.md`` for prior art
     (BERT-whitening, All-But-The-Top) and the generalisation caveat.
+
+    **Small-corpus caveat.** Σ is an ``(H, H)`` matrix estimated from
+    ``N`` rows. When ``N`` is not >> ``H`` the estimate is rank-deficient
+    / ill-conditioned and the transform overfits the input (it can make
+    retrieval *worse* than raw). This function still returns a finite
+    result there, but callers should gate downstream use on ``N >> H``
+    (the probe skips ``map_whitened`` below ``2*H``).
     """
     if embs.dim() != 2:
         raise ValueError(f"Expected 2D (N, H) embeddings; got {tuple(embs.shape)}")
+    if not 0.0 <= alpha <= 2.0:
+        raise ValueError(f"zca_whiten: alpha must be in [0, 2]; got {alpha}")
     n = embs.shape[0]
     embs64 = embs.detach().to(torch.float64)
     centered = embs64 - embs64.mean(dim=0, keepdim=True)

@@ -113,8 +113,14 @@ def test_covers80_style_skips_condition_metrics():
     task.on_test_epoch_end()
 
     # Headline trim set (default — log_extended_retrieval_metrics=False).
-    for key in ("test/map", "test/map_centered", "test/map_whitened"):
+    for key in ("test/map", "test/map_centered"):
         assert key in log, f"missing headline key {key}"
+
+    # map_whitened is GATED: N=20 < 2*H=32 here (Covers80-style small
+    # corpus), so the under-determined-covariance guard skips it.
+    assert "test/map_whitened" not in log, (
+        "map_whitened must be skipped when N < 2*H (degenerate covariance)"
+    )
 
     # Headline secondary metrics — raw only, no _centered duplicates.
     assert "test/recall@10" in log
@@ -156,6 +162,18 @@ def test_covers80_style_skips_condition_metrics():
     assert "test/map_same_condition" not in log
     assert "test/map_cross_condition" not in log
     assert "test/condition_gap" not in log
+
+
+def test_map_whitened_logged_when_corpus_large_enough():
+    """map_whitened fires (and is a valid MAP) once N >= 2*H. The helper
+    uses H=16, so n_files=40 (N=40 >= 32) clears the guard."""
+    task, log = _make_task_with_buffers(n_clips=80, n_files=40, n_works=8, conditions=None)
+    task.on_test_epoch_end()
+    assert "test/map_whitened" in log, "map_whitened must fire when N >= 2*H"
+    assert 0.0 <= log["test/map_whitened"] <= 1.0
+    # raw + centered still present alongside it.
+    assert "test/map" in log
+    assert "test/map_centered" in log
 
 
 def test_vgmiditvar_timbre_style_fires_cross_condition():

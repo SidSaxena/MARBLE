@@ -283,7 +283,11 @@ In rough priority:
    shift; whitening converges the layers. Other encoders not yet swept.
 3. ~~**Bake `test/map_whitened` into the probe**~~ — **done**: `zca_whiten`
    in `retrieval_metrics.py`, logged as `test/map_whitened` by
-   `CoverRetrievalTask` alongside `map_centered`.
+   `CoverRetrievalTask` alongside `map_centered`. **Gated to N ≥ 2·H** —
+   skipped (with a warning) on small corpora like Covers80 (N≈160 < H),
+   where the (H,H) covariance is under-determined and transductive
+   whitening overfits / can fall below raw (verified: 0.080 vs 0.136 on
+   a 160×1024 cone). The validated regime is N=102 960 ≫ H=1024.
 4. **Inductive generalisation test (the novelty gate, §6/§7.2)** — fit
    μ, Σ on a disjoint reference set and evaluate on held-out works, and
    run the ablation on SHS100K / Covers80, to see whether the gain holds

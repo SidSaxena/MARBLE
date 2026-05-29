@@ -816,3 +816,59 @@ def test_zca_whiten_matches_independent_numpy():
 def test_zca_whiten_rejects_non_2d():
     with pytest.raises(ValueError):
         zca_whiten(torch.randn(4, 5, 6))
+
+
+def test_zca_whiten_rejects_bad_alpha():
+    with pytest.raises(ValueError):
+        zca_whiten(torch.randn(50, 8), alpha=-0.1)
+    with pytest.raises(ValueError):
+        zca_whiten(torch.randn(50, 8), alpha=2.5)
+
+
+def test_zca_whiten_correlated_covariance_gives_identity():
+    """Identity-cov must hold for a genuinely *rotated* (correlated)
+    covariance, not just a diagonal one — this exercises the U Uᵀ rotation,
+    which a diagonal cov (U≈I) would not catch."""
+    torch.manual_seed(7)
+    # Anisotropic diagonal data, then rotate by a random orthogonal Q so
+    # the covariance is dense (off-diagonals non-zero).
+    base = torch.randn(4000, 6) * torch.tensor([9.0, 5.0, 2.0, 1.0, 0.4, 7.0])
+    q, _ = torch.linalg.qr(torch.randn(6, 6))
+    embs = base @ q  # dense covariance
+    w = zca_whiten(embs, alpha=1.0).double()
+    wc = w - w.mean(dim=0, keepdim=True)
+    cov = (wc.T @ wc) / wc.shape[0]
+    assert torch.allclose(cov, torch.eye(6, dtype=torch.float64), atol=5e-2)
+
+
+def test_zca_whiten_small_corpus_is_finite_not_crash():
+    """N < H (rank-deficient covariance) must stay finite — no NaN/Inf from
+    the eps-floor clamp. The probe gates on this regime, but the transform
+    itself must never poison logging."""
+    torch.manual_seed(3)
+    embs = torch.nn.functional.normalize(torch.randn(20, 256), dim=-1)  # N < H
+    w = zca_whiten(embs, alpha=1.0)
+    assert torch.isfinite(w).all()
+
+
+def test_zca_whiten_fp64_matches_script_fp32_path_when_n_gg_h():
+    """The probe whitens in fp64 throughout; the validated script downcasts
+    eigvecs/eigvals to fp32 before the transform. In the operating regime
+    (N >> H) the two must agree — pins that map_whitened reproduces the
+    script's whiten-a1.0 numbers and guards against future drift."""
+    torch.manual_seed(5)
+    embs = torch.nn.functional.normalize(torch.randn(3000, 64), dim=-1)
+    ours = torch.nn.functional.normalize(zca_whiten(embs, alpha=1.0), dim=-1)
+
+    # Reproduce the script's fp32-transform path (whitening_ablation.py).
+    e64 = embs.double()
+    centered64 = e64 - e64.mean(dim=0, keepdim=True)
+    sigma = (centered64.T @ centered64) / e64.shape[0]
+    evals, evecs = torch.linalg.eigh(sigma)
+    evals32, evecs32 = evals.clamp(min=0.0).float(), evecs.float()
+    c32 = (embs - embs.mean(dim=0, keepdim=True)).float()
+    scale = evals32.clamp(min=1e-12).pow(-0.5)
+    script = torch.nn.functional.normalize(((c32 @ evecs32) * scale) @ evecs32.T, dim=-1)
+
+    max_sim_diff = (ours @ ours.T - script @ script.T).abs().max().item()
+    assert max_sim_diff < 1e-4
