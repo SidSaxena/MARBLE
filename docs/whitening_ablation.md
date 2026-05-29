@@ -261,12 +261,13 @@ as a discovery.
    Per-encoder layer studies for CLaMP3/MERT/OMARRQ not yet run, but the
    MuQ pattern (convergence, no shift) is the expectation.
 
-4. **Cross-instrument confirmation pending.** These are *overall* MAP
-   numbers (mixing within- and cross-timbre). The overall gain almost
-   certainly includes a large cross-timbre component (off-diagonal cells
-   are 56 of 64), but the per-condition grid for the whitened
-   embeddings hasn't been run yet — it would quantify the gain on the
-   leitmotif-specific off-diagonal.
+4. **Cross-instrument confirmation — DONE (§9), the gain is genuinely
+   cross-timbre.** The per-condition grid was run for raw/centered/
+   whiten-a1.0 at each encoder's cross-instrument-optimal layer. The
+   off-diagonal (query instrument ≠ target instrument — the
+   leitmotif-relevant cell) MAP rises **+24 % to +71 %** with whitening
+   for every encoder, and the timbre gap goes negative even for CLaMP3
+   and MERT, which were timbre-*dependent* raw. No longer a caveat.
 
 ---
 
@@ -274,16 +275,15 @@ as a discovery.
 
 In rough priority:
 
-1. **Run the per-condition grid for whiten-a1.0** (the held per-pair
-   run) — confirm and quantify the cross-instrument gain. *In progress:*
-   running at each encoder's cross-instrument-optimal layer (CLaMP3 L4,
-   MERT L11, MuQ L11, OMARRQ L15).
+1. ~~**Run the per-condition grid for whiten-a1.0**~~ — **done (§9)**:
+   cross-instrument off-diagonal MAP up +24–71 % per encoder at the
+   cross-instrument-optimal layers (CLaMP3 L4, MERT L11, MuQ L11,
+   OMARRQ L15).
 2. ~~**Layer study**~~ — **done for MuQ** (§7.3): optimal layer does not
    shift; whitening converges the layers. Other encoders not yet swept.
-3. **Bake `test/map_whitened` into the probe** — mirror the existing
-   `map_centered` path so every future sweep logs the whitened metric
-   as a first-class number (~30-line addition to
-   `marble/tasks/Covers80/probe.py`).
+3. ~~**Bake `test/map_whitened` into the probe**~~ — **done**: `zca_whiten`
+   in `retrieval_metrics.py`, logged as `test/map_whitened` by
+   `CoverRetrievalTask` alongside `map_centered`.
 4. **Inductive generalisation test (the novelty gate, §6/§7.2)** — fit
    μ, Σ on a disjoint reference set and evaluate on held-out works, and
    run the ablation on SHS100K / Covers80, to see whether the gain holds
@@ -296,7 +296,50 @@ In rough priority:
 
 ---
 
-## 9. Reproducibility
+## 9. Cross-instrument (per-condition) results
+
+The per-condition grid was run for `raw` / `centered` / `whiten-a1.0`
+at each encoder's **cross-instrument-optimal** layer (best raw
+off-diagonal): CLaMP3 L4, MERT L11, MuQ L11, OMARRQ L15. All four
+`--verify` raw/centered checks matched the logged sweep MAP to ≤ 5e-6.
+
+The **off-diagonal** mean (query instrument ≠ target instrument) is the
+leitmotif-relevant cell — same theme retrieved across orchestrations.
+
+| encoder (layer) | off raw | off centered | **off whiten** | off gain | diag raw → whiten | gap raw → whiten |
+|---|---:|---:|---:|---:|---:|---:|
+| CLaMP3 L4 | 0.263 | 0.297 | **0.449** | **+71 %** | 0.288 → 0.337 | +0.025 → −0.112 |
+| MERT-v1-95M L11 | 0.247 | 0.272 | **0.366** | **+48 %** | 0.271 → 0.318 | +0.023 → −0.048 |
+| MuQ L11 | 0.459 | 0.477 | **0.571** | **+24 %** | 0.284 → 0.364 | −0.176 → −0.207 |
+| OMARRQ-25hz L15 | 0.367 | 0.389 | **0.571** | **+56 %** | 0.312 → 0.377 | −0.054 → −0.194 |
+
+Findings:
+
+1. **Whitening lifts cross-instrument MAP for every encoder (+24 % to
+   +71 %).** The overall-MAP gain (§2) is therefore *genuinely
+   cross-timbre*, not an artefact of within-pool reshuffling. The
+   leitmotif use case — retrieve the same theme in a different
+   instrument — is directly improved.
+2. **The off-diagonal gains (+24–71 %) are smaller than the overall-MAP
+   gains (+109–425 %)** because the per-cell metric restricts candidates
+   to a single target instrument (smaller pool → higher, less volatile
+   AP). Off-diagonal absolute values are correspondingly high (0.37–0.57
+   whitened).
+3. **Whitening makes the timbre gap negative for all four** — including
+   CLaMP3 (+0.025 → −0.112) and MERT (+0.023 → −0.048), which were
+   timbre-*dependent* raw. It turns every encoder into a more
+   timbre-invariant retriever. OMARRQ shifts most dramatically
+   (−0.054 → −0.194).
+4. **Within-instrument (diag) also improves (+17–28 %)** — whitening
+   isn't purely a cross-timbre trick — but off-diagonal improves more
+   for 3 of 4, hence the deepening negative gap.
+
+Caveat: these are still **transductive** (§7.2). The inductive test is
+the remaining gate.
+
+---
+
+## 10. Reproducibility
 
 ```bash
 # Fast pass (overall metrics, all treatments) for one encoder/layer:
@@ -312,7 +355,8 @@ uv run python scripts/analysis/whitening_ablation.py \
 
 | artefact | content |
 |---|---|
-| `docs/figures/whitening_ablation/<encoder>_L<N>_overall.csv` | per-treatment metrics, one encoder |
+| `docs/figures/whitening_ablation/<encoder>_L<N>_overall.csv` | per-treatment overall metrics, one encoder |
+| `docs/figures/whitening_ablation/<encoder>_L<N>_perpair.csv` | per-treatment grid (diag/off/gap), cross-instrument-optimal layer |
 | `docs/figures/whitening_ablation/whitening_treatment_curves.png` | the curves above |
 | `scripts/analysis/whitening_ablation.py` | the ablation script |
 | `tests/test_whitening_ablation.py` | 14 tests incl. the independent-numpy audit |
