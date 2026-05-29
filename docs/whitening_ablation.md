@@ -286,10 +286,14 @@ In rough priority:
    shift; whitening converges the layers. Other encoders not yet swept.
 3. ~~**Bake `test/map_whitened` into the probe**~~ — **done**: `zca_whiten`
    in `retrieval_metrics.py`, logged as `test/map_whitened` by
-   `CoverRetrievalTask` alongside `map_centered`. Small corpora (N < 2·H)
-   use **regularised** whitening (`eps_rel=1e-2`) to avoid the
-   rank-deficient collapse; N ≥ 2·H uses pure whitening unchanged. See
-   §10 for the α-degeneration study that motivated this policy.
+   `CoverRetrievalTask` alongside `map_centered`. The (α, eps_rel) are
+   **works/size-aware auto** (`auto_whiten_params`): `eps_rel=1e-2` when
+   N<2·H (rank-deficiency, §10), and `α=1.0` if `n_works ≥ H` else `0.6`
+   (few-work self-defeat, §11) — so VGMIDITVar gets pure α=1.0, SHS100K
+   and Covers80 get fractional α (+ ridge if N<2·H). Override via the
+   `whiten_alpha`/`whiten_eps_rel` task args; chosen values are logged as
+   `test/map_whitened_alpha`/`_eps_rel`. Still transductive (an inductive
+   fit is stronger on few-work corpora, §11, but needs a reference set).
 4. **Inductive generalisation test (the novelty gate, §6/§7.2)** — fit
    μ, Σ on a disjoint reference set and evaluate on held-out works.
    **Axis A (held-out works, same dataset): DONE — PASSED.** On a 50/50

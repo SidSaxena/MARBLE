@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import torch
 
-from marble.tasks.Covers80.probe import CoverRetrievalTask
+from marble.tasks.Covers80.probe import CoverRetrievalTask, auto_whiten_params
 
 
 def _make_task_with_buffers(
@@ -172,6 +172,22 @@ def test_map_whitened_logged_when_corpus_large_enough():
     # raw + centered still present alongside it.
     assert "test/map" in log
     assert "test/map_centered" in log
+    # Chosen whitening params are logged for provenance.
+    assert "test/map_whitened_alpha" in log
+    assert "test/map_whitened_eps_rel" in log
+
+
+def test_auto_whiten_params_three_regimes():
+    """The works/size-aware heuristic must match the three calibration
+    datapoints (docs/whitening_ablation.md §10-11)."""
+    # VGMIDITVar: many works (>=H), N>>2H -> pure alpha=1.0, no ridge.
+    assert auto_whiten_params(n_works=5040, n_files=102960, hidden=1024) == (1.0, 0.0)
+    # SHS100K: few works (<H), N>2H -> fractional alpha, no ridge.
+    assert auto_whiten_params(n_works=111, n_files=6821, hidden=768) == (0.6, 0.0)
+    # Covers80: few works AND N<2H -> fractional alpha + regularisation.
+    assert auto_whiten_params(n_works=80, n_files=160, hidden=768) == (0.6, 1e-2)
+    # Boundary: n_works exactly == H counts as "many".
+    assert auto_whiten_params(n_works=768, n_files=100000, hidden=768)[0] == 1.0
 
 
 def test_vgmiditvar_timbre_style_fires_cross_condition():

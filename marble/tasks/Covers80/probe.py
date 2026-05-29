@@ -34,6 +34,24 @@ from marble.core.utils import instantiate_from_config
 from marble.utils.emb_cache import EmbeddingCacheMixin
 
 
+def auto_whiten_params(n_works: int, n_files: int, hidden: int) -> tuple[float, float]:
+    """Works/size-aware (alpha, eps_rel) for transductive map_whitened.
+
+    Grounded in three labeled datapoints (docs/whitening_ablation.md §10-11):
+      - n_files < 2*hidden  -> rank-deficient covariance: relative-Tikhonov
+        ridge eps_rel=1e-2 (else pure whitening amplifies null-space noise;
+        Covers80 N=160<H=768 collapsed without it).
+      - n_works < hidden    -> covariance dominated by few per-work centroids,
+        so transductive alpha=1.0 over-flattens/self-defeats; fractional
+        alpha=0.6 is robust (SHS100K 111 works: +15-76% at a~0.6, a=1.0 hurt).
+      - n_works >= hidden with n_files>>hidden -> pure alpha=1.0 best
+        (VGMIDITVar 5040 works, the +100-425% regime).
+    """
+    eps_rel = 1e-2 if n_files < 2 * hidden else 0.0
+    alpha = 1.0 if n_works >= hidden else 0.6
+    return alpha, eps_rel
+
+
 class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
     """
     Zero-shot cover-song retrieval probe.
@@ -67,6 +85,8 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         cache_pool_time: bool = True,
         log_extended_retrieval_metrics: bool = False,
         metric_device: str = "auto",
+        whiten_alpha: float | None = None,
+        whiten_eps_rel: float | None = None,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -93,6 +113,12 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # anisotropy lines. Useful for leitmotif/no-ground-truth runs
         # where the K-sweep is the actual scientific question.
         self.log_extended_retrieval_metrics = bool(log_extended_retrieval_metrics)
+
+        # Whitening (test/map_whitened) strength. None = works/size-aware
+        # auto (see on_test_epoch_end): alpha=1.0 if n_works>=H else 0.6;
+        # eps_rel=1e-2 if N<2H else 0. Set a float to force a fixed value.
+        self.whiten_alpha = whiten_alpha
+        self.whiten_eps_rel = whiten_eps_rel
 
         # Where to run the heavy metric-block work (sim + argsort + per-cell
         # grid). For VGMIDITVar-timbre (N=102 960, sim = 42 GB on CPU
@@ -387,25 +413,36 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # the test corpus — same protocol as map_centered. Known technique
         # (BERT-whitening, Su 2021); logged as a first-class metric.
         #
-        # SMALL-CORPUS REGULARISATION: whitening estimates an (H, H)
-        # covariance from N rows. When N < ~H it is rank-deficient and PURE
-        # whitening rescales the ~H-(N-1) near-zero directions to unit
-        # variance — amplifying estimation noise and *collapsing* retrieval
-        # (verified on Covers80, N=160<H=768: pure alpha=1.0 MAP 0.04 vs raw
-        # 0.17). A relative-Tikhonov ridge eps_rel rescues it: regularised
-        # whitening lifts MAP +16-67% over raw even at N<H across all four
-        # encoders. So instead of skipping, regularise when N < 2*H; keep
-        # pure whitening (best at N>>H, the validated VGMIDITVar regime)
-        # otherwise. eps_rel=1e-2 robustly rescues all tested encoders
-        # (docs/whitening_ablation.md).
+        # WORKS/SIZE-AWARE auto-(alpha, eps_rel). The optimal whitening
+        # strength is corpus-dependent (docs/whitening_ablation.md §10-11):
+        #   - N < 2*H  -> rank-deficient covariance: a relative-Tikhonov
+        #     ridge (eps_rel) is required, else pure whitening amplifies the
+        #     ~H-(N-1) null-space directions and collapses retrieval
+        #     (Covers80, N=160<H=768: pure alpha=1.0 MAP 0.04 vs raw 0.17).
+        #   - n_works < H -> the corpus covariance is dominated by the few
+        #     per-work centroids, so transductive alpha=1.0 over-flattens /
+        #     self-defeats; fractional alpha=0.6 is robust (SHS100K: +15-76%
+        #     vs centering at a~0.6, while a=1.0 hurt CLaMP3/MuQ).
+        #   - n_works >= H with N>>H -> pure alpha=1.0 is best (VGMIDITVar,
+        #     5040 works, the +100-425% regime).
+        # Override either via the whiten_alpha / whiten_eps_rel task args
+        # (None = auto). NOTE: still transductive (fit on the test corpus);
+        # an inductive fit can be stronger on few-work corpora (§11) but
+        # needs a reference set the probe doesn't have.
         H_dim = embs.shape[1]
-        whiten_eps_rel = 1e-2 if 2 * H_dim > N else 0.0
-        if whiten_eps_rel:
-            print(
-                f"[CoverRetrieval] map_whitened: N={N} < 2*H={2 * H_dim} -> regularised "
-                f"whitening (eps_rel={whiten_eps_rel}) to avoid rank-deficient collapse"
-            )
-        embs_w = F.normalize(zca_whiten(embs, alpha=1.0, eps_rel=whiten_eps_rel), dim=-1)
+        n_works = int(torch.unique(work_ids).numel())
+        auto_alpha, auto_eps_rel = auto_whiten_params(n_works, N, H_dim)
+        _wa = getattr(self, "whiten_alpha", None)
+        _we = getattr(self, "whiten_eps_rel", None)
+        w_alpha = auto_alpha if _wa is None else float(_wa)
+        w_eps_rel = auto_eps_rel if _we is None else float(_we)
+        print(
+            f"[CoverRetrieval] map_whitened: n_works={n_works} N={N} H={H_dim} "
+            f"-> alpha={w_alpha} eps_rel={w_eps_rel}"
+        )
+        self.log("test/map_whitened_alpha", w_alpha, rank_zero_only=True)
+        self.log("test/map_whitened_eps_rel", w_eps_rel, rank_zero_only=True)
+        embs_w = F.normalize(zca_whiten(embs, alpha=w_alpha, eps_rel=w_eps_rel), dim=-1)
         recall_ks_w = (
             [k for k in (1, 5, 10, 50, 100) if k < N] if self.log_extended_retrieval_metrics else []
         )
