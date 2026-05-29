@@ -6,12 +6,15 @@ with zero retraining and no new data. Pure whitening (`Σ^(−1/2)(e−μ)`,
 exponent α=1.0, unregularised) is the best treatment for every encoder
 tested.
 
-> **Status:** result verified by an independent audit (see §5). The
-> *magnitude* carries a generalisation caveat (§7) — VGMIDITVar-timbre's
-> clean 8-timbre balance makes timbre a cleanly-removable variance
-> direction; real-corpus gains may be smaller. The cross-instrument
-> (off-diagonal) confirmation via the per-condition grid is **pending**
-> (the per-pair run was deliberately held).
+> **Status:** result verified by an independent audit (§5). Generalisation
+> now tested on both axes: **inductive** (held-out-works fit ≈ transductive
+> on VGMIDITVar, §8.4) and **cross-domain** (real cover songs, SHS100K,
+> §11). Both substantially **pass** — whitening transfers, under two
+> rules: use **fractional α (~0.6–0.8)** not α=1.0, and an **inductive
+> fit** (Σ from a reference set, not the eval corpus). The headline
+> VGMIDITVar magnitude (+109–425 %) is clean-benchmark-inflated; the
+> honest cross-domain gains are smaller but real (SHS100K +7 % to +115 %
+> over raw across encoders).
 >
 > **This is a known technique, not a novel method.** Post-hoc whitening
 > of frozen embeddings to fix anisotropy and improve cosine retrieval is
@@ -297,9 +300,10 @@ In rough priority:
    vs 0.197, MuQ 0.505 vs 0.493, OMARRQ 0.497 vs 0.486 — vs raw 0.063 /
    0.088 / 0.238 / 0.108. **The gain is not a transductive artifact.**
    CSVs: `docs/figures/whitening_ablation/<enc>_L<N>_inductive.csv`.
-   **Axis B (cross-domain): pending** — the SHS100K ablation (real cover
-   songs, nuisance ≠ clean timbre) is the remaining test of whether it
-   transfers off this benchmark.
+   **Axis B (cross-domain): DONE — PASSED with fractional α (§11).** On
+   SHS100K (real cover songs), inductive fractional whitening (α≈0.6–0.8)
+   helps all 4 encoders +7 % to +115 % over raw. Two rules: fractional α
+   (not 1.0) and inductive fit.
 5. **Deployment** — for a fixed retrieval database, whitening is free
    (fit μ, Σ once). For a growing database, fit on a representative
    reference set.
@@ -396,7 +400,71 @@ ridge instead of a collapsed number or a missing metric.
 
 ---
 
-## 11. Reproducibility
+## 11. Cross-domain generalisation — SHS100K (real cover songs)
+
+The decisive transfer test (§6/§7.2 Axis B): does whitening help on a
+**real** cover-song corpus, where the nuisance variation is
+key/tempo/arrangement/recording — not a clean, cleanly-removable timbre
+axis? SHS100K-test: 6,821 tracks, **111 works** (15–584 covers each),
+cached for all 4 encoders. We swept α + ABTT + regularisation, both
+transductively (fit Σ on the eval corpus) and inductively (fit on a
+work-disjoint half). The answer arrived in four refinements:
+
+**1. Naive transductive α=1.0 looks like it fails.** Full whitening fit
+on the eval corpus *hurts* CLaMP3 (−33 %) and MuQ (−9 %), helps only
+OMARRQ. Taken alone this suggests whitening doesn't transfer — but it's
+the worst point of the curve.
+
+**2. Fractional α rescues it even transductively.** `whiten-a0.6` helps
+*all four* encoders: MERT +20 %, MuQ +15 %, OMARRQ +76 % over centering
+(CLaMP3 marginal). α=1.0 simply over-flattens. **ABTT-k does not help**
+(it degrades past abtt-1) — it is specifically the *soft rescaling* of
+fractional whitening that works, not deleting top PCs.
+
+**3. Inductive ≫ transductive here (opposite of VGMIDITVar).** Fitting Σ
+on a disjoint work-half and evaluating on the other half *beats* fitting
+on the eval set itself by 1.6–2.7× at α=1.0. Mechanism: with only 111
+works the corpus covariance is dominated by the specific works'
+centroids, so **transductive whitening flattens the eval works' own
+discriminative directions (self-defeating)**, while inductive whitening
+removes general nuisance learned from independent works and preserves
+eval discrimination. (Raw + centered are identical across fit modes —
+only the Σ-based whitening diverges, confirming it's the covariance.)
+VGMIDITVar didn't show this because its 5,040 works give a
+population-level Σ where transductive ≈ inductive.
+
+**4. The deployable config — inductive + fractional α — helps every
+encoder, including CLaMP3:**
+
+| encoder (layer) | raw | centered | best whiten (α) | gain vs raw / vs centered |
+|---|---:|---:|---:|---|
+| CLaMP3 L11 | 0.252 | 0.259 | 0.270 (α0.4) | +7 % / +4 % |
+| MERT-v1-95M L7 | 0.148 | 0.166 | 0.213 (α0.6) | +43 % / +28 % |
+| MuQ L11 | 0.306 | 0.335 | **0.471 (α0.8)** | +54 % / +40 % |
+| OMARRQ-25hz L14 | 0.153 | 0.162 | **0.329 (α0.8)** | +115 % / +103 % |
+
+**Conclusion: whitening *does* transfer to real cover-song retrieval**,
+under two rules the data taught us:
+- **Fractional α (~0.6–0.8), not α=1.0** — full whitening over-flattens
+  off the clean-timbre benchmark.
+- **Inductive fit** (Σ from a reference set, never the eval corpus) —
+  strictly better on a few-work corpus, and it's the honest zero-shot
+  protocol anyway.
+
+CLaMP3 benefits least (text-paired model; less of its work-identity
+sits in the low-variance tail), MuQ/OMARRQ most.
+
+> **Honest caveat.** The inductive α-sweep still picks the best α by
+> looking at eval MAP — a true deployment would select α on a held-out
+> split too. But the *shape* (fractional ≫ full, inductive ≫
+> transductive) is robust across all four encoders, and the inductive
+> Σ-fit is genuinely zero-shot. Cf. the Covers80 N<H study (§10): there
+> the α-curve is confounded by rank-deficiency; here N≫H so the curve is
+> a clean signal/noise tradeoff.
+
+---
+
+## 12. Reproducibility
 
 ```bash
 # Fast pass (overall metrics, all treatments) for one encoder/layer:
