@@ -288,11 +288,18 @@ In rough priority:
    rank-deficient collapse; N ≥ 2·H uses pure whitening unchanged. See
    §10 for the α-degeneration study that motivated this policy.
 4. **Inductive generalisation test (the novelty gate, §6/§7.2)** — fit
-   μ, Σ on a disjoint reference set and evaluate on held-out works, and
-   run the ablation on SHS100K / Covers80, to see whether the gain holds
-   when (a) the fit is not transductive and (b) the nuisance variation
-   isn't a clean timbre axis. This is the experiment that decides
-   whether the result is worth any writeup beyond an internal note.
+   μ, Σ on a disjoint reference set and evaluate on held-out works.
+   **Axis A (held-out works, same dataset): DONE — PASSED.** On a 50/50
+   work-disjoint split of VGMIDITVar-timbre, inductive whitening (μ,Σ fit
+   on the held-out works) *matches or slightly beats* transductive on the
+   identical eval half for all 4 encoders (inductive/transductive ratio
+   1.02–1.03; gains +112 % to +360 %): CLaMP3 0.248 vs 0.241, MERT 0.201
+   vs 0.197, MuQ 0.505 vs 0.493, OMARRQ 0.497 vs 0.486 — vs raw 0.063 /
+   0.088 / 0.238 / 0.108. **The gain is not a transductive artifact.**
+   CSVs: `docs/figures/whitening_ablation/<enc>_L<N>_inductive.csv`.
+   **Axis B (cross-domain): pending** — the SHS100K ablation (real cover
+   songs, nuisance ≠ clean timbre) is the remaining test of whether it
+   transfers off this benchmark.
 5. **Deployment** — for a fixed retrieval database, whitening is free
    (fit μ, Σ once). For a growing database, fit on a representative
    reference set.
