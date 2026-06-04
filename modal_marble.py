@@ -1765,8 +1765,17 @@ def run_sweep(
     # at ~1.05× speed. Override via MARBLE_GPU=A100-40GB / H100 / etc.
     gpu=PARALLEL_GPU,
     volumes=VOL,
-    timeout=4 * 3600,  # 4 h cap per layer
-    retries=modal.Retries(max_retries=2, backoff_coefficient=2.0),
+    # 24 h cap per layer (was 4 h). A frozen-encoder frame-level probe like
+    # HookTheoryMelody runs ~37 min/epoch (encoder forward every batch, no
+    # cache) over many epochs, so 4 h cancelled healthy runs mid-fit at the
+    # timeout. Matches the sequential run_sweep cap. Enable cache_embeddings
+    # to cut epoch time and stay well under this.
+    timeout=24 * 3600,
+    # retries=0: a heartbeat partition could leave a Modal-declared-failed
+    # attempt still training while its retry runs concurrently — two writers
+    # on the same per-layer checkpoint dir corrupt best.ckpt. A failed probe
+    # layer is cheap to just re-run by hand, so don't auto-retry.
+    retries=0,
     secrets=[
         modal.Secret.from_name("huggingface"),
         modal.Secret.from_name("wandb-secret"),
