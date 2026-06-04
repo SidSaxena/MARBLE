@@ -6,27 +6,37 @@ container per layer (via `modal_marble.run_parallel_sweep`).
 Same total compute cost as the sequential `run_sweep`, but wall-clock ≈
 single-layer time instead of N × single-layer.
 
+ALWAYS pass `--detach`. Without it `modal run` starts an *ephemeral* app whose
+lifetime is bound to this CLI process — `main()` blocks on `.starmap()` for the
+whole sweep, so if the client disconnects (session closed, laptop sleeps,
+network drop) Modal tears the app down and kills every layer container
+mid-training. `--detach` decouples the run from the client: it keeps going on
+Modal's side regardless. Monitor with `modal app logs <app-id>` (or the
+dashboard); stop with `modal app stop <app-id> --yes`. (Detach is a `modal run`
+CLI flag — it can't be defaulted from inside the script, so it must be on every
+invocation below.)
+
 Usage
 -----
-    modal run scripts/sweeps/modal/modal_sweep.py \\
+    modal run --detach scripts/sweeps/modal/modal_sweep.py \\
         --base-config configs/probe.OMARRQ-multifeature-25hz.GS.yaml \\
         --num-layers 24 \\
         --model-tag OMARRQ-multifeature-25hz \\
         --task-tag GS
 
 Subset of layers (comma-separated):
-    modal run scripts/sweeps/modal/modal_sweep.py \\
+    modal run --detach scripts/sweeps/modal/modal_sweep.py \\
         --base-config configs/probe.CLaMP3-layers.GS.yaml \\
         --num-layers 13 --model-tag CLaMP3 --task-tag GS \\
         --layers 0,1,2,3
 
 Re-run only the test stage (skip fit for completed layers):
-    modal run scripts/sweeps/modal/modal_sweep.py --retest-only ... [other flags]
+    modal run --detach scripts/sweeps/modal/modal_sweep.py --retest-only ... [other flags]
 
 Pass Lightning-CLI overrides through to each layer's fit+test (e.g. bump the
 dataloader worker count — Modal A10G/A100 containers expose ~17 cores, so 16
 keeps the GPU fed where the config's local-safe default of 8 starves it):
-    modal run scripts/sweeps/modal/modal_sweep.py ... \\
+    modal run --detach scripts/sweeps/modal/modal_sweep.py ... \\
         --cli-overrides "--data.init_args.num_workers=16"
 Multiple overrides go in one quoted string (shlex-split), e.g.
     --cli-overrides "--data.init_args.num_workers=16 --trainer.max_epochs=50"
