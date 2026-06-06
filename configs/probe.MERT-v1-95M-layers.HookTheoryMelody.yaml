@@ -33,8 +33,7 @@ trainer:
     - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
       init_args:
         monitor: "val/acc_rpa"
-        patience: 5          # was 7 — post-peak epochs only ever recovered <0.002 (noise)
-        min_delta: 0.001     # ignore sub-noise flickers so jitter doesn't reset the counter
+        patience: 7
         mode: "max"
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
