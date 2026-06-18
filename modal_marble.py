@@ -2262,3 +2262,14 @@ def run_probe_cli(config: str = ""):
         print("Provide --config <path>")
         return
     run_probe.remote(config=config)
+
+
+@app.local_entrypoint()
+def download_harmonix():
+    """Download m-a-p/harmonixset_bigvgan (BigVGAN-rendered Harmonix audio +
+    corrected MSA annotations) -> data/harmonixset_bigvgan on the volume.
+
+    Redistributable proxy audio for the Harmonix Set (HXMSA structure task),
+    replacing the fragile yt-dlp path. Ships the 8.5 GB zip + corrected jsonl.
+    """
+    _download_marble_datasets.remote(datasets=["harmonixset_bigvgan"])
