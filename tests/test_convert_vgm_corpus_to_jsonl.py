@@ -240,3 +240,48 @@ def test_channels_and_bit_depth_fixed(tmp_path):
         rows = _read_jsonl(out_dir / f"VGMLoopStructure.{split}.wav.jsonl")
         assert rows[0]["channels"] == 1
         assert rows[0]["bit_depth"] == 16
+
+
+def test_non_24k_wav_is_skipped(tmp_path):
+    """A WAV at a sample rate other than 24000 must be skipped with a warning."""
+    corpus = tmp_path / "corpus"
+    manifest, audio_root = _build_mini_corpus(corpus)
+
+    # Overwrite the train WAV with a 44100 Hz file (same path, different SR)
+    bad_wav = corpus / "audio" / "train_tc.wav"
+    _write_wav(bad_wav, n_samples=48000, sr=44100)
+
+    out_dir = tmp_path / "out"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CONVERTER),
+            "--manifest",
+            str(manifest),
+            "--audio-root",
+            str(audio_root),
+            "--out-dir",
+            str(out_dir),
+            "--name",
+            "VGMLoopStructure",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    # Must not crash
+    assert result.returncode == 0, f"Converter crashed:\n{result.stderr}"
+
+    # train split must be empty (skipped)
+    train_rows = _read_jsonl(out_dir / "VGMLoopStructure.train.wav.jsonl")
+    assert len(train_rows) == 0, f"Expected 0 train rows (44100 Hz skipped), got {len(train_rows)}"
+
+    # val and test must still have 1 row each
+    assert len(_read_jsonl(out_dir / "VGMLoopStructure.val.wav.jsonl")) == 1
+    assert len(_read_jsonl(out_dir / "VGMLoopStructure.test.wav.jsonl")) == 1
+
+    # Warning must appear on stderr
+    assert (
+        "44100" in result.stderr
+        or "sample_rate" in result.stderr.lower()
+        or "24000" in result.stderr
+    ), f"Expected SR warning on stderr, got:\n{result.stderr}"

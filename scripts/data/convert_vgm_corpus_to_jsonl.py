@@ -156,6 +156,15 @@ def main() -> None:
             n_missing += 1
             continue
 
+        if samplerate != FIXED_SAMPLE_RATE:
+            print(
+                f"WARNING: row id={row.get('id')!r} has sample_rate={samplerate} "
+                f"(expected {FIXED_SAMPLE_RATE}) — skipping",
+                file=sys.stderr,
+            )
+            n_missing += 1
+            continue
+
         out_row: dict = {
             "audio_path": str(wav_path.resolve()),
             "sample_rate": FIXED_SAMPLE_RATE,
