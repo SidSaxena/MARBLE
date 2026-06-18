@@ -98,7 +98,18 @@ class _VGMLoopFramesProbeBase(BaseTask):
 
         bs = x.size(0)
 
-        losses = [fn(logits, y) for fn in self.loss_fns]
+        # CrossEntropyLoss requires the class dim at index 1: (N, C, ...).
+        # When logits is (B, L, C), flatten to (B*L, C) and y to (B*L,) before
+        # the CE call.  The boundary BCE path keeps (B, L)/(B, L) as-is.
+        if logits.dim() == 3:
+            B, L, C = logits.shape
+            loss_logits = logits.reshape(B * L, C)
+            loss_y = y.reshape(B * L)
+        else:
+            loss_logits = logits
+            loss_y = y
+
+        losses = [fn(loss_logits, loss_y) for fn in self.loss_fns]
         loss = sum(losses)
         self.log(
             f"{split}/loss",
