@@ -99,6 +99,16 @@ def main() -> None:
         metavar="NAME",
         help="Stem used in output filenames: <name>.{split}.wav.jsonl (default: VGMLoopStructure).",
     )
+    ap.add_argument(
+        "--mode",
+        choices=["clip", "frame"],
+        default="clip",
+        metavar="MODE",
+        help=(
+            "Output label schema: 'clip' emits label=loop_type string (default); "
+            "'frame' emits label=dict with intro_end_sec/loop_seam_sec/loop_type/total_sec."
+        ),
+    )
     args = ap.parse_args()
 
     manifest_path = Path(args.manifest)
@@ -165,15 +175,31 @@ def main() -> None:
             n_missing += 1
             continue
 
-        out_row: dict = {
-            "audio_path": str(wav_path.resolve()),
-            "sample_rate": FIXED_SAMPLE_RATE,
-            "num_samples": num_samples,
-            "channels": 1,
-            "bit_depth": 16,
-            "label": loop_type,
-            "duration": num_samples / FIXED_SAMPLE_RATE,
-        }
+        if args.mode == "frame":
+            out_row: dict = {
+                "audio_path": str(wav_path.resolve()),
+                "sample_rate": FIXED_SAMPLE_RATE,
+                "num_samples": num_samples,
+                "channels": 1,
+                "bit_depth": 16,
+                "label": {
+                    "intro_end_sec": row.get("intro_end_sec"),
+                    "loop_seam_sec": row.get("loop_seam_sec"),
+                    "loop_type": loop_type,
+                    "total_sec": float(row.get("total_sec", 0.0)),
+                },
+                "duration": num_samples / FIXED_SAMPLE_RATE,
+            }
+        else:
+            out_row = {
+                "audio_path": str(wav_path.resolve()),
+                "sample_rate": FIXED_SAMPLE_RATE,
+                "num_samples": num_samples,
+                "channels": 1,
+                "bit_depth": 16,
+                "label": loop_type,
+                "duration": num_samples / FIXED_SAMPLE_RATE,
+            }
         split_rows[split].append(out_row)
         n_written += 1
 

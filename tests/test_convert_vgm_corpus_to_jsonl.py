@@ -285,3 +285,185 @@ def test_non_24k_wav_is_skipped(tmp_path):
         or "sample_rate" in result.stderr.lower()
         or "24000" in result.stderr
     ), f"Expected SR warning on stderr, got:\n{result.stderr}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Frame-mode helpers and tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _build_frame_corpus(root: Path) -> tuple[Path, Path]:
+    """
+    Synthetic corpus for frame-mode conversion.
+
+    Rows include intro_end_sec / loop_seam_sec / total_sec fields.
+    Splits: train=intro_loop, val=loop_from_start, test=through_composed.
+    """
+
+    rows = [
+        {
+            "id": "il_001",
+            "split": "train",
+            "loop_type": "intro_loop",
+            "audio_path": "audio/train_il.wav",
+            "intro_end_sec": 4.0,
+            "loop_seam_sec": None,
+            "total_sec": 8.0,
+        },
+        {
+            "id": "lfs_001",
+            "split": "val",
+            "loop_type": "loop_from_start",
+            "audio_path": "audio/val_lfs.wav",
+            "intro_end_sec": None,
+            "loop_seam_sec": 6.0,
+            "total_sec": 12.0,
+        },
+        {
+            "id": "tc_001",
+            "split": "test",
+            "loop_type": "through_composed",
+            "audio_path": "audio/test_tc.wav",
+            "intro_end_sec": None,
+            "loop_seam_sec": None,
+            "total_sec": 10.0,
+        },
+    ]
+
+    _write_wav(root / "audio/train_il.wav", n_samples=48000)
+    _write_wav(root / "audio/val_lfs.wav", n_samples=72000)
+    _write_wav(root / "audio/test_tc.wav", n_samples=96000)
+
+    manifest_path = root / "manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(rows, f)
+
+    return manifest_path, root
+
+
+def _run_converter_mode(
+    manifest: Path,
+    audio_root: Path,
+    out_dir: Path,
+    name: str = "TestVGMFrame",
+    mode: str = "clip",
+) -> subprocess.CompletedProcess:
+    """Run converter with --mode argument; returns CompletedProcess (does not raise)."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(CONVERTER),
+            "--manifest",
+            str(manifest),
+            "--audio-root",
+            str(audio_root),
+            "--out-dir",
+            str(out_dir),
+            "--name",
+            name,
+            "--mode",
+            mode,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return result
+
+
+def test_frame_mode_files_exist(tmp_path):
+    """--mode frame writes one JSONL per split."""
+    manifest, audio_root = _build_frame_corpus(tmp_path / "corpus")
+    out_dir = tmp_path / "out"
+    result = _run_converter_mode(manifest, audio_root, out_dir, name="VGMLoopFrames", mode="frame")
+    assert result.returncode == 0, f"Converter crashed:\n{result.stderr}"
+    for split in ("train", "val", "test"):
+        assert (out_dir / f"VGMLoopFrames.{split}.wav.jsonl").exists(), f"Missing {split} JSONL"
+
+
+def test_frame_mode_label_is_dict(tmp_path):
+    """In frame mode, label must be a dict with the four required keys."""
+    manifest, audio_root = _build_frame_corpus(tmp_path / "corpus")
+    out_dir = tmp_path / "out"
+    _run_converter_mode(manifest, audio_root, out_dir, name="VGMLoopFrames", mode="frame")
+
+    for split in ("train", "val", "test"):
+        rows = _read_jsonl(out_dir / f"VGMLoopFrames.{split}.wav.jsonl")
+        assert len(rows) == 1, f"Expected 1 row in {split}"
+        label = rows[0]["label"]
+        assert isinstance(label, dict), f"{split}: label must be a dict, got {type(label)}"
+        for key in ("intro_end_sec", "loop_seam_sec", "loop_type", "total_sec"):
+            assert key in label, f"{split}: missing key {key!r} in label"
+
+
+def test_frame_mode_label_values(tmp_path):
+    """Frame-mode label values match the manifest fields."""
+    manifest, audio_root = _build_frame_corpus(tmp_path / "corpus")
+    out_dir = tmp_path / "out"
+    _run_converter_mode(manifest, audio_root, out_dir, name="VGMLoopFrames", mode="frame")
+
+    # train: intro_loop with intro_end_sec=4.0, loop_seam_sec=None, total_sec=8.0
+    train_rows = _read_jsonl(out_dir / "VGMLoopFrames.train.wav.jsonl")
+    lbl = train_rows[0]["label"]
+    assert lbl["loop_type"] == "intro_loop"
+    assert lbl["intro_end_sec"] == pytest.approx(4.0)
+    assert lbl["loop_seam_sec"] is None
+    assert lbl["total_sec"] == pytest.approx(8.0)
+
+    # val: loop_from_start with loop_seam_sec=6.0
+    val_rows = _read_jsonl(out_dir / "VGMLoopFrames.val.wav.jsonl")
+    lbl = val_rows[0]["label"]
+    assert lbl["loop_type"] == "loop_from_start"
+    assert lbl["intro_end_sec"] is None
+    assert lbl["loop_seam_sec"] == pytest.approx(6.0)
+
+    # test: through_composed, both None
+    test_rows = _read_jsonl(out_dir / "VGMLoopFrames.test.wav.jsonl")
+    lbl = test_rows[0]["label"]
+    assert lbl["loop_type"] == "through_composed"
+    assert lbl["intro_end_sec"] is None
+    assert lbl["loop_seam_sec"] is None
+
+
+def test_frame_mode_shares_splits_with_clip_mode(tmp_path):
+    """
+    Frame and clip modes must produce the same split assignment for the same manifest.
+    Both modes use the manifest's 'split' field — verify train/val/test row counts agree.
+    """
+    # Use the frame corpus (has all frame fields); clip mode only needs loop_type + split
+    manifest, audio_root = _build_frame_corpus(tmp_path / "corpus")
+    out_dir_clip = tmp_path / "clip"
+    out_dir_frame = tmp_path / "frame"
+
+    _run_converter_mode(manifest, audio_root, out_dir_clip, name="VGM", mode="clip")
+    _run_converter_mode(manifest, audio_root, out_dir_frame, name="VGM", mode="frame")
+
+    for split in ("train", "val", "test"):
+        clip_rows = _read_jsonl(out_dir_clip / f"VGM.{split}.wav.jsonl")
+        frame_rows = _read_jsonl(out_dir_frame / f"VGM.{split}.wav.jsonl")
+        assert len(clip_rows) == len(frame_rows), (
+            f"{split}: clip has {len(clip_rows)} rows, frame has {len(frame_rows)}"
+        )
+
+
+def test_clip_mode_still_emits_string_label(tmp_path):
+    """Regression: --mode clip (default) must still emit label as a string."""
+    manifest, audio_root = _build_frame_corpus(tmp_path / "corpus")
+    out_dir = tmp_path / "out"
+    _run_converter_mode(manifest, audio_root, out_dir, name="VGM", mode="clip")
+
+    for split in ("train", "val", "test"):
+        rows = _read_jsonl(out_dir / f"VGM.{split}.wav.jsonl")
+        assert isinstance(rows[0]["label"], str), (
+            f"{split}: clip mode label must be str, got {type(rows[0]['label'])}"
+        )
+
+
+def test_frame_mode_default_is_clip(tmp_path):
+    """Invoking converter WITHOUT --mode must behave as --mode clip."""
+    manifest, audio_root = _build_frame_corpus(tmp_path / "corpus")
+    out_dir = tmp_path / "out"
+    # _run_converter (original helper) passes no --mode arg
+    _run_converter(manifest, audio_root, out_dir, name="VGM")
+    for split in ("train", "val", "test"):
+        rows = _read_jsonl(out_dir / f"VGM.{split}.wav.jsonl")
+        assert isinstance(rows[0]["label"], str), f"{split}: default mode label must be str"
