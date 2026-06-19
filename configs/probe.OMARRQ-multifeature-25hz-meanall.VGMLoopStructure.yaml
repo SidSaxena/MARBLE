@@ -91,18 +91,36 @@ model:
           init_args:
             task: multiclass
             num_classes: 3
+        f1_macro:
+          class_path: torchmetrics.F1Score
+          init_args:
+            task: multiclass
+            num_classes: 3
+            average: macro
       val:
         acc:
           class_path: torchmetrics.Accuracy
           init_args:
             task: multiclass
             num_classes: 3
+        f1_macro:
+          class_path: torchmetrics.F1Score
+          init_args:
+            task: multiclass
+            num_classes: 3
+            average: macro
       test:
         acc:
           class_path: torchmetrics.Accuracy
           init_args:
             task: multiclass
             num_classes: 3
+        f1_macro:
+          class_path: torchmetrics.F1Score
+          init_args:
+            task: multiclass
+            num_classes: 3
+            average: macro
 
 data:
   class_path: marble.tasks.VGMLoopStructure.datamodule.VGMLoopStructureDataModule

@@ -1,10 +1,9 @@
 seed_everything: 1234
 ckpt_path: null
 
-# VGMLoopStructure loop-type classification — MusicFM mean-all layers.
-# Cloned from probe.MusicFM-meanall.HookTheoryMelody.yaml (no HookTheoryStructure
-# MusicFM config exists); adapted for clip-level 3-class VGMLoopStructure.
-# MusicFM has no feature extractor block (audio_transforms omitted per spec).
+# VGMLoopStructure loop-type classification — CLaMP3 mean-all layers.
+# Cloned from probe.CLaMP3-layers.HookTheoryStructure.yaml; adapted for
+# 3-class VGMLoopStructure (through_composed / loop_from_start / intro_loop).
 
 trainer:
   fast_dev_run: false
@@ -21,7 +20,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.VGMLoopStructure.MusicFM-meanall/checkpoints/"
+        dirpath: "./output/probe.VGMLoopStructure.CLaMP3-layers/checkpoints/"
         filename: "best"
         save_top_k: 1
         save_last: true   # always write last.ckpt so a killed run resumes
@@ -40,11 +39,11 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "MusicFM / VGMLoopStructure"
-      tags: ["MusicFM", "VGMLoopStructure", "layer-sweep", "probe", "mean-all"]
+      group: "CLaMP3 / VGMLoopStructure"
+      tags: ["CLaMP3", "VGMLoopStructure", "layer-sweep", "probe"]
       job_type: "probe"
-      name: "layer-meanall-fit"
-      save_dir: "./output/probe.VGMLoopStructure.MusicFM-meanall/"
+      name: "CLaMP3-layers"
+      save_dir: "./output/probe.VGMLoopStructure.CLaMP3-layers/"
 
 
 model:
@@ -55,19 +54,21 @@ model:
     use_ema: false
 
     encoder:
-      class_path: marble.encoders.MusicFM.model.MusicFM_Encoder
+      class_path: marble.encoders.CLaMP3.model.CLaMP3_Encoder
+      init_args:
+        pre_trained_folder: null
+        train_mode: freeze
 
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          layers: ["0..12"]
-          mode: mean
+          layers: [6]   # sweep replaces this
       - class_path: marble.modules.transforms.TimeAvgPool
 
     decoders:
       - class_path: marble.modules.decoders.MLPDecoder
         init_args:
-          in_dim: 1024    # MusicFM hidden size
+          in_dim: 768     # CLaMP3 BERT hidden size
           out_dim: 3      # 3 loop-type classes
           hidden_layers: [256]
           activation_fn:
@@ -122,6 +123,23 @@ data:
   init_args:
     batch_size: 16
     num_workers: 8
+
+    audio_transforms:
+      train:
+        - class_path: marble.encoders.CLaMP3.model.CLaMP3_FeatureExtractor
+          init_args:
+            pre_trained_folder: null
+            squeeze: true
+      val:
+        - class_path: marble.encoders.CLaMP3.model.CLaMP3_FeatureExtractor
+          init_args:
+            pre_trained_folder: null
+            squeeze: true
+      test:
+        - class_path: marble.encoders.CLaMP3.model.CLaMP3_FeatureExtractor
+          init_args:
+            pre_trained_folder: null
+            squeeze: true
 
     train:
       class_path: marble.tasks.VGMLoopStructure.datamodule.VGMLoopStructureAudioTrain

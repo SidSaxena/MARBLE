@@ -2,7 +2,7 @@ seed_everything: 1234
 ckpt_path: null
 
 # VGMLoopStructure loop-type classification — MusicFM mean-all layers.
-# Cloned from probe.MusicFM-meanall.HookTheoryMelody.yaml (no HookTheoryStructure
+# Cloned from probe.MusicFM-layers.HookTheoryMelody.yaml (no HookTheoryStructure
 # MusicFM config exists); adapted for clip-level 3-class VGMLoopStructure.
 # MusicFM has no feature extractor block (audio_transforms omitted per spec).
 
@@ -21,7 +21,7 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "./output/probe.VGMLoopStructure.MusicFM-meanall/checkpoints/"
+        dirpath: "./output/probe.VGMLoopStructure.MusicFM-layers/checkpoints/"
         filename: "best"
         save_top_k: 1
         save_last: true   # always write last.ckpt so a killed run resumes
@@ -41,10 +41,10 @@ trainer:
     init_args:
       project: "marble"
       group: "MusicFM / VGMLoopStructure"
-      tags: ["MusicFM", "VGMLoopStructure", "layer-sweep", "probe", "mean-all"]
+      tags: ["MusicFM", "VGMLoopStructure", "layer-sweep", "probe"]
       job_type: "probe"
-      name: "layer-meanall-fit"
-      save_dir: "./output/probe.VGMLoopStructure.MusicFM-meanall/"
+      name: "MusicFM-layers"
+      save_dir: "./output/probe.VGMLoopStructure.MusicFM-layers/"
 
 
 model:
@@ -60,8 +60,7 @@ model:
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          layers: ["0..12"]
-          mode: mean
+          layers: [6]   # sweep replaces this
       - class_path: marble.modules.transforms.TimeAvgPool
 
     decoders:
