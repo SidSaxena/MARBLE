@@ -41,25 +41,14 @@ class ProbeAudioTask(_BaseProbeAudioTask):
         except Exception:
             classes = [f"class_{i}" for i in range(int(max(labels + preds)) + 1)]
 
+        # Per-class F1 scalars + per-class heatmap + confusion matrix.
+        # f1_macro is logged by the YAML metric, so don't double-log it here.
         try:
-            from sklearn.metrics import precision_recall_fscore_support
-            pr, rc, f1, sup = precision_recall_fscore_support(
-                labels, preds, labels=list(range(len(classes))), zero_division=0)
-            for i, c in enumerate(classes):
-                self.log(f"test/precision_{c}", float(pr[i]), sync_dist=True)
-                self.log(f"test/recall_{c}", float(rc[i]), sync_dist=True)
-                self.log(f"test/f1_{c}", float(f1[i]), sync_dist=True)
+            from marble.modules.test_metrics import log_classification_test_metrics
+            log_classification_test_metrics(self, preds, labels, classes,
+                                            log_f1_macro=False)
         except Exception as e:
-            print(f"[vgm-metrics] per-class skipped: {e}")
-
-        try:
-            import wandb
-            exp = getattr(self.logger, "experiment", None)
-            if exp is not None and hasattr(wandb, "plot"):
-                exp.log({"test/confusion_matrix": wandb.plot.confusion_matrix(
-                    y_true=list(labels), preds=list(preds), class_names=classes)})
-        except Exception as e:
-            print(f"[vgm-metrics] confusion matrix skipped: {e}")
+            print(f"[vgm-metrics] per-class metrics skipped: {e}")
 
         dump_path = os.environ.get("MARBLE_DUMP_TEST_PREDS")
         if dump_path:
