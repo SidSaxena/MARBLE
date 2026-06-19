@@ -341,6 +341,105 @@ def _build_frame_corpus(root: Path) -> tuple[Path, Path]:
     return manifest_path, root
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# --splits override (audit C2: leakage-safe split assignment)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _run_converter_splits(
+    manifest: Path,
+    audio_root: Path,
+    out_dir: Path,
+    splits: Path,
+    name: str = "VGMLoopStructure",
+) -> subprocess.CompletedProcess:
+    """Run converter with --splits; returns CompletedProcess (does not raise)."""
+    return subprocess.run(
+        [
+            sys.executable,
+            str(CONVERTER),
+            "--manifest",
+            str(manifest),
+            "--audio-root",
+            str(audio_root),
+            "--out-dir",
+            str(out_dir),
+            "--name",
+            name,
+            "--splits",
+            str(splits),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_splits_override_reassigns_split(tmp_path):
+    """--splits.json overrides the manifest's per-row 'split' field by id."""
+    manifest, audio_root = _build_mini_corpus(tmp_path / "corpus")
+
+    # Manifest splits: tc_001=train, lfs_001=val, il_001=test.
+    # splits.json flips tc_001 → test and il_001 → train.
+    splits = {
+        "tc_001": "test",
+        "lfs_001": "val",
+        "il_001": "train",
+    }
+    splits_path = tmp_path / "splits.json"
+    splits_path.write_text(json.dumps(splits))
+
+    out_dir = tmp_path / "out"
+    result = _run_converter_splits(manifest, audio_root, out_dir, splits_path)
+    assert result.returncode == 0, f"Converter crashed:\n{result.stderr}"
+
+    # train must now hold the intro_loop track (il_001), not through_composed.
+    train_rows = _read_jsonl(out_dir / "VGMLoopStructure.train.wav.jsonl")
+    assert len(train_rows) == 1
+    assert train_rows[0]["label"] == "intro_loop"
+
+    # test must now hold the through_composed track (tc_001).
+    test_rows = _read_jsonl(out_dir / "VGMLoopStructure.test.wav.jsonl")
+    assert len(test_rows) == 1
+    assert test_rows[0]["label"] == "through_composed"
+
+
+def test_splits_override_falls_back_to_manifest(tmp_path):
+    """Ids absent from splits.json keep their manifest split as fallback."""
+    manifest, audio_root = _build_mini_corpus(tmp_path / "corpus")
+
+    # Only reassign tc_001; lfs_001 + il_001 fall back to the manifest.
+    splits = {"tc_001": "test"}
+    splits_path = tmp_path / "splits.json"
+    splits_path.write_text(json.dumps(splits))
+
+    out_dir = tmp_path / "out"
+    result = _run_converter_splits(manifest, audio_root, out_dir, splits_path)
+    assert result.returncode == 0, f"Converter crashed:\n{result.stderr}"
+
+    # tc_001 → test (override); il_001 → test (manifest fallback).
+    test_rows = _read_jsonl(out_dir / "VGMLoopStructure.test.wav.jsonl")
+    labels = {r["label"] for r in test_rows}
+    assert labels == {"through_composed", "intro_loop"}, labels
+    # val keeps lfs_001 via manifest fallback.
+    val_rows = _read_jsonl(out_dir / "VGMLoopStructure.val.wav.jsonl")
+    assert len(val_rows) == 1
+    assert val_rows[0]["label"] == "loop_from_start"
+    # train is now empty (tc_001 moved to test).
+    train_rows = _read_jsonl(out_dir / "VGMLoopStructure.train.wav.jsonl")
+    assert len(train_rows) == 0
+
+
+def test_no_splits_arg_uses_manifest_split(tmp_path):
+    """Without --splits, the manifest's split field is used (unchanged behaviour)."""
+    manifest, audio_root = _build_mini_corpus(tmp_path / "corpus")
+    out_dir = tmp_path / "out"
+    _run_converter(manifest, audio_root, out_dir, name="VGMLoopStructure")
+    # Manifest split: tc_001=train, lfs_001=val, il_001=test.
+    assert _read_jsonl(out_dir / "VGMLoopStructure.train.wav.jsonl")[0]["label"] == "through_composed"
+    assert _read_jsonl(out_dir / "VGMLoopStructure.val.wav.jsonl")[0]["label"] == "loop_from_start"
+    assert _read_jsonl(out_dir / "VGMLoopStructure.test.wav.jsonl")[0]["label"] == "intro_loop"
+
+
 def _run_converter_mode(
     manifest: Path,
     audio_root: Path,

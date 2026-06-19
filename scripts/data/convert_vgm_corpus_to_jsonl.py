@@ -100,6 +100,18 @@ def main() -> None:
         help="Stem used in output filenames: <name>.{split}.wav.jsonl (default: VGMLoopStructure).",
     )
     ap.add_argument(
+        "--splits",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Optional leakage-safe splits.json (id -> split) from assign_splits.py. "
+            "When given, each row's split is taken from this file by id instead of "
+            "the manifest's per-file 'split' field, so the converter and the baseline "
+            "scorer consume the SAME leakage-safe assignment (audit C2). The manifest "
+            "split is kept as a fallback for ids absent from the file."
+        ),
+    )
+    ap.add_argument(
         "--mode",
         choices=["clip", "frame"],
         default="clip",
@@ -120,6 +132,14 @@ def main() -> None:
     with open(manifest_path, encoding="utf-8") as f:
         rows = json.load(f)
 
+    # Optional leakage-safe split override (audit C2): map id -> split from
+    # splits.json (assign_splits.py output). The manifest's per-file 'split'
+    # is only a fallback for ids absent from the file.
+    splits_map: dict | None = None
+    if args.splits:
+        with open(args.splits, encoding="utf-8") as f:
+            splits_map = json.load(f)
+
     # Accumulate rows per split
     split_rows: dict[str, list[dict]] = {s: [] for s in VALID_SPLITS}
     n_missing = 0
@@ -127,7 +147,10 @@ def main() -> None:
     n_written = 0
 
     for row in rows:
-        split = row.get("split", "").lower()
+        if splits_map is not None:
+            split = splits_map.get(row.get("id"), row.get("split", "")).lower()
+        else:
+            split = row.get("split", "").lower()
         loop_type = row.get("loop_type", "")
         audio_rel = row.get("audio_path", "")
 
