@@ -53,6 +53,7 @@ model:
     sample_rate: 24000
     use_ema: false
     target_key: boundary
+    label_freq: 25
     cache_embeddings: false
 
     encoder:

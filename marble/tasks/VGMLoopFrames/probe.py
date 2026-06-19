@@ -18,12 +18,24 @@
 # also aliased so configs can use
 #   class_path: marble.tasks.VGMLoopFrames.probe.ProbeAudioTask
 # with a ``target_key`` init_arg to select the head.
+#
+# Spec frame-level metrics (boundary-F1 @ ±0.5/±3 s, seam recall, function
+# pairwise-F) are computed on the TEST split only, per-clip, and logged
+# alongside the torchmetrics configured in YAML.  They are ported from
+# msa_compare.vgm.eval and live in frame_metrics.py.  The whole block is wrapped
+# in try/except so a metric hiccup can never break a run.
+
+import logging
 
 import torch
 from torchmetrics import MetricCollection
 
 from marble.core.base_task import BaseTask, _unpack_batch
 from marble.core.utils import instantiate_from_config
+
+from . import frame_metrics as fm
+
+logger = logging.getLogger(__name__)
 
 
 class _VGMLoopFramesProbeBase(BaseTask):
@@ -39,6 +51,10 @@ class _VGMLoopFramesProbeBase(BaseTask):
     target_key : str
         Key to extract from the per-batch ``targets`` dict.
         ``"boundary"`` → float32 heatmap; ``"function"`` → int64 class map.
+    label_freq : int
+        Frame rate (Hz) of the target tensors — MUST match the datamodule's
+        ``label_freq`` (default 25).  Used to convert frame indices to seconds
+        for the seconds-based spec metrics on the test split.
     """
 
     def __init__(
@@ -51,6 +67,7 @@ class _VGMLoopFramesProbeBase(BaseTask):
         losses: list[dict],
         metrics: dict[str, dict[str, dict]],
         target_key: str,
+        label_freq: int = 25,
         cache_embeddings: bool = False,
     ):
         enc = instantiate_from_config(encoder)
@@ -66,6 +83,7 @@ class _VGMLoopFramesProbeBase(BaseTask):
         }
 
         self.target_key = target_key
+        self.label_freq = int(label_freq)
 
         super().__init__(
             encoder=enc,
@@ -144,7 +162,21 @@ class _VGMLoopFramesProbeBase(BaseTask):
                 batch_size=bs,
             )
 
+        # ── spec frame-level metrics (test split only, per-clip) ──────────────
+        # Defensive: never let a metric error break the run.
+        if split == "test":
+            try:
+                self._log_spec_frame_metrics(logits, y, bs)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("VGMLoopFrames spec metric logging failed: %r", exc)
+
         return loss
+
+    # ── spec metric hook (overridden per head) ────────────────────────────────
+
+    def _log_spec_frame_metrics(self, logits: torch.Tensor, y: torch.Tensor, bs: int) -> None:
+        """No-op on the base; boundary / function heads override this."""
+        return None
 
     def training_step(self, batch, batch_idx: int) -> torch.Tensor:
         return self._shared_step(batch, batch_idx, "train")
@@ -162,12 +194,52 @@ class VGMLoopBoundaryProbe(_VGMLoopFramesProbeBase):
 
     Decoder: (B, L, 1) logits → squeezed to (B, L).
     Loss:    BCEWithLogitsLoss vs (B, L) float32 heatmap.
-    Metric:  configured in YAML (e.g. BinaryAUROC or BinaryF1Score).
+    Metric:  configured in YAML (e.g. BinaryAUROC or BinaryF1Score), plus
+             spec boundary-F1 @ ±0.5/±3 s + seam recall logged on test.
     """
 
     def __init__(self, **kwargs):
         kwargs.setdefault("target_key", "boundary")
         super().__init__(**kwargs)
+
+    def _log_spec_frame_metrics(self, logits: torch.Tensor, y: torch.Tensor, bs: int) -> None:
+        # logits/y are (B, L).  Peak-pick predicted heatmap (after sigmoid) and
+        # the GT heatmap per-clip, convert frames→seconds via label_freq, then
+        # boundary-F1 @ ±0.5/±3 s.  GT seam is approximated as the LATEST GT
+        # boundary (loop seam comes after the intro_end boundary); see report
+        # caveat — the heatmap alone does not tag which peak is the seam.
+        probs = torch.sigmoid(logits).detach().float().cpu().numpy()  # (B, L)
+        gt = y.detach().float().cpu().numpy()  # (B, L)
+        B = probs.shape[0]
+
+        agg: dict[str, list[float]] = {}
+        for b in range(B):
+            est_frames = fm.peak_pick_boundaries(probs[b], threshold=0.5)
+            gt_frames = fm.peak_pick_boundaries(gt[b], threshold=0.5)
+            est_sec = fm.frames_to_seconds(est_frames, self.label_freq)
+            gt_sec = fm.frames_to_seconds(gt_frames, self.label_freq)
+
+            bm = fm.boundary_metrics(gt_sec, est_sec)
+            for k in ("f_0_5", "f_3_0", "p_0_5", "p_3_0", "r_0_5", "r_3_0"):
+                agg.setdefault(f"boundary_{k}", []).append(bm[k])
+
+            # Seam recall: only meaningful when there is a GT seam to hit.
+            if gt_sec:
+                seam = max(gt_sec)  # latest boundary ≈ loop seam (see caveat)
+                sr = fm.seam_recall(seam, est_sec)
+                for w in ("0_5", "3_0"):
+                    agg.setdefault(f"seam_recall_{w}", []).append(sr[f"recall_{w}"])
+
+        for name, vals in agg.items():
+            if vals:
+                self.log(
+                    f"test/{name}",
+                    float(sum(vals) / len(vals)),
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=bs,
+                )
 
 
 class VGMLoopFunctionProbe(_VGMLoopFramesProbeBase):
@@ -176,12 +248,44 @@ class VGMLoopFunctionProbe(_VGMLoopFramesProbeBase):
 
     Decoder: (B, L, 3) logits.
     Loss:    CrossEntropyLoss — expects (B*L, 3) logits vs (B*L,) int64.
-    Metric:  MulticlassAccuracy num_classes=3 (configured in YAML).
+    Metric:  MulticlassAccuracy num_classes=3 (configured in YAML), plus spec
+             pairwise-F + frame-label agreement + single-segment fraction (test).
     """
 
     def __init__(self, **kwargs):
         kwargs.setdefault("target_key", "function")
         super().__init__(**kwargs)
+
+    def _log_spec_frame_metrics(self, logits: torch.Tensor, y: torch.Tensor, bs: int) -> None:
+        # logits (B, L, 3) → argmax over classes → (B, L) predicted class map.
+        preds = logits.detach().argmax(dim=-1).cpu().numpy()  # (B, L)
+        gt = y.detach().cpu().numpy()  # (B, L)
+        B = preds.shape[0]
+
+        pf_vals: list[float] = []
+        agr_vals: list[float] = []
+        single_flags: list[float] = []
+        for b in range(B):
+            m = fm.function_frame_metrics(gt[b], preds[b])
+            pf_vals.append(m["pairwise_f"])
+            agr_vals.append(m["frame_label_agreement"])
+            single_flags.append(1.0 if fm.is_single_segment(gt[b]) else 0.0)
+
+        logged = {
+            "test/function_pairwise_f": pf_vals,
+            "test/function_frame_label_agreement": agr_vals,
+            "test/function_single_segment_frac": single_flags,
+        }
+        for name, vals in logged.items():
+            if vals:
+                self.log(
+                    name,
+                    float(sum(vals) / len(vals)),
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                    batch_size=bs,
+                )
 
 
 # Generic alias so YAML can use class_path: marble.tasks.VGMLoopFrames.probe.ProbeAudioTask
