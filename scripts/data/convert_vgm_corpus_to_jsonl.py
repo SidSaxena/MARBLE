@@ -123,6 +123,7 @@ def main() -> None:
     # Accumulate rows per split
     split_rows: dict[str, list[dict]] = {s: [] for s in VALID_SPLITS}
     n_missing = 0
+    n_skipped = 0
     n_written = 0
 
     for row in rows:
@@ -130,12 +131,16 @@ def main() -> None:
         loop_type = row.get("loop_type", "")
         audio_rel = row.get("audio_path", "")
 
+        # Normalize "valid" → "val" to match repo convention (see download_nsynth.py)
+        split = {"valid": "val"}.get(split, split)
+
         # Validate split
         if split not in VALID_SPLITS:
             print(
                 f"WARNING: row id={row.get('id')!r} has unknown split {split!r} — skipping",
                 file=sys.stderr,
             )
+            n_skipped += 1
             continue
 
         # Validate label
@@ -144,6 +149,7 @@ def main() -> None:
                 f"WARNING: row id={row.get('id')!r} has unknown loop_type {loop_type!r} — skipping",
                 file=sys.stderr,
             )
+            n_skipped += 1
             continue
 
         wav_path = audio_root / audio_rel
@@ -212,7 +218,9 @@ def main() -> None:
         print(f"Wrote {len(out_rows):4d} rows → {out_file}")
 
     print(
-        f"\nDone: {n_written} rows written, {n_missing} skipped (missing/unreadable).",
+        f"\nDone: {n_written} rows written, "
+        f"{n_skipped} skipped (unknown split/label), "
+        f"{n_missing} skipped (missing/unreadable).",
         file=sys.stderr,
     )
 
