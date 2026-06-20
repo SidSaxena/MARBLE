@@ -95,3 +95,14 @@ class ProbeAudioTask(BaseTask):
         if mc is not None:
             metrics_out = mc(batched_logits, batched_labels)
             self.log_dict(metrics_out, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+        # Comprehensive per-class test metrics (heatmap + F1 scalars + confusion).
+        try:
+            from marble.modules.test_metrics import log_classification_test_metrics
+            from marble.tasks.HookTheoryStructure.datamodule import _HookTheoryStructureAudioBase as _DM
+            classes = [_DM.IDX2LABEL[i] for i in sorted(_DM.IDX2LABEL)]
+            preds = batched_logits.argmax(dim=-1).tolist()
+            labels = [int(x) for x in batched_labels.tolist()]
+            log_classification_test_metrics(self, preds, labels, classes,
+                                            log_f1_macro=True)
+        except Exception as e:
+            print(f"[hts-metrics] per-class metrics skipped: {e}")

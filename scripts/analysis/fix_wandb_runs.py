@@ -1,143 +1,87 @@
 #!/usr/bin/env python3
-"""scripts/analysis/fix_wandb_runs.py
-──────────────────────────────────────
-Retroactively normalize WandB runs that were created before the unified
-naming convention landed. Dry-run by default — pass --apply to actually
-write changes via the WandB API.
+"""scripts/analysis/fix_wandb_runs.py — first-class W&B run operations.
 
-What it fixes
--------------
-1. `GTZANBeatTracking` group (missing model prefix) → renamed to
-   `MERT-v1-95M / GTZANBeatTracking` (model inferred from existing tags).
+A reusable CLI for the routine W&B run-management tasks this project needs.
+Dry-run by default; pass ``--apply`` to write. Nothing is ever deleted.
 
-2. Modal SHS100K runs in `CLaMP3 / SHS100K` and `MERT-v1-95M / SHS100K`
-   that have the bare name `layer-N` (no -fit/-test suffix) — renamed to
-   `layer-N-fit` (no test/* keys in summary) or `layer-N-test` (has
-   `test/*` keys), with matching `job_type` set via tags and the
-   added `modal` source tag.
+Subcommands
+-----------
+  list      Show runs matching a selection (id, name, group, job_type, state,
+            tags, whether they carry test/* metrics).
+  set       Bulk-set name / group / job_type / tags on the selected runs
+            (via ``run.update()`` — the proven, persistent path).
+  archive   Mark the selected runs' group with a ``[archive]`` suffix and move
+            them to the ``marble-archive`` project — ONE run at a time via the
+            SCALAR moveRuns filter (see safety note). Supersedes ad-hoc archival.
+  normalize Legacy one-off naming normalizer (historical fixes #1-#7); kept for
+            reproducibility. See ``normalize --help``.
 
-3. Legacy OMARRQ-multifeature25hz (un-hyphenated) groups → explicit
-   `OMARRQ-multifeature-25hz-fsq / <task>` (the audit found that all
-   historical OMARRQ-multifeature25hz runs were the -fsq variant).
+Selection flags (shared by list/set/archive)
+--------------------------------------------
+  --group GROUP            exact group match (e.g. "MuQ / VGMLoopStructure")
+  --group-regex RE         regex over the group name
+  --name-regex RE          regex over the run name (e.g. "^layer-(8|9)-")
+  --state STATE            finished | running | crashed | failed | killed
+  --layers 8 9 10          restrict to these layer indices (parsed from name/tags)
+  --ids ID [ID ...]        operate on these exact run ids (skips the scan)
 
-4. Cross-cutting encoder-family tag (`OMARRQ`, `MERT`, `CLaMP3`,
-   `CLaMP3-symbolic`, `MuQ`, `MusicFM`, `DaSheng`) added to every run
-   for filterability, and `layer-sweep` added to every per-sweep run
-   that was missing it (some early base configs forgot to include it).
-
-5. Meanall runs live in the per-layer sweep group, NOT a sibling
-   `<encoder>-meanall / <task>` group. Detected by tags/name signals
-   (mean-all, mean-agg, layer-meanall, "meanall" in name, variant-swap,
-   legacy variant-audit run names). For each match:
-     - strip any `-meanall` suffix from the group  →  parent group
-     - rename to `layer-meanall-<fit|test>` (kind from test/* keys)
-     - ensure tag `mean-all`; drop the now-redundant `layer-meanall`
-       (the run name already conveys layer-position) and legacy
-       `mean-agg` + contradictory `single-layer`.
-   The earlier convention put meanall in its own group; this fix
-   migrates those runs back to live alongside layer-0..N-1.
-
-6. The non-FSQ variant became the default for every OMARRQ family
-   (FSQ keeps its explicit `-fsq` suffix), so any `-nonfsq` in the
-   group/tag is redundant:
-     - `OMARRQ-multifeature-25hz-nonfsq` → `OMARRQ-multifeature-25hz`
-     - `OMARRQ-multifeature-nonfsq`      → `OMARRQ-multifeature`
-
-7. Tag cleanup:
-     - Drop legacy un-hyphenated `OMARRQ-multifeature25hz` slug from
-       runs that already have the new hyphenated tag — having both is
-       just sidebar noise.
-     - Drop `single-layer` everywhere — the `layer-N` tag plus the
-       absence of `mean-all` already conveys "single-layer".
-
-Skips runs that already follow the convention — idempotent re-run
-prints "no change".
+moveRuns SAFETY (read before touching archive)
+----------------------------------------------
+W&B officially supports moving runs only via the UI. The ``moveRuns`` GraphQL
+mutation is internal and its ``filters`` JSONString does NOT behave like
+``api.runs(filters=...)``. A ``{"$or": [...]}`` filter once over-matched ~1041
+runs (ignored scope); ``{}`` drains the whole project. The ONLY safe form is a
+scalar ``{"name": "<single_id>"}`` that moves exactly one run. This tool ALWAYS
+moves one id at a time with that scalar form and refuses anything else, then
+verifies that the source project lost exactly the moved ids and the archive
+gained no extras. Moves are reversible (archive→marble); deletes are not — and
+this tool never deletes.
 
 Usage
 -----
-    # Dry-run: print everything that would change, write nothing
-    uv run python scripts/analysis/fix_wandb_runs.py
+    # what runs match?
+    uv run python scripts/analysis/fix_wandb_runs.py list \
+        --group "MuQ / VGMLoopStructure" --layers 8 9 10 11 12 --state finished
 
-    # Apply changes
-    uv run python scripts/analysis/fix_wandb_runs.py --apply
+    # set job_type on some runs
+    uv run python scripts/analysis/fix_wandb_runs.py set \
+        --ids abc123 def456 --job-type test --apply
 
-    # Operate on a specific WandB project / entity
-    uv run python scripts/analysis/fix_wandb_runs.py \\
-        --project marble --entity sidsaxena-universitat-pompeu-fabra --apply
+    # archive the superseded MuQ 8-12 runs (dry-run first, then --apply)
+    uv run python scripts/analysis/fix_wandb_runs.py archive \
+        --ids abc123 def456 ... --apply
+
+    # legacy normalizer
+    uv run python scripts/analysis/fix_wandb_runs.py normalize --apply
 """
+from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import time
 
-# Groups we will touch — anything else is left strictly alone.
-# Value (when set) overrides per-run model-from-tags inference; None means
-# infer from each run's existing tags (whichever model tag is present).
-BROKEN_GROUPS_NO_MODEL_PREFIX = {
-    "GTZANBeatTracking": None,  # actually OMARRQ-multifeature25hz per tags
-}
-MODAL_SHS100K_GROUPS = {
-    "CLaMP3 / SHS100K",
-    "MERT-v1-95M / SHS100K",
-}
+DEFAULT_ENTITY = "sidsaxena-universitat-pompeu-fabra"
+DEFAULT_PROJECT = "marble"
+ARCHIVE_PROJECT = "marble-archive"
+ARCHIVE_SUFFIX = "[archive]"
 
-# Per the 2026-05-14 variant audit, all historical OMARRQ-multifeature25hz
-# runs used the -fsq variant (the original default). Rename retroactively
-# so the variant is explicit in the group name; new runs going forward use
-# OMARRQ-multifeature-25hz (hyphen, non-fsq is the new default).
-LEGACY_OMARRQ_GROUP_RENAMES: dict[str, str] = {
-    # Original sweep groups → explicit -fsq label
-    # Group rewrites: replace OMARRQ-multifeature25hz (no hyphen) →
-    # OMARRQ-multifeature-25hz-fsq (hyphenated + fsq-explicit).
-    # Plus the meanall variants.
-}
-# Built programmatically below — covers all tasks dynamically.
-
-# Known model tag values (used to pick the right one out of a run's tags).
 KNOWN_MODEL_TAGS = {
-    "MERT-v1-95M",
-    "CLaMP3",
-    "OMARRQ-multifeature25hz",  # legacy spelling (no hyphen)
-    "OMARRQ-multifeature-25hz",  # new convention
-    "OMARRQ-multifeature-25hz-fsq",  # explicit-fsq retro label
-    "MuQ",
-    "MusicFM",
-    "DaSheng",
+    "MERT-v1-95M", "CLaMP3", "OMARRQ-multifeature25hz", "OMARRQ-multifeature-25hz",
+    "OMARRQ-multifeature-25hz-fsq", "MuQ", "MusicFM", "DaSheng",
 }
 
 
-def _is_legacy_omarrq_group(group: str) -> str | None:
-    """Detect legacy OMARRQ groups (un-hyphenated 25hz). Returns the new
-    group name with hyphens AND -fsq variant suffix, or None if no rewrite."""
-    # OMARRQ-multifeature25hz-meanall / X → OMARRQ-multifeature-25hz-fsq-meanall / X
-    m = re.match(r"^OMARRQ-multifeature25hz-meanall / (.+)$", group)
-    if m:
-        return f"OMARRQ-multifeature-25hz-fsq-meanall / {m.group(1)}"
-    # OMARRQ-multifeature25hz / X → OMARRQ-multifeature-25hz-fsq / X
-    m = re.match(r"^OMARRQ-multifeature25hz / (.+)$", group)
-    if m:
-        return f"OMARRQ-multifeature-25hz-fsq / {m.group(1)}"
-    return None
-
-
-def _infer_model(run) -> str | None:
-    """Pick the model tag from a run's tag list, if any."""
-    for t in run.tags or []:
-        if t in KNOWN_MODEL_TAGS:
-            return t
-    return None
-
+# ── shared helpers ──────────────────────────────────────────────────────────
 
 def _has_test_metric(run) -> bool:
-    # NOTE: wandb's `Summary` object iterates over integer indices when
-    # you `for k in run.summary` — you must call `.keys()` explicitly to
-    # get string metric names. (ruff's SIM118 autofix gets this wrong.)
+    # wandb's Summary iterates integer indices under `for k in summary`; use
+    # .keys() to get string metric names. (ruff SIM118 autofix is wrong here.)
     return any(str(k).startswith("test/") for k in run.summary.keys())  # noqa: SIM118
 
 
 def _layer_index(run) -> int | None:
-    # Prefer the name; fall back to tags ("layer-N").
     m = re.search(r"layer-?(\d+)", run.name or "")
     if m:
         return int(m.group(1))
@@ -148,42 +92,45 @@ def _layer_index(run) -> int | None:
     return None
 
 
+def _infer_model(run) -> str | None:
+    for t in run.tags or []:
+        if t in KNOWN_MODEL_TAGS:
+            return t
+    return None
+
+
 def _ensure_tag(tags: list[str], wanted: str) -> list[str]:
-    if wanted in tags:
-        return tags
-    return tags + [wanted]
+    return tags if wanted in tags else tags + [wanted]
 
 
 def _remove_tags(tags: list[str], unwanted: set[str]) -> list[str]:
     return [t for t in tags if t not in unwanted]
 
 
-def _planned_changes(run, *, new_name=None, new_group=None, tag_add=(), tag_remove=()):
-    """Return [(field, value), ...] for changes that would actually flip
-    a run's state. Used by both dry-run (to skip no-op intents) and
-    _apply (so re-runs are idempotent end-to-end)."""
+def _planned_changes(run, *, new_name=None, new_group=None, new_job_type=None,
+                     tag_add=(), tag_remove=()):
+    """Changes that would actually flip the run's state (keeps re-runs idempotent)."""
     changes = []
     if new_name and run.name != new_name:
         changes.append(("name", new_name))
-    if new_group and run.group != new_group:
+    if new_group is not None and run.group != new_group:
         changes.append(("group", new_group))
-    cur_tags = list(run.tags or [])
-    new_tags = _remove_tags(cur_tags, set(tag_remove))
+    if new_job_type and getattr(run, "job_type", None) != new_job_type:
+        changes.append(("job_type", new_job_type))
+    cur = list(run.tags or [])
+    nt = _remove_tags(cur, set(tag_remove))
     for t in tag_add:
-        new_tags = _ensure_tag(new_tags, t)
-    if new_tags != cur_tags:
-        changes.append(("tags", new_tags))
+        nt = _ensure_tag(nt, t)
+    if nt != cur:
+        changes.append(("tags", nt))
     return changes
 
 
-def _apply(run, *, new_name=None, new_group=None, tag_add=(), tag_remove=()):
-    changes = _planned_changes(
-        run,
-        new_name=new_name,
-        new_group=new_group,
-        tag_add=tag_add,
-        tag_remove=tag_remove,
-    )
+def _apply(run, *, new_name=None, new_group=None, new_job_type=None,
+           tag_add=(), tag_remove=()):
+    changes = _planned_changes(run, new_name=new_name, new_group=new_group,
+                               new_job_type=new_job_type, tag_add=tag_add,
+                               tag_remove=tag_remove)
     fields = []
     for field, value in changes:
         setattr(run, field, value)
@@ -191,298 +138,373 @@ def _apply(run, *, new_name=None, new_group=None, tag_add=(), tag_remove=()):
     return fields
 
 
-def main():
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    ap.add_argument("--project", default="marble")
-    ap.add_argument(
-        "--entity", default=None, help="WandB entity (default: authenticated user's default)"
-    )
-    ap.add_argument(
-        "--apply",
-        action="store_true",
-        help="Actually write changes. Without this, prints intended changes only.",
-    )
-    ap.add_argument(
-        "--sleep",
-        type=float,
-        default=0.3,
-        help="Sleep (s) between API writes to avoid rate limits (default: 0.3)",
-    )
-    args = ap.parse_args()
+# ── run selection ───────────────────────────────────────────────────────────
 
+def select_runs(api, proj, args):
+    """Return the runs matching the shared selection flags on ``args``."""
+    if getattr(args, "ids", None):
+        out = []
+        for rid in args.ids:
+            try:
+                out.append(api.run(f"{proj}/{rid}"))
+            except Exception as e:  # noqa: BLE001
+                print(f"  ! id {rid} not found: {e}", file=sys.stderr)
+        return out
+    runs = list(api.runs(proj, per_page=500))
+    layers = set(args.layers) if getattr(args, "layers", None) else None
+    sel = []
+    for r in runs:
+        if args.group and (r.group or "") != args.group:
+            continue
+        if args.group_regex and not re.search(args.group_regex, r.group or ""):
+            continue
+        if args.name_regex and not re.search(args.name_regex, r.name or ""):
+            continue
+        if args.state and r.state != args.state:
+            continue
+        if layers is not None and _layer_index(r) not in layers:
+            continue
+        sel.append(r)
+    return sel
+
+
+def _describe(r) -> str:
+    jt = getattr(r, "job_type", None)
+    return (f"{r.id}  state={r.state:<8} group={r.group!r}  name={r.name!r}  "
+            f"job_type={jt!r}  test={_has_test_metric(r)}  tags={r.tags}")
+
+
+# ── moveRuns (DANGEROUS — scalar, one id at a time, guarded) ─────────────────
+
+def _gql():
     try:
-        import wandb
-    except ImportError:
-        print("wandb not installed.", file=sys.stderr)
-        sys.exit(2)
+        from wandb_gql import gql  # vendored by wandb
+    except Exception:  # noqa: BLE001
+        from gql import gql
+    return gql
 
-    api = wandb.Api()
-    proj = f"{args.entity}/{args.project}" if args.entity else args.project
+
+_MOVE_MUTATION = """
+mutation MoveRuns($input: MoveRunsInput!) {
+  moveRuns(input: $input) { clientMutationId }
+}
+"""
+
+
+def _count_runs(api, proj) -> int:
+    try:
+        return len(list(api.runs(proj, per_page=500)))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _move_one(api, entity, src_project, run_id, *, dest_project=ARCHIVE_PROJECT):
+    """Move EXACTLY ONE run to ``dest_project`` via the scalar moveRuns filter.
+
+    Hard-refuses any non-string / empty id so the filter can never become a
+    bulk ``$or``/``$in``/``{}`` selector.
+    """
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError(f"refusing non-scalar run id: {run_id!r}")
+    filters = json.dumps({"name": run_id})  # SCALAR — matches exactly one run
+    inp = {
+        "sourceEntityName": entity,
+        "sourceProjectName": src_project,
+        "destinationEntityName": entity,
+        "destinationProjectName": dest_project,
+        "filters": filters,
+    }
+    api.client.execute(_gql()(_MOVE_MUTATION), variable_values={"input": inp})
+
+
+# ── subcommands ─────────────────────────────────────────────────────────────
+
+def cmd_list(api, proj, args):
+    runs = select_runs(api, proj, args)
+    print(f"{len(runs)} run(s) in {proj}:\n")
+    for r in sorted(runs, key=lambda r: (r.group or "", r.name or "")):
+        print("  " + _describe(r))
+
+
+def cmd_set(api, proj, args):
+    runs = select_runs(api, proj, args)
+    if not runs:
+        print("No runs matched the selection.")
+        return
+    print(f"{'APPLY' if args.apply else 'DRY-RUN'}: {len(runs)} run(s) selected\n")
+    n = 0
+    for r in runs:
+        planned = _planned_changes(
+            r, new_name=args.name, new_group=args.group_to,
+            new_job_type=args.job_type, tag_add=tuple(args.add_tag or ()),
+            tag_remove=set(args.remove_tag or ()))
+        if not planned:
+            continue
+        print("  " + _describe(r))
+        print(f"      → {planned}")
+        if args.apply:
+            _apply(r, new_name=args.name, new_group=args.group_to,
+                   new_job_type=args.job_type, tag_add=tuple(args.add_tag or ()),
+                   tag_remove=set(args.remove_tag or ()))
+            try:
+                r.update()
+                print("      ✓ written")
+                n += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"      ✗ write failed: {e}")
+            time.sleep(args.sleep)
+    print(f"\n{'Wrote' if args.apply else 'Would write'}: {n if args.apply else '—'}")
+
+
+def cmd_archive(api, proj, args, entity, project):
+    runs = select_runs(api, proj, args)
+    if not runs:
+        print("No runs matched the selection — nothing to archive.")
+        return
+    # Safety: archive needs an explicit, scoped selection.
+    if not (args.ids or args.group or args.group_regex or args.name_regex
+            or args.layers):
+        print("Refusing to archive without a scoped selection "
+              "(use --ids / --group / --name-regex / --layers).", file=sys.stderr)
+        sys.exit(2)
+    ids = [r.id for r in runs]
+    print(f"{'APPLY' if args.apply else 'DRY-RUN'}: archive {len(runs)} run(s) "
+          f"({proj} → {entity}/{ARCHIVE_PROJECT})\n")
+    for r in runs:
+        print("  " + _describe(r))
+    if not args.apply:
+        print("\nRe-run with --apply to (1) suffix the group with "
+              f"'{ARCHIVE_SUFFIX}' and (2) move each run individually.")
+        return
+
+    archive_proj = f"{entity}/{ARCHIVE_PROJECT}"
+    arch_before = _count_runs(api, archive_proj)
+    print(f"\nmarble-archive run count before: {arch_before}")
+
+    # Step 1: mark group [archive] (reliable run.update()).
+    print("\n[1/3] tagging groups with " + ARCHIVE_SUFFIX)
+    for r in runs:
+        g = (r.group or "").strip()
+        if g.endswith(ARCHIVE_SUFFIX):
+            continue
+        newg = f"{g} {ARCHIVE_SUFFIX}".strip()
+        r.group = newg
+        try:
+            r.update()
+            print(f"  ✓ {r.id} group → {newg!r}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ✗ {r.id} group update failed: {e}")
+        time.sleep(args.sleep)
+
+    # Step 2: move each run ONE AT A TIME via the scalar filter.
+    print("\n[2/3] moving runs to marble-archive (one id at a time)")
+    moved = []
+    for rid in ids:
+        try:
+            _move_one(api, entity, project, rid)
+            moved.append(rid)
+            print(f"  ✓ requested move: {rid}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ✗ move failed for {rid}: {e}")
+        time.sleep(max(args.sleep, 0.5))
+
+    # Step 3: verify (moveRuns is async — poll the source for disappearance).
+    print("\n[3/3] verifying (moveRuns is async; polling source project)…")
+    deadline = args.verify_timeout
+    waited = 0.0
+    src_ids = set(ids)
+    while waited < deadline:
+        remaining = []
+        for rid in moved:
+            try:
+                api.run(f"{proj}/{rid}")
+                remaining.append(rid)
+            except Exception:  # noqa: BLE001
+                pass  # gone from source = moved
+        if not remaining:
+            break
+        time.sleep(5)
+        waited += 5
+    arch_after = _count_runs(api, archive_proj)
+    gained = arch_after - arch_before if arch_before >= 0 and arch_after >= 0 else None
+    print(f"\nmarble-archive run count after: {arch_after}"
+          + (f"  (gained {gained}, expected {len(moved)})" if gained is not None else ""))
+    if gained is not None and gained > len(moved):
+        print("  ⚠️  archive gained MORE runs than moved — investigate immediately.",
+              file=sys.stderr)
+    still = [rid for rid in moved if _run_exists(api, proj, rid)]
+    if still:
+        print(f"  (still resolving in source, async lag is normal): {still}")
+    print("\nDone.")
+
+
+def _run_exists(api, proj, rid) -> bool:
+    try:
+        api.run(f"{proj}/{rid}")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def cmd_normalize(api, proj, args):
+    """Legacy one-off naming normalizer (historical fixes #1-#7).
+
+    Preserved verbatim in intent from the original fix_wandb_runs.py so a
+    re-run is reproducible. Idempotent: prints "no change" for already-correct
+    runs. See the module history for the full rationale of each fix.
+    """
     runs = list(api.runs(proj, per_page=500))
     print(f"Loaded {len(runs)} runs from {proj}")
-
-    mode = "APPLY" if args.apply else "DRY-RUN"
-    print(f"Mode: {mode}\n")
-
-    n_touched = 0
-    n_skipped = 0
-
+    print(f"Mode: {'APPLY' if args.apply else 'DRY-RUN'}\n")
+    MODAL_SHS100K_GROUPS = {"CLaMP3 / SHS100K", "MERT-v1-95M / SHS100K"}
+    BROKEN_GROUPS = {"GTZANBeatTracking": None}
+    NONFSQ = {"OMARRQ-multifeature-25hz-nonfsq": "OMARRQ-multifeature-25hz",
+              "OMARRQ-multifeature-nonfsq": "OMARRQ-multifeature"}
+    legacy_meanall_names = {"nonfsq-test", "base-test", "25hz-nonfsq-test", "variant-swap"}
+    n_touched = n_skipped = 0
     for r in runs:
         group = r.group or ""
         name = r.name or ""
         intent: dict = {}
-
-        # ── Fix #1: orphan groups missing the model prefix ──────────────────
-        if group in BROKEN_GROUPS_NO_MODEL_PREFIX:
-            forced = BROKEN_GROUPS_NO_MODEL_PREFIX[group]
-            model = forced or _infer_model(r)
+        if group in BROKEN_GROUPS:
+            model = BROKEN_GROUPS[group] or _infer_model(r)
             if model is None:
-                print(f"  ! {r.id} in {group} — no model tag, skipping")
                 continue
             intent["new_group"] = f"{model} / {group}"
             intent.setdefault("tag_add", []).append(model)
-
-        # ── Fix #2: Modal SHS100K runs with bare `layer-N` name ─────────────
         if group in MODAL_SHS100K_GROUPS:
             layer = _layer_index(r)
-            if layer is None:
-                continue
-            # If already has -fit/-test, this run is already fine.
-            if not (name.endswith("-fit") or name.endswith("-test")):
+            if layer is not None and not (name.endswith("-fit") or name.endswith("-test")):
                 kind = "test" if _has_test_metric(r) else "fit"
                 intent["new_name"] = f"layer-{layer}-{kind}"
-                intent.setdefault("tag_add", []).append(kind)
-                intent["tag_add"].append("modal")
-                # Drop the conflicting opposite if present (defensive)
+                intent.setdefault("tag_add", []).extend([kind, "modal"])
                 intent["tag_remove"] = {"fit", "test"} - {kind}
-
-        # ── Fix #3: legacy OMARRQ-multifeature25hz → variant-explicit name ──
-        legacy_rename = _is_legacy_omarrq_group(group)
-        if legacy_rename is not None:
-            intent["new_group"] = legacy_rename
-            # Tag both the new variant slug AND fsq for filterability.
-            # Drop the legacy un-hyphenated slug `OMARRQ-multifeature25hz`
-            # since the new hyphenated slug supersedes it (otherwise the
-            # filter sidebar shows two entries for the same encoder).
-            intent.setdefault("tag_add", []).extend(
-                [
-                    "OMARRQ-multifeature-25hz-fsq",
-                    "fsq",
-                ]
-            )
-            intent.setdefault("tag_remove", set())
-            if not isinstance(intent["tag_remove"], set):
-                intent["tag_remove"] = set(intent["tag_remove"])
-            intent["tag_remove"].add("OMARRQ-multifeature25hz")
-            # If the new group has -meanall, also tag the aggregation
-            if "meanall" in legacy_rename:
+        m = re.match(r"^OMARRQ-multifeature25hz(-meanall)? / (.+)$", group)
+        if m:
+            suffix = "-fsq-meanall" if m.group(1) else "-fsq"
+            intent["new_group"] = f"OMARRQ-multifeature-25hz{suffix} / {m.group(2)}"
+            intent.setdefault("tag_add", []).extend(["OMARRQ-multifeature-25hz-fsq", "fsq"])
+            tr = intent.get("tag_remove", set())
+            tr = tr if isinstance(tr, set) else set(tr)
+            tr.add("OMARRQ-multifeature25hz")
+            intent["tag_remove"] = tr
+            if m.group(1):
                 intent["tag_add"].append("mean-all")
-            # Note: we no longer add `single-layer` to per-layer runs —
-            # the `layer-N` tag + absence of `mean-all` already conveys
-            # that this is a single-layer run.
-
-        # ── Fix #6: drop redundant `-nonfsq` suffix from OMARRQ slugs ───────
-        # The non-FSQ variant became the default for every OMARRQ family
-        # (the FSQ variant retains its explicit `-fsq` suffix), so any
-        # `-nonfsq` in the group name or encoder tag is redundant.
-        NONFSQ_RENAMES = {
-            "OMARRQ-multifeature-25hz-nonfsq": "OMARRQ-multifeature-25hz",
-            "OMARRQ-multifeature-nonfsq": "OMARRQ-multifeature",
-        }
-        effective_group = intent.get("new_group", group)
-        if " / " in effective_group:
-            enc, task = effective_group.split(" / ", 1)
-            if enc in NONFSQ_RENAMES:
-                new_enc = NONFSQ_RENAMES[enc]
-                intent["new_group"] = f"{new_enc} / {task}"
-                # Replace the encoder tag if the old slug is on the run.
-                cur_tags_set = set(r.tags or [])
-                if enc in cur_tags_set:
-                    intent.setdefault("tag_remove", set())
-                    if not isinstance(intent["tag_remove"], set):
-                        intent["tag_remove"] = set(intent["tag_remove"])
-                    intent["tag_remove"].add(enc)
-                if new_enc not in cur_tags_set:
-                    intent.setdefault("tag_add", []).append(new_enc)
-
-        # ── Fix #7: drop redundant / superseded tags everywhere ────────────
-        # - `single-layer`: originally added as a complement to `mean-all`
-        #   but the `layer-N` tag + absence of `mean-all` already conveys
-        #   it. Pure noise.
-        # - `OMARRQ-multifeature25hz` (un-hyphenated): legacy slug from
-        #   before the variant audit. Runs that ALSO have the new
-        #   hyphenated slug (`OMARRQ-multifeature-25hz` or
-        #   `OMARRQ-multifeature-25hz-fsq`) shouldn't keep both — having
-        #   two encoder tags pointing at the same run pollutes the
-        #   sidebar filter list. Only drop the legacy tag if the new one
-        #   is present, so we never strip without an unambiguous
-        #   replacement.
-        cur_tags_set = set(r.tags or [])
-        new_hyphenated_present = (
-            "OMARRQ-multifeature-25hz" in cur_tags_set
-            or "OMARRQ-multifeature-25hz-fsq" in cur_tags_set
-        )
-        for stale in ("single-layer",):
-            if stale in cur_tags_set:
-                intent.setdefault("tag_remove", set())
-                if not isinstance(intent["tag_remove"], set):
-                    intent["tag_remove"] = set(intent["tag_remove"])
-                intent["tag_remove"].add(stale)
-        if "OMARRQ-multifeature25hz" in cur_tags_set and new_hyphenated_present:
-            intent.setdefault("tag_remove", set())
-            if not isinstance(intent["tag_remove"], set):
-                intent["tag_remove"] = set(intent["tag_remove"])
-            intent["tag_remove"].add("OMARRQ-multifeature25hz")
-
-        # ── Fix #5: meanall runs live in the per-layer sweep group ──────────
-        # New convention (2026-05-14): mean-of-all-layers is just another
-        # aggregation choice for the same (encoder, task), so it belongs in
-        # the SAME WandB group as the per-layer sweep — named
-        # `layer-meanall-<fit|test>` alongside `layer-N-<fit|test>`. This
-        # lets WandB's group view show the full comparison in one panel.
-        #
-        # Detection (signal-based; Lightning's WandbLogger doesn't expose
-        # the nested `emb_transforms.init_args.mode` config):
-        #   1. tag "mean-all" / "mean-agg" / "layer-meanall"
-        #   2. name contains "meanall"           (e.g. meanall-fit, layer-meanall-test)
-        #   3. tag "variant-swap"                (legacy single-shot meanall tests
-        #      from the OMAR-RQ variant audit — all mean-of-all-layers per YAML)
-        #   4. legacy bare names: nonfsq-test, base-test, 25hz-nonfsq-test
-        #
-        # Action (idempotent):
-        #   - strip any trailing "-meanall" from group  →  parent group
-        #   - rename to `layer-meanall-<fit|test>` (kind inferred from test/* keys)
-        #   - add `mean-all` + `layer-meanall` tags; drop legacy `mean-agg`
-        cur_tags = set(r.tags or [])
-        legacy_meanall_names = {
-            "nonfsq-test",
-            "base-test",
-            "25hz-nonfsq-test",
-            "variant-swap",
-        }
-        is_meanall = (
-            ("mean-agg" in cur_tags)
-            or ("mean-all" in cur_tags)
-            or ("layer-meanall" in cur_tags)
-            or "meanall" in (name or "")
-            or ("variant-swap" in cur_tags)
-            or (name in legacy_meanall_names)
-        )
-
-        effective_group = intent.get("new_group", group)
-        if is_meanall and " / " in effective_group:
-            enc_part, task_part = effective_group.split(" / ", 1)
-            # Move out of any `-meanall` group back to the parent encoder
-            # group so meanall sits alongside the per-layer runs.
-            enc_canonical = enc_part.removesuffix("-meanall")
-            if enc_canonical != enc_part:
-                intent["new_group"] = f"{enc_canonical} / {task_part}"
-
-            # Normalize the run name to `layer-meanall-<fit|test>`.
+        eff = intent.get("new_group", group)
+        if " / " in eff:
+            enc, task = eff.split(" / ", 1)
+            if enc in NONFSQ:
+                intent["new_group"] = f"{NONFSQ[enc]} / {task}"
+                cur = set(r.tags or [])
+                tr = intent.get("tag_remove", set())
+                tr = tr if isinstance(tr, set) else set(tr)
+                if enc in cur:
+                    tr.add(enc)
+                intent["tag_remove"] = tr
+                if NONFSQ[enc] not in cur:
+                    intent.setdefault("tag_add", []).append(NONFSQ[enc])
+        cur = set(r.tags or [])
+        is_meanall = bool(cur & {"mean-agg", "mean-all", "layer-meanall", "variant-swap"}) \
+            or "meanall" in name or name in legacy_meanall_names
+        eff = intent.get("new_group", group)
+        if is_meanall and " / " in eff:
+            enc, task = eff.split(" / ", 1)
+            enc2 = enc.removesuffix("-meanall")
+            if enc2 != enc:
+                intent["new_group"] = f"{enc2} / {task}"
             kind = "test" if _has_test_metric(r) else "fit"
-            target_name = f"layer-meanall-{kind}"
-            current_name = intent.get("new_name", name)
-            if current_name != target_name:
-                intent["new_name"] = target_name
-
+            if intent.get("new_name", name) != f"layer-meanall-{kind}":
+                intent["new_name"] = f"layer-meanall-{kind}"
             intent.setdefault("tag_add", []).append("mean-all")
-            existing_remove = intent.get("tag_remove", set())
-            if not isinstance(existing_remove, set):
-                existing_remove = set(existing_remove)
-            # Drop conflicting / superseded tags.
-            intent["tag_remove"] = existing_remove | {
-                "single-layer",  # contradicts mean-all
-                "mean-agg",  # superseded by mean-all
-                "layer-meanall",  # superseded by mean-all + the run name
-            }
-
-        # ── Fix #4: ensure encoder-family tag + `layer-sweep` are present ───
-        # Family is the cross-cutting filter ("show me all OMARRQ runs"
-        # across every variant). For single-variant encoders (MuQ, MusicFM,
-        # DaSheng) family == encoder, so adding it is a no-op duplicate
-        # rejected by the no-op filter downstream.
+            tr = intent.get("tag_remove", set())
+            tr = tr if isinstance(tr, set) else set(tr)
+            intent["tag_remove"] = tr | {"single-layer", "mean-agg", "layer-meanall"}
         sp = group.split(" / ", 1)
         enc_part = sp[0] if len(sp) == 2 else group
-        family = None
-        if enc_part.startswith("OMARRQ"):
-            family = "OMARRQ"
-        elif enc_part.startswith("MERT"):
-            family = "MERT"
-        elif enc_part.startswith("CLaMP3-symbolic"):
-            family = "CLaMP3-symbolic"
-        elif enc_part.startswith("CLaMP3"):
-            family = "CLaMP3"
-        elif enc_part.startswith("MuQ"):
-            family = "MuQ"
-        elif enc_part.startswith("MusicFM"):
-            family = "MusicFM"
-        elif enc_part.startswith("DaSheng"):
-            family = "DaSheng"
-        cur_tags_list = r.tags or []
-        if family is not None and family not in cur_tags_list:
-            intent.setdefault("tag_add", []).append(family)
-        # `layer-sweep` was missing from some recent base configs; ensure it
-        # ends up on every run that belongs to a per-layer or meanall sweep.
-        if "layer-sweep" not in cur_tags_list and " / " in group:
+        fam = next((f for f in ("OMARRQ", "MERT", "CLaMP3-symbolic", "CLaMP3",
+                                "MuQ", "MusicFM", "DaSheng") if enc_part.startswith(f)), None)
+        if fam and fam not in (r.tags or []):
+            intent.setdefault("tag_add", []).append(fam)
+        if "layer-sweep" not in (r.tags or []) and " / " in group:
             intent.setdefault("tag_add", []).append("layer-sweep")
-
         if not intent:
             n_skipped += 1
             continue
-
-        # Filter out no-op intents (e.g. tag_add that's already on the run,
-        # tag_remove of tags that aren't there). Keeps re-runs idempotent.
         planned = _planned_changes(
-            r,
-            new_name=intent.get("new_name"),
-            new_group=intent.get("new_group"),
-            tag_add=intent.get("tag_add", ()),
-            tag_remove=intent.get("tag_remove", set()),
-        )
+            r, new_name=intent.get("new_name"), new_group=intent.get("new_group"),
+            tag_add=intent.get("tag_add", ()), tag_remove=intent.get("tag_remove", set()))
         if not planned:
             n_skipped += 1
             continue
-
-        # Print the planned change
-        print(f"{r.id}  cur: group={r.group!r}  name={r.name!r}  tags={r.tags}")
-        bits = []
-        if "new_group" in intent:
-            bits.append(f"group→{intent['new_group']!r}")
-        if "new_name" in intent:
-            bits.append(f"name→{intent['new_name']!r}")
-        if intent.get("tag_add"):
-            bits.append(f"+tags={intent['tag_add']}")
-        if intent.get("tag_remove"):
-            bits.append(f"-tags={list(intent['tag_remove'])}")
-        print(f"           {'   |   '.join(bits)}")
-
+        print(f"{r.id}  group={r.group!r} name={r.name!r} → {planned}")
         if args.apply:
-            changed = _apply(
-                r,
-                new_name=intent.get("new_name"),
-                new_group=intent.get("new_group"),
-                tag_add=intent.get("tag_add", ()),
-                tag_remove=intent.get("tag_remove", set()),
-            )
-            if changed:
-                try:
-                    r.update()
-                    print(f"           ✓ wrote: {changed}")
-                    n_touched += 1
-                except Exception as e:
-                    print(f"           ✗ write failed: {e}")
-                time.sleep(args.sleep)
-        else:
-            n_touched += 1  # counted as "would touch"
-        print()
+            _apply(r, new_name=intent.get("new_name"), new_group=intent.get("new_group"),
+                   tag_add=intent.get("tag_add", ()), tag_remove=intent.get("tag_remove", set()))
+            try:
+                r.update()
+                n_touched += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"  ✗ write failed: {e}")
+            time.sleep(args.sleep)
+    print(f"\n{'Touched' if args.apply else 'Would touch'}: {n_touched}  "
+          f"Skipped: {n_skipped}")
 
-    print("\n── Summary ──")
-    print(f"  {'Would touch' if not args.apply else 'Touched'}:  {n_touched}")
-    print(f"  Skipped (already correct):  {n_skipped}")
-    if not args.apply:
-        print("\nRe-run with --apply to actually write the changes.")
+
+# ── CLI ─────────────────────────────────────────────────────────────────────
+
+def _add_selection(p):
+    p.add_argument("--group")
+    p.add_argument("--group-regex")
+    p.add_argument("--name-regex")
+    p.add_argument("--state")
+    p.add_argument("--layers", type=int, nargs="*")
+    p.add_argument("--ids", nargs="*")
+
+
+def build_parser():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--entity", default=DEFAULT_ENTITY)
+    ap.add_argument("--project", default=DEFAULT_PROJECT)
+    ap.add_argument("--apply", action="store_true",
+                    help="Write changes (default is dry-run).")
+    ap.add_argument("--sleep", type=float, default=0.3,
+                    help="Seconds between API writes (default 0.3).")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    pl = sub.add_parser("list", help="show matching runs")
+    _add_selection(pl)
+
+    ps = sub.add_parser("set", help="bulk-set name/group/job_type/tags")
+    _add_selection(ps)
+    ps.add_argument("--name")
+    ps.add_argument("--group-to", help="set the group to this value")
+    ps.add_argument("--job-type")
+    ps.add_argument("--add-tag", nargs="*")
+    ps.add_argument("--remove-tag", nargs="*")
+
+    pa = sub.add_parser("archive", help="suffix group [archive] + move to marble-archive")
+    _add_selection(pa)
+    pa.add_argument("--verify-timeout", type=float, default=120.0,
+                    help="Seconds to poll for async move completion (default 120).")
+
+    sub.add_parser("normalize", help="legacy one-off naming normalizer")
+    return ap
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    import wandb
+    api = wandb.Api()
+    proj = f"{args.entity}/{args.project}"
+    if args.cmd == "list":
+        cmd_list(api, proj, args)
+    elif args.cmd == "set":
+        cmd_set(api, proj, args)
+    elif args.cmd == "archive":
+        cmd_archive(api, proj, args, args.entity, args.project)
+    elif args.cmd == "normalize":
+        cmd_normalize(api, proj, args)
 
 
 if __name__ == "__main__":

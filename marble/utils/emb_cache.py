@@ -53,6 +53,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import OrderedDict
 import threading
 from pathlib import Path
 from typing import Any
@@ -156,6 +157,7 @@ class EmbeddingCache:
         root: Path | None = None,
         log_first_n: int = 1,
         pool_time: bool = True,
+        ram_cache_bytes: int = 2 * 1024**3,
     ):
         if root is None:
             root = DEFAULT_CACHE_ROOT
@@ -186,6 +188,19 @@ class EmbeddingCache:
         self._log_used = 0
         self._lock = threading.Lock()
 
+        # In-RAM memoization of loaded tensors (main-process forward path
+        # only -- workers call .has(), never .get()). First read of a clip
+        # hits disk + deserializes; later epochs hit RAM, removing the
+        # per-clip torch.load that dominates the forward when the encoder
+        # is cached. Bounded by a byte cap with LRU eviction so memory
+        # stays predictable under --concurrency. MARBLE_EMB_RAM_CACHE_BYTES=0
+        # disables it (falls back to per-call torch.load).
+        self._ram_cap_bytes = int(
+            os.environ.get("MARBLE_EMB_RAM_CACHE_BYTES", ram_cache_bytes)
+        )
+        self._ram: OrderedDict[str, torch.Tensor] = OrderedDict()
+        self._ram_bytes = 0
+
     # ── pickling support ─────────────────────────────────────────────────
     # `EmbeddingCache` instances get pickled when DataLoader workers spawn
     # on Windows (spawn-mode multiprocessing) — `BaseTask` injects
@@ -199,11 +214,16 @@ class EmbeddingCache:
     def __getstate__(self):
         state = self.__dict__.copy()
         state.pop("_lock", None)
+        # RAM memoization is a main-process-only optimization; never ship
+        # it to pickled worker copies (they call .has() only).
+        state.pop("_ram", None)
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
         self._lock = threading.Lock()
+        self._ram = OrderedDict()
+        self._ram_bytes = 0
 
     # ── public API ──────────────────────────────────────────────────────
 
@@ -224,9 +244,29 @@ class EmbeddingCache:
         default) or ``(L, T, H)`` for ``pool_time=False`` caches. The cache
         instance carries the expected shape — callers don't disambiguate.
         """
+        cached = self._ram.get(clip_id)
+        if cached is not None:
+            self._ram.move_to_end(clip_id)  # LRU: mark most-recently-used
+            return cached
         p = self.path_for(clip_id)
         data = torch.load(p, map_location="cpu", weights_only=True)
-        return data["embedding"] if isinstance(data, dict) else data
+        emb = data["embedding"] if isinstance(data, dict) else data
+        self._ram_put(clip_id, emb)
+        return emb
+
+    def _ram_put(self, clip_id: str, emb: torch.Tensor) -> None:
+        """Insert a freshly-loaded tensor into the bounded LRU RAM cache."""
+        if self._ram_cap_bytes <= 0:
+            return
+        nbytes = emb.element_size() * emb.nelement()
+        if nbytes > self._ram_cap_bytes:
+            return  # single item exceeds the whole budget -- never cache
+        self._ram[clip_id] = emb
+        self._ram.move_to_end(clip_id)
+        self._ram_bytes += nbytes
+        while self._ram_bytes > self._ram_cap_bytes and len(self._ram) > 1:
+            _old, old = self._ram.popitem(last=False)
+            self._ram_bytes -= old.element_size() * old.nelement()
 
     def put(self, clip_id: str, embedding: torch.Tensor) -> None:
         """Atomically write one cached tensor to disk.

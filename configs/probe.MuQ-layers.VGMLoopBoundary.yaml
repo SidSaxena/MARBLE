@@ -1,0 +1,153 @@
+seed_everything: 1234
+ckpt_path: null
+
+# VGMLoopBoundary (T1) — frame-level boundary detection for VGM loop structure.
+# Detects intro_end_sec and loop_seam_sec as Gaussian heatmap targets.
+# Encoder: MuQ (all 13 layers, mean), frame axis preserved (no TimeAvgPool).
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  accumulate_grad_batches: 4
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 40
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 10
+  log_every_n_steps: 20
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "./output/probe.VGMLoopBoundary.MuQ-layers/checkpoints/"
+        filename: "best"
+        save_top_k: 1
+        save_last: true
+        monitor: "val/auroc"
+        mode: "max"
+    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
+      init_args:
+        monitor: "val/auroc"
+        patience: 7
+        mode: "max"
+
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "MuQ / VGMLoopBoundary"
+      tags: ["MuQ", "VGMLoopBoundary", "probe", "frame-level"]
+      job_type: "probe"
+      name: "MuQ-layers"
+      save_dir: "./output/probe.VGMLoopBoundary.MuQ-layers/"
+
+
+model:
+  class_path: marble.tasks.VGMLoopFrames.probe.VGMLoopBoundaryProbe
+  init_args:
+    sample_rate: 24000
+    use_ema: false
+    target_key: boundary
+    label_freq: 25
+    cache_embeddings: false
+
+    encoder:
+      class_path: marble.encoders.MuQ.model.MuQ_Encoder
+      init_args:
+        pre_trained_folder: null
+        train_mode: freeze
+        compile_mode: default
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: [6]   # sweep replaces this
+          mode: mean   # collapses L → (B, 1, T, 1024); keeps time axis
+
+    decoders:
+      - class_path: marble.modules.decoders.MLPDecoderKeepTime
+        init_args:
+          in_dim: 1024    # MuQ hidden size
+          out_dim: 1      # single boundary logit per frame
+          hidden_layers: [256]
+          activation_fn:
+            class_path: torch.nn.ReLU
+          dropout: 0.2
+
+    losses:
+      - class_path: torch.nn.BCEWithLogitsLoss
+        init_args:
+          reduction: mean
+
+    metrics:
+      train:
+        auroc:
+          class_path: torchmetrics.classification.BinaryAUROC
+      val:
+        auroc:
+          class_path: torchmetrics.classification.BinaryAUROC
+      test:
+        auroc:
+          class_path: torchmetrics.classification.BinaryAUROC
+
+
+data:
+  class_path: marble.tasks.VGMLoopFrames.datamodule.VGMLoopFramesDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 8
+
+    train:
+      class_path: marble.tasks.VGMLoopFrames.datamodule.VGMLoopFramesAudioTrain
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15
+        min_clip_ratio: 0.1
+        channel_mode: random
+        jsonl: data/VGM/VGMLoopFrames.train.wav.jsonl
+        label_freq: 25
+        boundary_sigma: 1.5
+
+    val:
+      class_path: marble.tasks.VGMLoopFrames.datamodule.VGMLoopFramesAudioVal
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15
+        min_clip_ratio: 0.1
+        channel_mode: mix
+        jsonl: data/VGM/VGMLoopFrames.val.wav.jsonl
+        label_freq: 25
+        boundary_sigma: 1.5
+
+    test:
+      class_path: marble.tasks.VGMLoopFrames.datamodule.VGMLoopFramesAudioTest
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15
+        min_clip_ratio: 0.1
+        channel_mode: mix
+        jsonl: data/VGM/VGMLoopFrames.test.wav.jsonl
+        label_freq: 25
+        boundary_sigma: 1.5
+
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
+
+lr_scheduler:
+  class_path: lightning.pytorch.cli.ReduceLROnPlateau
+  init_args:
+    mode: "max"
+    factor: 0.5
+    patience: 5
+    monitor: "val/auroc"
