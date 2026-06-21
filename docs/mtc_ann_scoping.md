@@ -16,14 +16,45 @@ penalty. We need a **harder, texture-distant** confirmation. MTC-ANN is the top
 candidate: **monophonic Dutch folk melody** — the single biggest texture jump available
 from piano classical.
 
-> **HONEST SOURCING CAVEAT (read first).** Web search and fetch were **blocked in the
-> environment this doc was produced in**, so the external dataset facts below
-> (counts, formats, license, exact annotation layers) come from prior knowledge of the
-> MTC literature, **not** from a fresh fetch of liederenbank.nl / the release notes.
-> Every number that needs live confirmation is tagged **[verify]**. Treat §1–§3 as a
-> well-grounded prior to confirm in one afternoon of fetching, not as gospel. The
-> integration analysis in §5 is grounded in the **actual MARBLE code** that was read
-> (`midi_to_mtf`, `_BPSMotifSymbolicBase`, `build_jkupdd_retrieval.py`) and is firm.
+> **✅ VERIFIED (web-confirmed 2026-06-21).** The original sourcing caveat is resolved —
+> facts below were confirmed against liederenbank.nl/mtc, the `MTCFeatures` package, and
+> the MTC-ANN release notes (the doc was first written with web access blocked; the
+> `[verify]` tags in §1–§3 are now superseded by this block). Key confirmations + the one
+> correction that changes the recommendation:
+>
+> - **MTC-ANN-2.0.1 = 360 melodies / 26 tune families.** Formats: Humdrum `**kern` +
+>   **MIDI** + lilypond (NO MusicXML/JSON in the raw release; `MTCFeatures` exposes
+>   per-note feature sequences). **MIDI present → M3-ready**, integration unblocked.
+> - **License: CC BY-NC-SA 3.0** (download form, optional email). Research/thesis use OK,
+>   non-commercial. Use as a user-provided root (like JKUPDD's `--jkupdd-root`); do NOT
+>   vendor it.
+> - **MOTIF GROUND TRUTH EXISTS — the correction.** Beyond tune families, MTC-ANN ships an
+>   **"Annotated Motifs"** layer: **~1,400 motif occurrences in ~100 motif classes**,
+>   expert-annotated. The scoping below hedged this might not exist and fell back to
+>   tune-family retrieval; it *does* exist → a **motif-class retrieval task is the better
+>   first build**.
+> - **NUANCE (name it):** an MTC-ANN "motif" is defined as *a short fragment that recurs
+>   ACROSS songs of the same tune family* — **cross-song**, not within-piece. So
+>   motif-class retrieval here tests **cross-song motif identity under oral-tradition
+>   variation** — a *harder* invariance than BPS/JKUPDD's within-piece restatement, and a
+>   different question than leitmotifs' within-piece discovery. A feature (harder,
+>   non-saturated, texture-distant), but not identical to our within-piece task.
+>
+> **MTC variants (melody counts):** MTC-FS-INST-2.0 (18,618) · MTC-FS-1.0 (4,120 vocal) ·
+> MTC-INST-1.0 (2,368 instrumental) · MTC-LC-1.0 (4,830) · **MTC-ANN-2.0.1 (360,
+> annotated — our target)** · ESSEN (~8k German, via `MTCFeatures`). Only MTC-ANN carries
+> the motif/tune-family annotations; the large sets are unlabeled → **LoRA-corpus
+> candidates, not benchmarks**.
+>
+> **Corrected recommendation:** build **motif-class retrieval** (group = motif class,
+> ~1,400 occurrences / ~100 classes) FIRST — apples-to-apples motif unit, ~8× JKUPDD's
+> size (won't saturate), the hard cross-song/folk test that can actually re-expose the
+> L12 penalty. Keep **tune-family retrieval** (group = tune family, 360 melodies) as the
+> complementary whole-melody second task. Both zero-shot `CoverRetrievalTask`, same MAP
+> ruler. The build hinges on parsing the Annotated-Motifs spans into occurrence-window
+> MIDIs (the integration detail to nail; the per-note motif label lives in the
+> `MTCFeatures` sequences). The §5 integration analysis below (grounded in real MARBLE
+> code) otherwise stands.
 
 ---
 
