@@ -1,0 +1,11 @@
+{
+  "task": "BPS-Motif Retrieval (zero-shot within-(piece,letter)) — CLaMP3-symbolic",
+  "metric": "test/map (5-fold movement-level CV mean)",
+  "layers": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+  "map_mean": [0.4037, 0.4014, 0.4163, 0.4379, 0.4517, 0.4587, 0.4705, 0.4737, 0.4671, 0.4590, 0.4522, 0.4242, 0.3808],
+  "map_centered": [0.4059, 0.4048, 0.4203, 0.4468, 0.4628, 0.4714, 0.4839, 0.4875, 0.4841, 0.4791, 0.4738, 0.4480, 0.4103],
+  "best_layer": 7,
+  "best_map_raw": 0.4737,
+  "best_map_centered": 0.4875,
+  "source": "docs/bps_motif_retrieval_clamp3_layersweep.md"
+}
