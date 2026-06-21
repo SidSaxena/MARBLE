@@ -817,6 +817,98 @@ def compute_retrieval_metrics_streaming(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Same-group-restricted MAP (hard-distractor / length-stratified)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def compute_masked_map(
+    sim: torch.Tensor,
+    work_ids: torch.Tensor,
+    *,
+    gallery_groups: torch.Tensor | None = None,
+    query_subset: torch.Tensor | None = None,
+) -> float:
+    """Standard query-weighted MAP with an optional hard-distractor mask
+    and/or query subset.
+
+    This is the *same* MAP as :func:`compute_retrieval_metrics`'s ``map``
+    (query-equal-weighted Average Precision, self excluded via the ``-inf``
+    sentinel + last-column drop) — but with two extra knobs:
+
+    * ``gallery_groups`` (``(N,)`` int): when given, every gallery item whose
+      group differs from the query's group is masked out of that query's
+      ranking with ``-inf`` BEFORE the argsort, exactly like the self-mask.
+      This restricts each query's gallery to its OWN ``gallery_groups`` value
+      — e.g. the same tune family — so the MAP measures discrimination
+      *within* that group rather than against the easy other-group negatives.
+      ``None`` ⇒ full gallery (identical to standard MAP).
+
+    * ``query_subset`` (``(N,)`` bool): when given, only queries where the
+      mask is True contribute their AP to the mean. ``None`` ⇒ all queries.
+      Relevance (which gallery items count as hits) is unaffected — only the
+      set of queries whose AP is averaged changes. Used for length-stratified
+      MAP (short vs long query subsets).
+
+    Both knobs compose: a length-stratified same-family MAP is achievable by
+    passing both. Returns ``float('nan')`` if no valid query contributes
+    (degenerate — e.g. a singleton family, or an empty subset).
+
+    Implementation note: this materialises the per-query ``(N,)`` similarity
+    row, applies the masks, argsorts, and walks the ranking — the same
+    per-row reference logic as :func:`compute_perpair_map`. MTC-ANN corpora
+    are ~700 rows so the O(N²) row pass is sub-second; it deliberately does
+    NOT use the chunked/streaming aggregator (those don't support per-query
+    gallery masks).
+    """
+    n = sim.size(0)
+    wids = work_ids if isinstance(work_ids, torch.Tensor) else torch.tensor(work_ids)
+    groups = None
+    if gallery_groups is not None:
+        groups = (
+            gallery_groups
+            if isinstance(gallery_groups, torch.Tensor)
+            else torch.tensor(gallery_groups)
+        )
+    subset = None
+    if query_subset is not None:
+        subset = (
+            query_subset if isinstance(query_subset, torch.Tensor) else torch.tensor(query_subset)
+        )
+
+    aps: list[float] = []
+    for i in range(n):
+        if subset is not None and not bool(subset[i]):
+            continue
+        # Allowed gallery: same group as query (if a group mask is given),
+        # excluding self. ``-inf`` (not a finite sentinel) so genuine items
+        # never sort below a masked "wall" — same class of bug as audit-2 #6.
+        if groups is not None:
+            allowed = groups == groups[i]
+        else:
+            allowed = torch.ones(n, dtype=torch.bool)
+        allowed = allowed.clone()
+        allowed[i] = False
+        if not bool(allowed.any()):
+            continue
+        sims_i = sim[i].clone()
+        sims_i[~allowed] = float("-inf")
+        order = sims_i.argsort(descending=True)
+        order = order[: int(allowed.sum())]
+        is_rel = (wids[order] == wids[i]) & allowed[order]
+        n_rel = int(is_rel.sum().item())
+        if n_rel == 0:
+            continue
+        hits = 0
+        ap = 0.0
+        for rank, rel in enumerate(is_rel.tolist(), start=1):
+            if rel:
+                hits += 1
+                ap += hits / rank
+        aps.append(ap / n_rel)
+    return float(sum(aps) / len(aps)) if aps else float("nan")
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Per-condition (cross-instrument / cross-soundfont) MAP
 # ──────────────────────────────────────────────────────────────────────
 

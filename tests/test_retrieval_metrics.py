@@ -912,3 +912,111 @@ def test_zca_whiten_fp64_matches_script_fp32_path_when_n_gg_h():
 
     max_sim_diff = (ours @ ours.T - script @ script.T).abs().max().item()
     assert max_sim_diff < 1e-4
+
+
+# ──────────────────────────────────────────────────────────────────────
+# compute_masked_map (same-family hard-distractor + length-stratified)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_compute_masked_map_no_mask_equals_standard_map():
+    """With no gallery mask and no query subset, compute_masked_map must
+    equal the standard ``map`` from compute_retrieval_metrics — same
+    query-weighted AP, same self-exclusion convention."""
+    from marble.utils.retrieval_metrics import (
+        compute_masked_map,
+        compute_retrieval_metrics,
+    )
+
+    torch.manual_seed(0)
+    embs = torch.nn.functional.normalize(torch.randn(40, 16), dim=-1)
+    work_ids = torch.arange(40) % 8
+    sim = embs @ embs.T
+    masked = compute_masked_map(sim, work_ids)
+    std = compute_retrieval_metrics(
+        sim,
+        work_ids,
+        recall_ks=(),
+        include_r_precision=False,
+        include_median_rank=False,
+        include_map=True,
+    )["map"]
+    assert math.isclose(masked, std, abs_tol=1e-6), f"{masked} != {std}"
+
+
+def test_compute_masked_map_samefamily_excludes_other_family():
+    """Same-family mask must restrict each query's gallery to its own
+    family. Construct a case where the global best match for a query is a
+    DIFFERENT-family item but the same-work relevant peer is in-family:
+    the masked MAP should be 1.0 (perfect) because the cross-family
+    distractor is masked out, while the standard MAP is dragged down."""
+    # 4 items. work_ids: [0, 0, 1, 1]. families: [A, A, B, B].
+    # Relevance is by work_id; families align with works here (each work
+    # is one family) which is the realistic MTC-ANN structure where a
+    # family has multiple works (motifclasses). Make families have TWO
+    # works so the mask actually changes the gallery:
+    #   item: 0   1   2   3   4   5
+    #   work: 0   0   1   1   2   2
+    #   fam:  A   A   A   A   B   B   (family A has works 0,1; B has work 2)
+    # Build sim so that for query 0 (work 0, fam A), the single TRUE peer
+    # (item 1) ranks BELOW a cross-family B item (item 4) globally, but
+    # the mask removes B so item 1 becomes rank 1.
+    work_ids = torch.tensor([0, 0, 1, 1, 2, 2])
+    families = torch.tensor([10, 10, 10, 10, 20, 20])
+    # query 0: sim to [self, 1(true), 2, 3, 4(cross-fam, high), 5]
+    sim = torch.tensor(
+        [
+            [1.0, 0.30, 0.10, 0.10, 0.90, 0.05],  # q0: cross-fam item4 outranks true item1
+            [0.30, 1.0, 0.10, 0.10, 0.90, 0.05],  # q1: same
+            [0.10, 0.10, 1.0, 0.30, 0.90, 0.05],  # q2 (work1)
+            [0.10, 0.10, 0.30, 1.0, 0.90, 0.05],  # q3
+            [0.90, 0.90, 0.90, 0.90, 1.0, 0.30],  # q4 (work2, fam B)
+            [0.05, 0.05, 0.05, 0.05, 0.30, 1.0],  # q5
+        ]
+    )
+    from marble.utils.retrieval_metrics import compute_masked_map
+
+    std = compute_masked_map(sim, work_ids)
+    same_fam = compute_masked_map(sim, work_ids, gallery_groups=families)
+    # For fam-A queries (0,1,2,3): masking removes the high cross-fam item4,
+    # so the true peer becomes rank 1 → AP 1.0 each. Fam-B queries (4,5):
+    # within fam B, work2 has 2 items so each has a true peer; with the
+    # cross-fam A items masked out, item4↔item5 are the only candidates →
+    # AP 1.0. So same_fam MAP == 1.0 and strictly exceeds the confounded std.
+    assert math.isclose(same_fam, 1.0, abs_tol=1e-6), f"same_fam={same_fam}"
+    assert same_fam > std, f"same_fam {same_fam} should beat confounded std {std}"
+
+
+def test_compute_masked_map_query_subset():
+    """query_subset restricts which queries' AP is averaged but not the
+    gallery / relevance. Averaging the two disjoint subsets (weighted by
+    count) must recover the all-query MAP."""
+    from marble.utils.retrieval_metrics import compute_masked_map
+
+    torch.manual_seed(1)
+    embs = torch.nn.functional.normalize(torch.randn(30, 16), dim=-1)
+    work_ids = torch.arange(30) % 6
+    sim = embs @ embs.T
+    subset = torch.zeros(30, dtype=torch.bool)
+    subset[:12] = True
+    all_q = compute_masked_map(sim, work_ids)
+    sub_a = compute_masked_map(sim, work_ids, query_subset=subset)
+    sub_b = compute_masked_map(sim, work_ids, query_subset=~subset)
+    # All works have >=1 peer here (30 items, 6 works → 5 each), so every
+    # query is valid; count-weighted mean of the subsets == all-query MAP.
+    recombined = (sub_a * int(subset.sum()) + sub_b * int((~subset).sum())) / 30
+    assert math.isclose(recombined, all_q, abs_tol=1e-6), f"{recombined} != {all_q}"
+
+
+def test_compute_masked_map_singleton_family_nan():
+    """A query whose family has no OTHER same-family item contributes no
+    AP under the same-family mask. If ALL queries are like that the metric
+    is NaN (degenerate), not a crash."""
+    from marble.utils.retrieval_metrics import compute_masked_map
+
+    # Every item is its own family → same-family gallery is always empty.
+    work_ids = torch.tensor([0, 0, 1, 1])
+    families = torch.tensor([0, 1, 2, 3])
+    sim = torch.eye(4) + 0.1
+    out = compute_masked_map(sim, work_ids, gallery_groups=families)
+    assert math.isnan(out)

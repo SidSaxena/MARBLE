@@ -23,6 +23,8 @@ alone don't cover:
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from marble.tasks.Covers80.probe import CoverRetrievalTask, auto_whiten_params
@@ -394,3 +396,118 @@ def test_first_seen_aggregation_path_to_condition():
     assert "test/map_cross_condition" not in captured
     # Anisotropy still fires regardless.
     assert "test/anisotropy/mean_vec_norm" in captured
+
+
+def test_mtcann_motif_style_logs_samefamily_and_length_maps():
+    """MTC-ANN Motif emits 6-tuples carrying per-fragment family id +
+    note-count. The probe must log the two-MAP suite:
+      - test/map (standard full-gallery — UNCHANGED)
+      - test/map_samefamily (+ _centered): gallery restricted to family
+      - test/map_len_le3 / test/map_len_gt3: length-stratified
+
+    Fixture: 2 families, each with 2 works (motifclasses), each work with
+    2 occurrences. So every query has a same-work peer AND same-family
+    other-work distractors AND cross-family distractors — the structure
+    the same-family mask is designed to disentangle.
+    """
+    task = CoverRetrievalTask.__new__(CoverRetrievalTask)
+    task._test_embeddings = []
+    task._test_work_ids = []
+    task._test_paths = []
+    task._test_conditions = []
+    task._test_families = []
+    task._test_note_counts = []
+    task.log_extended_retrieval_metrics = False
+
+    torch.manual_seed(0)
+    file_idx = 0
+    # families 100, 200; works 0,1 in fam 100, works 2,3 in fam 200.
+    layout = [
+        (0, 100, 2),  # (work_id, family_id, note_count) short
+        (0, 100, 2),
+        (1, 100, 5),  # long
+        (1, 100, 5),
+        (2, 200, 3),  # short (<=3)
+        (2, 200, 3),
+        (3, 200, 7),  # long
+        (3, 200, 7),
+    ]
+    for work, fam, notes in layout:
+        emb = torch.randn(1, 16)
+        emb = emb / emb.norm(dim=-1, keepdim=True)
+        task._test_embeddings.append(emb)
+        task._test_work_ids.append(torch.tensor([work]))
+        task._test_paths.append(f"occ_{file_idx:02d}")
+        task._test_families.append(torch.tensor([fam]))
+        task._test_note_counts.append(torch.tensor([notes]))
+        file_idx += 1
+
+    captured: dict[str, float] = {}
+
+    def fake_log(key, value, **kwargs):
+        captured[key] = float(value)
+
+    task.log = fake_log
+    task.on_test_epoch_end()
+
+    # Standard MAP still fires (must be UNCHANGED by the new metrics).
+    assert "test/map" in captured
+    # New confound-free metrics fire.
+    assert "test/map_samefamily" in captured, (
+        f"missing same-family MAP. keys: {sorted(k for k in captured if 'family' in k or 'len' in k)}"
+    )
+    assert "test/map_samefamily_centered" in captured
+    # Length-stratified metrics fire.
+    assert "test/map_len_le3" in captured
+    assert "test/map_len_gt3" in captured
+    # Combined length × same-family.
+    assert "test/map_samefamily_len_le3" in captured
+    assert "test/map_samefamily_len_gt3" in captured
+    # All MAPs are valid probabilities.
+    for k in (
+        "test/map",
+        "test/map_samefamily",
+        "test/map_samefamily_centered",
+        "test/map_len_le3",
+        "test/map_len_gt3",
+    ):
+        assert 0.0 <= captured[k] <= 1.0, f"{k}={captured[k]} out of [0,1]"
+    # Per-condition metrics MUST NOT fire (no _test_conditions for MTCANN).
+    assert "test/map_same_condition" not in captured
+    assert "test/map_cross_condition" not in captured
+
+
+def test_mtcann_motif_standard_map_identical_to_no_meta():
+    """The standard test/map must be byte-identical whether or not the
+    family/note-count buffers are populated — the new metrics MUST NOT
+    perturb the headline number. Run the SAME embeddings/work_ids twice:
+    once as a plain 4-tuple-style task (no meta), once with meta."""
+    torch.manual_seed(7)
+    embs = [torch.nn.functional.normalize(torch.randn(1, 16), dim=-1) for _ in range(12)]
+    work_ids = [(i // 2) % 6 for i in range(12)]
+    families = [100 + (w // 3) for w in work_ids]
+    note_counts = [2 if i % 2 == 0 else 9 for i in range(12)]
+
+    def _run(with_meta: bool) -> dict[str, float]:
+        task = CoverRetrievalTask.__new__(CoverRetrievalTask)
+        task._test_embeddings = [e.clone() for e in embs]
+        task._test_work_ids = [torch.tensor([w]) for w in work_ids]
+        task._test_paths = [f"f_{i:02d}" for i in range(12)]
+        task._test_conditions = []
+        task._test_families = [torch.tensor([f]) for f in families] if with_meta else []
+        task._test_note_counts = [torch.tensor([n]) for n in note_counts] if with_meta else []
+        task.log_extended_retrieval_metrics = False
+        cap: dict[str, float] = {}
+        task.log = lambda k, v, **kw: cap.__setitem__(k, float(v))
+        task.on_test_epoch_end()
+        return cap
+
+    no_meta = _run(False)
+    with_meta = _run(True)
+    assert math.isclose(no_meta["test/map"], with_meta["test/map"], abs_tol=1e-9), (
+        f"standard MAP changed: {no_meta['test/map']} vs {with_meta['test/map']}"
+    )
+    assert math.isclose(no_meta["test/map_centered"], with_meta["test/map_centered"], abs_tol=1e-9)
+    # Sanity: only the with-meta run has the new keys.
+    assert "test/map_samefamily" not in no_meta
+    assert "test/map_samefamily" in with_meta

@@ -187,16 +187,33 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # Stays empty for 4-tuple datamodules (Covers80, SHS100K) — the
         # per-condition log block is gated on the list being non-empty.
         self._test_conditions: list[torch.Tensor] = []
+        # Per-fragment tune-family id + motif note-count for the MTC-ANN
+        # Motif task's same-family hard-distractor MAP and length-stratified
+        # MAP. Populated ONLY by the 6-tuple MTCANN Motif datamodule; stays
+        # empty for every other task (3/4/5-tuple), which gates the new
+        # metric blocks off. See marble/tasks/MTCANN/datamodule.py.
+        self._test_families: list[torch.Tensor] = []
+        self._test_note_counts: list[torch.Tensor] = []
 
     def test_step(self, batch, batch_idx):
         # batch is one of:
         #   3-tuple (waveform, work_ids, paths)             — legacy
         #   4-tuple (..., clip_ids)                         — Covers80, SHS100K
         #   5-tuple (..., clip_ids, conditions)             — VGMIDITVar variants
+        #   6-tuple (..., clip_ids, families, note_counts)  — MTC-ANN Motif
         # ``conditions`` carries gm_program (leitmotif) OR soundfont_id
         # (multisf) OR -1 (base VGMIDITVar). See VGMIDITVar/datamodule.py.
+        # ``families`` / ``note_counts`` carry the per-fragment tune-family id
+        # + motif note-count for the MTC-ANN Motif same-family + length-
+        # stratified MAP. See MTCANN/datamodule.py. The two extra slots are
+        # mutually exclusive with the 5-tuple ``conditions`` slot, so no task
+        # ever populates both buffers.
         conditions = None
-        if len(batch) == 5:
+        families = None
+        note_counts = None
+        if len(batch) == 6:
+            x, work_ids, paths, clip_ids, families, note_counts = batch
+        elif len(batch) == 5:
             x, work_ids, paths, clip_ids, conditions = batch
         elif len(batch) == 4:
             x, work_ids, paths, clip_ids = batch
@@ -215,6 +232,16 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                 if isinstance(conditions, torch.Tensor)
                 else torch.tensor(conditions)
             )
+        if families is not None:
+            self._test_families.append(
+                families.cpu() if isinstance(families, torch.Tensor) else torch.tensor(families)
+            )
+        if note_counts is not None:
+            self._test_note_counts.append(
+                note_counts.cpu()
+                if isinstance(note_counts, torch.Tensor)
+                else torch.tensor(note_counts)
+            )
 
     def on_test_epoch_end(self) -> None:
         all_embs = torch.cat(self._test_embeddings)  # (N_clips, H)
@@ -226,10 +253,23 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         has_conditions = bool(self._test_conditions)
         all_conditions = torch.cat(self._test_conditions).tolist() if has_conditions else None
 
+        # Per-fragment tune-family id + motif note-count (MTC-ANN Motif only).
+        # Same per-file first-seen aggregation as conditions. getattr-guarded so
+        # any task that reaches on_test_epoch_end without on_test_start having run
+        # (unit tests, or any non-MTCANN retrieval task) doesn't AttributeError.
+        _fams = getattr(self, "_test_families", None)
+        _ncs = getattr(self, "_test_note_counts", None)
+        has_families = bool(_fams)
+        has_note_counts = bool(_ncs)
+        all_families = torch.cat(_fams).tolist() if has_families else None
+        all_note_counts = torch.cat(_ncs).tolist() if has_note_counts else None
+
         # ── per-file mean-pool (aggregates clips from the same track) ────────
         path2work: dict[str, int] = {}
         path2embs: dict[str, list] = {}
         path2cond: dict[str, int] = {}
+        path2family: dict[str, int] = {}
+        path2notes: dict[str, int] = {}
         for idx, (emb, wid, path) in enumerate(
             zip(all_embs, all_work_ids.tolist(), all_paths, strict=True)
         ):
@@ -237,10 +277,16 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             path2embs.setdefault(path, []).append(emb)
             if has_conditions:
                 path2cond.setdefault(path, all_conditions[idx])
+            if has_families:
+                path2family.setdefault(path, all_families[idx])
+            if has_note_counts:
+                path2notes.setdefault(path, all_note_counts[idx])
 
         file_embs: list[torch.Tensor] = []
         file_work_ids: list[int] = []
         file_conditions: list[int] = []
+        file_families: list[int] = []
+        file_note_counts: list[int] = []
         for path, embs_list in path2embs.items():
             stacked = torch.stack(embs_list)  # (n_clips, H)
             mean_emb = stacked.mean(0)
@@ -249,6 +295,10 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             file_work_ids.append(path2work[path])
             if has_conditions:
                 file_conditions.append(path2cond[path])
+            if has_families:
+                file_families.append(path2family[path])
+            if has_note_counts:
+                file_note_counts.append(path2notes[path])
 
         embs = torch.stack(file_embs)  # (N, H)
         work_ids = torch.tensor(file_work_ids)  # (N,)
@@ -480,6 +530,109 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             if "map@1" in metrics_w:
                 self.log("test/map@1_whitened", metrics_w["map@1"], rank_zero_only=True)
             self.log("test/mrr_whitened", metrics_w["mrr"], rank_zero_only=True)
+
+        # ── Same-family hard-distractor MAP + length-stratified MAP ──────────
+        # MTC-ANN Motif task ONLY (gated on the 6-tuple datamodule populating
+        # the family / note-count buffers). For every other task these buffers
+        # stay empty and this block is skipped entirely — standard MAP above is
+        # untouched.
+        #
+        # WHY: for MTC-ANN Motif retrieval every relevant item (same
+        # family|motifclass) is by construction in the SAME tune family, and
+        # ~605/698 gallery items per query are OTHER-family easy negatives. So
+        # the full-gallery MAP above largely measures tune-family similarity,
+        # not motif identity. The same-family metric masks every other-family
+        # gallery item to -inf (in addition to the self-mask) so each query is
+        # ranked only against motifs from its OWN family — isolating "is this
+        # the same motif?" from "is this the same tune?". This is the
+        # confound-free discriminative number.
+        #
+        # The length-stratified metric splits queries by motif note-count
+        # (~52% of MTC-ANN motifs are <= 3 notes) so a short-motif collapse
+        # can't hide inside the corpus average.
+        has_families = bool(getattr(self, "_test_families", None))
+        has_note_counts = bool(getattr(self, "_test_note_counts", None))
+        if has_families or has_note_counts:
+            from marble.utils.retrieval_metrics import compute_masked_map
+
+            # Reuse the raw + centered per-file embeddings already computed
+            # above. N≈700 for MTC-ANN Motif so the (N, N) sim is ~2 MB —
+            # build a dedicated one here (the standard-MAP ``sim`` was freed /
+            # never materialised on the streaming path). Same L2-normalised
+            # cosine as the standard metric, so the same-family MAP is a clean
+            # restriction of the SAME ranking, not a different similarity.
+            sim_raw = embs @ embs.T
+            sim_cen = embs_c @ embs_c.T
+
+            # ``degenerate`` is referenced by the length-stratified same-family
+            # block below; default False so it's defined even when the family
+            # buffer is absent (note-counts-only is not a real config, but keep
+            # the block self-consistent).
+            degenerate = False
+            fam_t = None
+            if has_families:
+                fam_t = torch.tensor(file_families)
+                # Guard the degenerate TuneFamily-style case where family ==
+                # work_id (every relevant peer is the ONLY same-family item):
+                # then the same-family gallery for a query is exactly its own
+                # relevant set and the metric is trivially 1.0 / uninformative.
+                # MTC-ANN Motif is NOT degenerate (many motifclasses per
+                # family), but skip cleanly if a build ever makes it so.
+                degenerate = bool(
+                    torch.equal(
+                        torch.unique(fam_t, return_inverse=True)[1],
+                        torch.unique(work_ids, return_inverse=True)[1],
+                    )
+                )
+                if degenerate:
+                    print(
+                        "[CoverRetrieval] same-family MAP skipped "
+                        "(family == work_id; metric is degenerate here)"
+                    )
+                else:
+                    map_sf = compute_masked_map(sim_raw, work_ids, gallery_groups=fam_t)
+                    map_sf_c = compute_masked_map(sim_cen, work_ids, gallery_groups=fam_t)
+                    print(f"[CoverRetrieval] MAP same-family (raw)      = {map_sf:.4f}")
+                    print(f"[CoverRetrieval] MAP same-family (centered) = {map_sf_c:.4f}")
+                    self.log("test/map_samefamily", map_sf, prog_bar=False, rank_zero_only=True)
+                    self.log(
+                        "test/map_samefamily_centered",
+                        map_sf_c,
+                        prog_bar=False,
+                        rank_zero_only=True,
+                    )
+
+            if has_note_counts:
+                notes_t = torch.tensor(file_note_counts)
+                short = notes_t <= 3  # <= 3 notes (~52% of MTC-ANN motifs)
+                long_ = notes_t > 3
+                # Full-gallery MAP restricted to each length subset of queries.
+                map_le3 = compute_masked_map(sim_raw, work_ids, query_subset=short)
+                map_gt3 = compute_masked_map(sim_raw, work_ids, query_subset=long_)
+                print(
+                    f"[CoverRetrieval] MAP len<=3 notes = {map_le3:.4f} "
+                    f"(n_short_queries={int(short.sum())})"
+                )
+                print(
+                    f"[CoverRetrieval] MAP len>3 notes  = {map_gt3:.4f} "
+                    f"(n_long_queries={int(long_.sum())})"
+                )
+                self.log("test/map_len_le3", map_le3, prog_bar=False, rank_zero_only=True)
+                self.log("test/map_len_gt3", map_gt3, prog_bar=False, rank_zero_only=True)
+                # Length-stratified same-family MAP too (only when both signals
+                # present) — the confound-free metric, per length bucket. This
+                # is the cleanest single number per (length × discriminative).
+                if has_families and not degenerate:
+                    map_sf_le3 = compute_masked_map(
+                        sim_raw, work_ids, gallery_groups=fam_t, query_subset=short
+                    )
+                    map_sf_gt3 = compute_masked_map(
+                        sim_raw, work_ids, gallery_groups=fam_t, query_subset=long_
+                    )
+                    self.log("test/map_samefamily_len_le3", map_sf_le3, rank_zero_only=True)
+                    self.log("test/map_samefamily_len_gt3", map_sf_gt3, rank_zero_only=True)
+
+            del sim_raw, sim_cen
 
         # ── Per-condition MAP (cross-instrument / cross-soundfont) ───────────
         # Only meaningful when the dataset carries a per-item condition
