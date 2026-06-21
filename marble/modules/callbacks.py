@@ -123,11 +123,50 @@ class LogSweepCoordsCallback(Callback):
     def on_test_start(self, trainer, pl_module):
         self._stamp(trainer, "test")
 
+    @staticmethod
+    def _resolve_fold_idx(datamodule):
+        """Best-effort extraction of the CV fold from the datamodule.
+
+        Authoritative source for ``sweep/fold`` so it is stamped on **fit** runs
+        too (whose name carries no ``foldN`` token — without this they used to
+        land with ``sweep/fold = None`` and were unrecoverable, the exact bug the
+        per-fold sweeps hit). The ``fold_idx`` does NOT live on the
+        ``BaseDataModule`` itself — it sits on the per-split *datasets* (set from
+        the YAML ``init_args.fold_idx``), which only exist after ``setup()``, and
+        in the split *config dicts*, which exist before it. We probe, in order:
+
+          1. ``datamodule.fold_idx``                         (if a subclass adds it)
+          2. the instantiated split datasets' ``fold_idx``   (post-setup)
+          3. the split config dicts' ``init_args.fold_idx``  (pre-setup; the
+             value always present at on_fit_start / on_test_start)
+
+        Returns an int fold or None (tasks without folds — JKUPDD etc.).
+        """
+        if datamodule is None:
+            return None
+        direct = getattr(datamodule, "fold_idx", None)
+        if direct is not None:
+            return direct
+        for attr in ("test_dataset", "train_dataset", "val_dataset"):
+            ds = getattr(datamodule, attr, None)
+            # AudioTransformDataset wraps the real dataset under `.dataset`.
+            for cand in (ds, getattr(ds, "dataset", None)):
+                fi = getattr(cand, "fold_idx", None)
+                if fi is not None:
+                    return fi
+        for attr in ("test_config", "train_config", "val_config"):
+            cfg = getattr(datamodule, attr, None)
+            if isinstance(cfg, dict):
+                fi = (cfg.get("init_args") or {}).get("fold_idx")
+                if fi is not None:
+                    return fi
+        return None
+
     def _stamp(self, trainer, stage):
         run = _find_wandb_run(trainer)
         if run is None:
             return
-        fold_idx = getattr(getattr(trainer, "datamodule", None), "fold_idx", None)
+        fold_idx = self._resolve_fold_idx(getattr(trainer, "datamodule", None))
         coords = resolve_coords(
             getattr(run, "name", "") or "",
             getattr(run, "job_type", None),

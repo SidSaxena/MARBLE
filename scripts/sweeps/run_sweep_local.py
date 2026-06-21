@@ -601,13 +601,19 @@ def _run_one_layer(
                     sys.stdout.write(f"[L{layer}] {msg}\n")
                     sys.stdout.flush()
         else:
+            # Per-fold sweeps suffix the fold onto the NAME (not job_type) so the
+            # fit run is recoverable by fold AND keeps job_type='fit'. With the
+            # name carrying foldN, LogSweepCoordsCallback (which also reads the
+            # datamodule's fold_idx authoritatively) stamps sweep/fold on fit too.
+            name_suffix = getattr(args, "run_name_suffix", None)
+            fit_name = f"layer-{layer}-fit" + (f"-{name_suffix}" if name_suffix else "")
             fit_cmd = [
                 PYTHON,
                 "cli.py",
                 "fit",
                 "-c",
                 cfg,
-                f"--trainer.logger.init_args.name=layer-{layer}-fit",
+                f"--trainer.logger.init_args.name={fit_name}",
                 "--trainer.logger.init_args.job_type=fit",
             ] + common_overrides
             # Resume from last.ckpt if a prior run was killed mid-training.
@@ -631,8 +637,15 @@ def _run_one_layer(
         # dashboard. Filter via name regex (e.g. "layer-.+-test-backfill-recall")
         # or by job_type ("test-backfill-recall").
         extra_tag = getattr(args, "extra_tag", None)
+        name_suffix = getattr(args, "run_name_suffix", None)
         test_name = f"layer-{layer}-test"
         test_job_type = "test"
+        # --run-name-suffix (e.g. fold3) goes on the NAME only — keeps job_type
+        # the clean stage 'test'. --extra-tag still suffixes BOTH name + job_type
+        # (its established backfill-marking behaviour). Apply name-suffix first
+        # so a per-fold backfill reads layer-N-test-fold3-<extra_tag>.
+        if name_suffix:
+            test_name = f"{test_name}-{name_suffix}"
         if extra_tag:
             test_name = f"{test_name}-{extra_tag}"
             test_job_type = f"test-{extra_tag}"
@@ -820,6 +833,17 @@ def main():
         help="Passed to gen_sweep_configs: appended to each per-layer output "
         "dir AFTER .layer{N} (e.g. '.fold3' → ...-layers.layer6.fold3 for "
         "layer-primary per-fold dirs). Default '' keeps historical naming.",
+    )
+    parser.add_argument(
+        "--run-name-suffix",
+        default=None,
+        help="Append this suffix to BOTH the fit and test wandb run NAMES "
+        "(e.g. 'fold3' → name 'layer-6-fit-fold3' / 'layer-6-test-fold3') "
+        "WITHOUT touching job_type. Unlike --extra-tag (which suffixes only the "
+        "TEST name + dirties job_type to 'test-<tag>'), this keeps job_type the "
+        "clean stage ('fit'/'test') — the convention a per-fold sweep needs so "
+        "runs group by sweep/layer and stay recoverable by fold on BOTH stages. "
+        "Use for per-fold sweeps; --extra-tag stays for backfill marking.",
     )
     args = parser.parse_args()
 
