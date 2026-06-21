@@ -18,11 +18,13 @@ set -uo pipefail
 ACCEL="gpu"
 FOLDS="0 1 2 3 4"
 LAYERS_ARG=""
+CONCURRENCY="1"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --accelerator) ACCEL="$2"; shift 2 ;;
     --folds) FOLDS="$2"; shift 2 ;;
     --layers) LAYERS_ARG="$2"; shift 2 ;;
+    --concurrency) CONCURRENCY="$2"; shift 2 ;;  # run N layers in parallel (CUDA)
     *) echo "unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -41,11 +43,11 @@ for F in $FOLDS; do
   sed -e "s/fold_idx: 0/fold_idx: ${F}/g" \
       -e "s#CLaMP3-symbolic-layers/#CLaMP3-symbolic-layers.fold${F}/#g" \
       "$BASE" > "$CFG"
-  echo "===== MNID FOLD ${F} (accelerator=${ACCEL}) ====="
+  echo "===== MNID FOLD ${F} (accelerator=${ACCEL}, concurrency=${CONCURRENCY}) ====="
   "$PY" scripts/sweeps/run_sweep_local.py \
     --base-config "$CFG" \
     --num-layers 13 --model-tag CLaMP3-symbolic --task-tag BPSMotifMNID \
-    --accelerator "$ACCEL" --skip-meanall \
+    --accelerator "$ACCEL" --skip-meanall --concurrency "$CONCURRENCY" \
     --extra-tag "fold${F}" "${EXTRA_LAYERS[@]}"
 done
 echo "===== MNID sweep complete ====="
