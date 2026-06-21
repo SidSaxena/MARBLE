@@ -35,6 +35,12 @@ model:
   init_args:
     sample_rate: 24000
     cache_embeddings: true
+    # Log the full retrieval suite (map@1, mrr, recall@{1,5,10,50,100},
+    # hit_rate@K + _centered/_whitened duplicates) on top of the default
+    # trim set (map, map_centered, map_whitened, recall@10, r_precision,
+    # median_rank, anisotropy) — the real test folds (~900 windows) are
+    # large enough to populate all of them.
+    log_extended_retrieval_metrics: true
 
     encoder:
       class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder
