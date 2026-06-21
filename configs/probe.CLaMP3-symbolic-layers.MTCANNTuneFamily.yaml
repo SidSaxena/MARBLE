@@ -1,0 +1,76 @@
+seed_everything: 1234
+ckpt_path: null
+
+# MTC-ANN tune-family retrieval — CLaMP3 symbolic, per-layer sweep.
+# MTF VARIANT: each melody is tokenised from the lossy MIDI->MTF path
+# (data/MTC-ANN/MTCANN.TuneFamily.MTF.jsonl `midi_path` field). Zero-shot
+# (max_epochs=0): embed every melody, rank by cosine, relevance = same
+# tunefamily group. No CV folds — leave-one-out within the test pool. ABC A/B
+# counterpart: probe.CLaMP3-symbolic-abc-layers.MTCANNTuneFamily.yaml.
+# Build the dataset first (parallel data-build agent):
+#   uv run python scripts/data/build_mtc_ann_retrieval.py
+# The sweep runner overrides the single-int `layers: [6]` below per layer.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks:
+    - class_path: marble.modules.callbacks.LogSweepCoordsCallback
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "CLaMP3-symbolic / MTCANNTuneFamily"
+      tags: ["CLaMP3-symbolic", "MTCANNTuneFamily", "layer-sweep", "probe", "symbolic"]
+      job_type: "test"
+      name: "layer-6-test"
+      save_dir: "./output/probe.MTCANNTuneFamily.CLaMP3-symbolic-layers/"
+
+
+model:
+  class_path: marble.tasks.MTCANN.probe.MTCANNTuneFamilyTask
+  init_args:
+    sample_rate: 24000
+    cache_embeddings: true
+    # Full retrieval suite (map@1, mrr, recall@{1,5,10,50,100}, hit_rate@K +
+    # _centered/_whitened) on top of the default trim set.
+    log_extended_retrieval_metrics: true
+
+    encoder:
+      class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: [6]   # sweep replaces this per-layer
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+
+data:
+  class_path: marble.tasks.MTCANN.datamodule.MTCANNTuneFamilyMTFDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 4
+
+    audio_transforms:
+      train: []
+      val:   []
+      test:  []
+
+    train:
+      class_path: marble.tasks.MTCANN.datamodule.MTCANNTuneFamilyMTFDummy
+    val:
+      class_path: marble.tasks.MTCANN.datamodule.MTCANNTuneFamilyMTFDummy
+    test:
+      class_path: marble.tasks.MTCANN.datamodule.MTCANNTuneFamilyMTFTest
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
