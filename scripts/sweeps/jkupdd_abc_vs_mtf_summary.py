@@ -4,8 +4,12 @@ This compares two zero-shot CLaMP3-symbolic layer sweeps run on the *identical*
 occurrence pool (the 66 occurrences / 15 groups that survived score-native ABC
 alignment — see ``scripts/data/build_jkupdd_abc.py`` + ``docs/jkupdd_abc_vs_mtf.md``):
 
-  * **ABC**  — task tag ``JKUPDDRetrievalABC``: each occurrence tokenised from a
-    notation-preserving interleaved-ABC string sliced from the piece ``**kern``.
+  * **ABC**  — task tag ``JKUPDDRetrievalABCnote`` (the content-confound-CORRECTED
+    note-level build): each occurrence tokenised from a notation-preserving
+    interleaved-ABC string built from ONLY the occurrence's matched motif notes
+    (single-voice, re-zeroed) — the same musical object MTF embeds. (Pass the
+    legacy ``--abc-tag JKUPDDRetrievalABC`` to reproduce the OLD, confounded
+    whole-measure-slice numbers; not recommended — see the doc.)
   * **MTF**  — task tag ``JKUPDDRetrievalMatched``: the same occurrences tokenised
     from the lossy ``**kern → MIDI → MTF`` path (the existing pipeline), restricted
     to the same 66 so the A/B is apples-to-apples.
@@ -91,7 +95,7 @@ def _best(cells: dict[int, dict], key="test/map") -> int | None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=os.path.expanduser("~/developer/python/marble"))
-    ap.add_argument("--abc-tag", default="JKUPDDRetrievalABC")
+    ap.add_argument("--abc-tag", default="JKUPDDRetrievalABCnote")
     ap.add_argument("--mtf-tag", default="JKUPDDRetrievalMatched")
     ap.add_argument("--out-json", default="/tmp/jkupdd_abc_vs_mtf.json")
     ap.add_argument("--out-md", default="/tmp/jkupdd_abc_vs_mtf.md")

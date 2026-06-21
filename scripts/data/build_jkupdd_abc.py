@@ -3,11 +3,24 @@
 
 This is the ABC counterpart of ``scripts/data/build_jkupdd_retrieval.py`` (which
 emits one lossy MIDI window per occurrence for the MIDI→MTF path). Instead of a
-MIDI window, each occurrence here gets an **interleaved-ABC** string sliced from
-the piece's ``**kern`` — preserving key / pitch-spelling / meter / bar structure
-that the ``**kern → MIDI → MTF`` round-trip discards. The goal is a clean A/B at
-fixed identity: does notation-preserving ABC beat lossy MTF for cross-piece motif
-retrieval with CLaMP3? (See ``docs/jkupdd_abc_vs_mtf.md``.)
+MIDI window, each occurrence here gets a **note-level interleaved-ABC** string
+built from *only the occurrence's matched notes* — preserving key / pitch-
+spelling / meter / bar structure that the ``**kern → MIDI → MTF`` round-trip
+discards. The goal is a clean A/B at fixed identity: does notation-preserving ABC
+beat lossy MTF for cross-piece motif retrieval with CLaMP3?
+(See ``docs/jkupdd_abc_vs_mtf.md``.)
+
+**Content-confound fix (note-level, not whole-measure).** The first version of
+this build sliced ``score.measures(lo, hi)`` — the **whole polyphonic measure
+span, all voices** — so an 8-note motif embedded a multi-bar, multi-staff,
+accompaniment-laden ABC texture (ABC-notes / motif-notes ≈ 6× on mean, up to
+15.8×) while the MTF arm embedded JKUPDD's per-occurrence MIDI = the **isolated
+motif** (~1.1×). The two arms embedded *different musical objects*, so the
+original A/B was a content confound. This build now reconstructs **just the
+matched notes** as a single-voice stream (pitch + notated duration + re-zeroed
+relative onset, mirroring the MTF occurrence MIDI), then runs ``score_to_abc`` —
+see :func:`_build_motif_abc`. A content-parity check (ABC note-heads over motif
+notes / MTF-window notes, both ≈ 1.0) gates the build.
 
 **Canonical identity (apples-to-apples).** We do NOT re-enumerate occurrences.
 We read the *already-built* dedup'd MTF JSONL
@@ -38,10 +51,11 @@ bridge* between the occurrence and the kern:
      kern notes → measure span.
 
 We report the **per-occurrence note match-rate**; an occurrence below
-``--min-match-rate`` (default 0.9 → tolerate a few ornament/grace-note mismatches
-whose absence doesn't move the measure span) is dropped/flagged, and the summary
-says how many. The matched kern notes define the occurrence's measure span; we
-slice that range from the score and run ``score_to_abc``.
+``--min-match-rate`` (default 0.9 → tolerate a few ornament/grace-note
+mismatches) is dropped/flagged, and the summary says how many. The matched kern
+notes themselves (their pitch + notated duration + relative onset) ARE the ABC
+content — :func:`_build_motif_abc` reconstructs them as a single-voice line and
+runs ``score_to_abc``; the measure span is now only a diagnostic, not the slice.
 
 **Alignment is NOT uniformly clean (a real finding).** The
 ``docs/kern_sourcing_bps_jkupdd.md`` assessment called JKUPDD "clean / low-risk
@@ -236,36 +250,146 @@ def _match_occurrence(
     return matched, n_matched
 
 
-def _slice_abc(score, matched_notes: list[dict]):
-    """Slice the measure span covering ``matched_notes`` and convert to ABC.
+def _count_abc_noteheads(abc: str) -> int:
+    """Count pitched note-heads in an interleaved-ABC body (parity diagnostic).
 
-    Returns the interleaved-ABC string. We slice by *measure* range (the lowest
-    to highest measure number touched by the matched notes) so the fragment is
-    bar-aligned and carries its key/clef/meter context — exactly what makes the
-    ABC path notation-faithful. ``score.measures(a, b)`` copies the governing
-    KeySignature / Clef / TimeSignature into the first measure of the slice.
+    Strips header / voice-decl / directive lines, then counts pitch tokens
+    (optional accidental ``^_=`` + a note letter ``A-Ga-g`` + octave marks
+    ``,'``). Rests (``z``/``x``) and chords-as-single-token are not pitch heads;
+    for these JKUPDD motifs (single-voice, note-per-onset) this equals the motif
+    note count, so ABC-heads / motif-notes ≈ 1.0 when the build is correct.
     """
+    import re as _re
+
+    body = "\n".join(
+        ln
+        for ln in abc.splitlines()
+        if ln and not _re.match(r"^[A-Za-z%]:", ln) and not ln.startswith("%%")
+    )
+    # Drop the leading [V:n] tags so their letters aren't counted as pitches.
+    body = _re.sub(r"\[V:\d+\]", "", body)
+    return len(_re.findall(r"[_=^]*[A-Ga-g][,']*", body))
+
+
+def _count_midi_notes(midi_path) -> int | None:
+    """Count note-on events in a MIDI file (the MTF window's note count).
+
+    Returns ``None`` if the file is missing or ``mido`` is unavailable — parity
+    is then reported against motif notes only. JKUPDD ships one occurrence MIDI
+    per pattern occurrence (the MTF arm's exact input); its note count is the
+    apples-to-apples denominator for the ABC-vs-MTF content-parity check.
+    """
+    from pathlib import Path as _P
+
+    p = _P(midi_path)
+    if not p.exists():
+        return None
+    try:
+        import mido
+    except ImportError:
+        return None
+    n = 0
+    for tr in mido.MidiFile(str(p)).tracks:
+        for msg in tr:
+            # JKUPDD appends a pitch-1 / velocity-1 sentinel note at the end of
+            # each occurrence MIDI (an end-of-occurrence marker, not a musical
+            # note); exclude it so the count is the real motif size.
+            if msg.type == "note_on" and msg.velocity > 1 and msg.note > 1:
+                n += 1
+    return n
+
+
+def _build_motif_abc(matched_notes: list[dict]):
+    """Build a **motif-only, single-voice** ABC from just the matched notes.
+
+    THE FIX (see ``docs/jkupdd_abc_vs_mtf.md`` "Content confound"). The earlier
+    ``_slice_abc`` took ``score.measures(lo, hi)`` — the **whole polyphonic
+    measure span, all voices** — so an 8-note motif embedded a 3-bar, 2-staff,
+    ~85-note ABC texture (ABC-notes / motif-notes ≈ 6× on mean, up to 15.8×).
+    The MTF arm, by contrast, embeds JKUPDD's per-occurrence MIDI = the
+    **isolated motif** (~1.1× motif notes). The two arms were embedding
+    *different musical objects*, so the A/B was a content confound, not an
+    encoding comparison.
+
+    This builder instead reconstructs **only the occurrence's matched notes** —
+    the exact kern notes the point-set alignment resolved — as a *single-voice*
+    music21 stream, mirroring exactly what JKUPDD's per-occurrence MIDI (the MTF
+    arm's input) contains:
+
+    * **pitch** — ``kn["midi"]`` (the matched point-set pitch; on a chord note
+      this is the specific constituent the row matched, not the whole chord);
+    * **duration** — the matched kern note's *notated* ``quarterLength`` (the
+      occurrence CSV does not reliably carry duration for these pieces, so we
+      take it from the score; a non-positive/grace duration falls back to an
+      eighth so the note still renders);
+    * **relative onset** — each note's ``offset_in_hierarchy`` minus the motif's
+      first onset, so the fragment is **re-zeroed to t=0** exactly like the MTF
+      occurrence MIDI (which JKUPDD ships time-zeroed). Inter-onset gaps inside
+      the motif are preserved (they become ABC invisible rests / are present as
+      gaps in the MTF MIDI too), so the rhythmic object matches.
+
+    We carry the governing key / meter from the motif's first note's context so
+    the ABC ``K:``/``M:`` headers reflect the real tonal/metric context (pitch
+    spelling via accidentals is preserved regardless). ``makeMeasures`` then
+    bar-aligns the single voice for the interleaver. The result is a short
+    monophonic ABC line of *the motif* — same notes as the MTF window — not the
+    surrounding accompaniment.
+
+    Returns ``(abc, (lo, hi))`` where ``(lo, hi)`` is the kern measure span the
+    motif touches (kept for the JSONL ``measure_span`` field / diagnostics only;
+    it no longer governs what is embedded).
+    """
+    import music21
+
     from marble.encoders.CLaMP3.abc_util import score_to_abc
 
-    measures = set()
+    if not matched_notes:
+        raise RuntimeError("no matched notes to build a motif ABC from")
+
+    # Per-note (offset_ql, midi, dur_ql) for exactly the matched notes.
+    recs: list[tuple[float, int, float]] = []
     for kn in matched_notes:
-        m = kn["note"].getContextByClass("Measure")
-        if m is not None and m.number is not None:
-            measures.add(int(m.number))
-    if not measures:
-        raise RuntimeError("no measure numbers on matched notes")
-    lo, hi = min(measures), max(measures)
-    fragment = score.measures(lo, hi)
+        dur = float(kn["note"].duration.quarterLength)
+        recs.append((float(kn["offset"]), int(kn["midi"]), dur))
+    min_off = min(r[0] for r in recs)
+
+    part = music21.stream.Part()
+    first_el = matched_notes[0]["note"]
+    # Prefer a full Key (carries mode, e.g. A-minor) but fall back to a bare
+    # KeySignature; either way the sharps/flats — hence pitch spelling — match.
+    key_obj = first_el.getContextByClass("Key") or first_el.getContextByClass("KeySignature")
+    ts = first_el.getContextByClass("TimeSignature")
+    if key_obj is not None:
+        part.insert(0, music21.key.KeySignature(key_obj.sharps))
+    if ts is not None:
+        part.insert(0, music21.meter.TimeSignature(ts.ratioString))
+    for off, midi, dur in recs:
+        n = music21.note.Note()
+        n.pitch.midi = midi
+        n.duration.quarterLength = dur if dur and dur > 0 else 0.5
+        part.insert(off - min_off, n)
+
+    sc = music21.stream.Score()
+    sc.insert(0, part)
+    sc.makeMeasures(inPlace=True)
+
+    # Measure span the motif touches (diagnostic only — not what is embedded).
+    measures = {
+        int(m.number)
+        for kn in matched_notes
+        if (m := kn["note"].getContextByClass("Measure")) is not None and m.number is not None
+    }
+    lo, hi = (min(measures), max(measures)) if measures else (-1, -1)
+
     try:
-        abc = score_to_abc(fragment)
+        abc = score_to_abc(sc)
     except Exception as e:  # noqa: BLE001
-        # music21's MusicXML export rejects an over-long ("duplex-maxima")
-        # duration that a tie-continuation note inherits when the slice cuts a
-        # tied chain. Resolving the ties to real durations fixes the export.
+        # music21's MusicXML export can reject an over-long ("duplex-maxima")
+        # duration inherited from a tie-continuation note; resolve ties first.
         if "duplex-maxima" not in str(e) and "too long" not in str(e):
             raise
-        fragment = fragment.stripTies(retainContainers=True)
-        abc = score_to_abc(fragment)
+        sc = sc.stripTies(retainContainers=True)
+        abc = score_to_abc(sc)
     return abc, (lo, hi)
 
 
@@ -460,13 +584,21 @@ def build(jkupdd_root: Path, kern_dir: Path, mtf_jsonl: Path, min_match_rate: fl
             continue
 
         try:
-            abc, (lo, hi) = _slice_abc(score, matched)
+            abc, (lo, hi) = _build_motif_abc(matched)
         except Exception as e:  # noqa: BLE001
             dropped.append(
-                {"occurrence_id": occ_id, "reason": f"abc-slice failed: {type(e).__name__}: {e}"}
+                {"occurrence_id": occ_id, "reason": f"abc-build failed: {type(e).__name__}: {e}"}
             )
             continue
 
+        # Content-parity gate: the note-level ABC must embed the SAME notes as
+        # the motif / the MTF window, not the surrounding accompaniment. Count
+        # ABC note-heads and the MTF occurrence-MIDI notes; both ratios should be
+        # ≈ 1.0 (see docs). The MTF window is JKUPDD's per-occurrence MIDI — the
+        # exact input the MTF arm embeds — so n_abc/n_mtf is the apples-to-apples
+        # parity number.
+        n_abc_notes = _count_abc_noteheads(abc)
+        n_mtf_notes = _count_midi_notes(REPO / r["midi_path"]) if "midi_path" in r else None
         records.append(
             {
                 "abc": abc,
@@ -477,6 +609,8 @@ def build(jkupdd_root: Path, kern_dir: Path, mtf_jsonl: Path, min_match_rate: fl
                 "occurrence_id": occ_id,
                 "n_occ_notes": len(occ_rows),
                 "n_matched": n_matched,
+                "n_abc_notes": n_abc_notes,
+                "n_mtf_notes": n_mtf_notes,
                 "match_rate": round(rate, 4),
                 "measure_span": [lo, hi],
                 "split": "test",
@@ -505,6 +639,40 @@ def build(jkupdd_root: Path, kern_dir: Path, mtf_jsonl: Path, min_match_rate: fl
     gc = Counter(rec["group"] for rec in records)
     singleton_groups = [g for g, c in gc.items() if c < 2]
 
+    # Content-parity summary — THE GATE. With the note-level build the ABC must
+    # embed the same notes as the motif / the MTF window. We report ABC-heads
+    # over (a) the matched motif notes and (b) the MTF window notes; both should
+    # be ≈ 1.0. Any occurrence with ratio > 1.5 is surfaced for investigation
+    # (the old whole-measure build ran ≈ 6× on mean, up to 15.8×).
+    def _ratios(num_key: str, den_key: str):
+        rs = [
+            rec[num_key] / rec[den_key] for rec in records if rec.get(num_key) and rec.get(den_key)
+        ]
+        return rs
+
+    abc_over_motif = _ratios("n_abc_notes", "n_matched")
+    abc_over_mtf = _ratios("n_abc_notes", "n_mtf_notes")
+    offenders = [
+        {
+            "occurrence_id": rec["occurrence_id"],
+            "n_abc_notes": rec["n_abc_notes"],
+            "n_matched": rec["n_matched"],
+            "n_mtf_notes": rec.get("n_mtf_notes"),
+            "abc_over_motif": round(rec["n_abc_notes"] / rec["n_matched"], 3)
+            if rec.get("n_matched")
+            else None,
+        }
+        for rec in records
+        if rec.get("n_matched") and rec["n_abc_notes"] / rec["n_matched"] > 1.5
+    ]
+
+    def _stat(xs):
+        return (
+            {"mean": round(sum(xs) / len(xs), 4), "max": round(max(xs), 4), "n": len(xs)}
+            if xs
+            else None
+        )
+
     return {
         "mtf_records": len(mtf_records),
         "abc_records": len(records),
@@ -516,6 +684,11 @@ def build(jkupdd_root: Path, kern_dir: Path, mtf_jsonl: Path, min_match_rate: fl
         "min_match_rate_seen": round(min(match_rates), 4) if match_rates else None,
         "n_perfect_match": sum(1 for x in match_rates if x >= 1.0),
         "n_total_aligned": len(match_rates),
+        "content_parity": {
+            "abc_over_motif": _stat(abc_over_motif),
+            "abc_over_mtf_window": _stat(abc_over_mtf),
+            "offenders_gt_1p5x": offenders,
+        },
         "piece_kern_pointset_agreement": piece_agreement,
         "jsonl": str(JSONL_OUT),
         "matched_mtf_jsonl": str(matched_path),
