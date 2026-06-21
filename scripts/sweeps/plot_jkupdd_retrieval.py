@@ -86,8 +86,8 @@ def main():
     ax.set_ylabel("test/MAP")
     ax.set_title(
         "JKUPDD within-piece motif retrieval — CLaMP3-symbolic per-layer MAP\n"
-        "(5 cross-composer pieces, 165 occurrence windows, no folds; "
-        "dashed = meanall baseline)"
+        "(5 cross-composer pieces, 78 byte-dedup'd occurrence windows / 20 groups, "
+        "no folds; dashed = meanall baseline)"
     )
     ax.set_xticks(layers)
     ax.grid(True, alpha=0.3)

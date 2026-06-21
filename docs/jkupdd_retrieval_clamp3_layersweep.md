@@ -15,147 +15,231 @@ This is the **cross-composer companion** to
 of CLaMP3's depth that holds across composers and eras (Baroque → Classical →
 Romantic).
 
+## ⚠️ Correction: the original MAP was inflated by trivial byte-duplicates
+
+An earlier version of this sweep ran on the **raw 165 occurrence windows** and
+reported a headline **L7 MAP ≈ 0.894**. That number was **inflated by a
+trivial-duplicate artifact** and has been corrected. The cause:
+
+- **JKUPDD ships every occurrence MIDI time-zeroed to t=0.** A literal
+  pitch+rhythm phrase-repeat — extremely common in this corpus — therefore
+  collapses to a **byte-identical** file inside its `(piece, annotator, pattern)`
+  group.
+- CLaMP3 maps identical bytes to an **identical embedding (cosine = 1.000)**, so
+  a byte-twin is a **guaranteed rank-1 hit independent of encoder quality**. The
+  duplicates were inflating MAP at *every* layer.
+- Severity (raw 165): only **88 of 165 occurrences are byte-distinct**;
+  **117/165 queries (71 %) have a byte-identical same-group twin**; **12 of 32
+  groups are entirely byte-identical** across all their occurrences.
+
+**Fix — within-group byte-dedup** (now default in
+`scripts/data/build_jkupdd_retrieval.py`, `--no-dedup-within-group` to reproduce
+the old build): keep **one representative per distinct byte-content per group**.
+We dedup **byte-identical only** — transposed / rhythmically-varied repeats hash
+differently and are **kept** (that is the legitimate motif variation the encoder
+must be tested on). A retrieval group needs **≥2 distinct contents** to form a
+valid query pool, so the **12 groups that collapse to a single distinct content
+are dropped** (they can only produce trivial self-relevant queries).
+
+**Surviving dedup'd dataset: 78 occurrence windows / 20 groups** (from 165 / 32;
+**12 groups dropped**, all of them entirely-byte-identical ones — 5 Beethoven
+`sectionalRepetitions`/`tomCollins` + 7 Mozart sectional/`barlowAndMorgenstern`).
+Note: per-group dedup keeps **90** distinct contents, but **12** of those live in
+the dropped single-content groups, leaving **78** in valid query pools (a further
+2-vs-global gap is cross-annotator byte-twins, see *Caveats*). All numbers below
+are on this clean 78-window set.
+
+### As-run (inflated) vs dedup'd — per-layer raw MAP
+
+| layer | raw 165 (inflated) | dedup 78 (clean) | Δ |
+|------:|-------------------:|-----------------:|----:|
+| 0  | 0.8233 | 0.7189 | −0.104 |
+| 1  | 0.7992 | 0.6823 | −0.117 |
+| 2  | 0.7967 | 0.6772 | −0.120 |
+| 3  | 0.8110 | 0.6990 | −0.112 |
+| 4  | 0.8348 | 0.7383 | −0.097 |
+| 5  | 0.8567 | 0.7745 | −0.082 |
+| 6  | 0.8762 | 0.8092 | −0.067 |
+| **7** | **0.8939** | **0.8434** | **−0.051** |
+| 8  | 0.8901 | 0.8337 | −0.056 |
+| 9  | 0.8927 | 0.8400 | −0.053 |
+| 10 | 0.8912 | 0.8350 | −0.056 |
+| 11 | 0.8920 | 0.8373 | −0.055 |
+| 12 | 0.8790 | 0.8247 | −0.054 |
+| meanall | 0.8780 | 0.8138 | −0.064 |
+
+Dedup costs **~0.05 MAP at the mid-stack peak and 0.10–0.12 at the surface**.
+**L7 is still the argmax** (0.8434), and the headline ordering is unchanged — but
+the *honest* number is **0.843, not 0.894**, and the surface layers fall
+*further* (the duplicates were propping up the weak layers most), so the
+mid-stack-over-surface gap **widens** on the clean set.
+
+![per-layer MAP](jkupdd_retrieval_clamp3_layersweep.png)
+
 ## Run
 
 - **13 layers × 1 run + 1 meanall = 14 runs**, all completed (rc=0), ~4 min wall
   on an RTX 5060 Ti (CUDA). Zero-shot (`max_epochs: 0`) → **no checkpoints**;
-  the encoder forwards the 165 windows once, the 13 layer-jobs read the `(L, H)`
+  the encoder forwards the 78 windows once, the 13 layer-jobs read the `(L, H)`
   embedding cache.
-- **No CV folds.** JKUPDD is small (32 annotated patterns / 165 occurrences),
-  and motif identity is within-piece, so the whole benchmark is **one test
-  set** — there is exactly one run per layer (contrast BPS-Motif's 5 folds).
-- Date: 2026-06-21. wandb: project `marble`, group
+- **No CV folds.** JKUPDD is small (20 groups / 78 dedup'd occurrences), and
+  motif identity is within-piece, so the whole benchmark is **one test set** —
+  there is exactly one run per layer (contrast BPS-Motif's 5 folds).
+- Date: 2026-06-21 (clean re-run). wandb: project `marble`, group
   `CLaMP3-symbolic / JKUPDDRetrieval`, names `layer-0-test` … `layer-12-test` +
   `layer-meanall-test`. Sweep coords (`sweep/layer`, `sweep/stage`) logged at run
-  time via `LogSweepCoordsCallback`.
+  time via `LogSweepCoordsCallback`. (The earlier *inflated* runs remain in the
+  wandb cloud, superseded — they are not deleted here.)
 - Full metric suite via `log_extended_retrieval_metrics: true`.
 
-![per-layer MAP](jkupdd_retrieval_clamp3_layersweep.png)
-
-## Results — `test/map` by layer: raw | centered | whitened
+## Results — `test/map` by layer: raw | centered | whitened (dedup'd)
 
 | layer | raw | centered | whitened |
 |------:|----:|---------:|---------:|
-| 0  | 0.8233 | 0.8230 | 0.8121 |
-| 1  | 0.7992 | 0.7962 | 0.7973 |
-| 2  | 0.7967 | 0.7879 | 0.7919 |
-| 3  | 0.8110 | 0.8061 | 0.8064 |
-| 4  | 0.8348 | 0.8312 | 0.8352 |
-| 5  | 0.8567 | 0.8491 | 0.8550 |
-| 6  | 0.8762 | 0.8724 | 0.8747 |
-| **7**  | **0.8939** | **0.8921** | **0.8943** |
-| 8  | 0.8901 | 0.8847 | 0.8852 |
-| 9  | 0.8927 | 0.8943 | 0.8906 |
-| 10 | 0.8912 | 0.8893 | 0.8885 |
-| 11 | 0.8920 | 0.8935 | 0.8833 |
-| 12 | 0.8790 | 0.8885 | 0.8807 |
-| **meanall** | 0.8780 | 0.8723 | 0.8808 |
+| 0  | 0.7189 | 0.7145 | 0.7181 |
+| 1  | 0.6823 | 0.6808 | 0.6845 |
+| 2  | 0.6772 | 0.6780 | 0.6837 |
+| 3  | 0.6990 | 0.6943 | 0.7108 |
+| 4  | 0.7383 | 0.7312 | 0.7561 |
+| 5  | 0.7745 | 0.7676 | 0.7920 |
+| 6  | 0.8092 | 0.8020 | 0.8202 |
+| **7**  | **0.8434** | **0.8393** | **0.8498** |
+| 8  | 0.8337 | 0.8245 | 0.8360 |
+| 9  | 0.8400 | 0.8433 | 0.8376 |
+| 10 | 0.8350 | 0.8398 | 0.8291 |
+| 11 | 0.8373 | 0.8439 | 0.8219 |
+| 12 | 0.8247 | 0.8413 | 0.8186 |
+| **meanall** | 0.8138 | 0.8105 | 0.8190 |
 
-**Best layer: 7 (MAP 0.8939 raw, 0.8921 centered).** Beats `meanall` by +0.016
-raw / +0.020 centered.
+**Best layer: 7 (MAP 0.8434 raw, 0.8393 centered).** Beats `meanall` by +0.030
+raw / +0.029 centered (a *larger* margin than the inflated set's +0.016, because
+removing the easy twins demotes `meanall` along with the weak layers).
 
-## Does L6/7 peak + L12 collapse hold on this 5-composer set?
+## Does L6/7 peak + L12 collapse hold on this 5-composer set? (clean)
 
-**The peak generalizes; the collapse does not.**
+**The peak generalizes and is now *sharper*; the collapse is still mild.**
 
-1. **Mid-layer peak — YES, and at the *same depth*.** The raw-MAP maximum is at
-   **layer 7**, identical to BPS-Motif's best layer (7). Layers rise
-   monotonically from a L1/L2 trough (0.797) to the L7 peak (0.894). The
+1. **Mid-layer peak — YES, at the *same depth*, and stronger after dedup.** The
+   raw-MAP maximum is at **layer 7**, identical to BPS-Motif's best layer (7).
+   Layers rise from an L1/L2 surface trough (**0.68**) to the L7 peak (**0.843**)
+   — a **+0.16 mid-vs-surface gap**, roughly **double** the inflated set's gap
+   (the trivial twins had been propping up the weak surface layers the most). The
    *location* of the motif-identity signal — mid-stack, around layer 7 — is
    **reproduced across composers and eras**, not a Beethoven artifact. This is
-   the load-bearing cross-validation of the BPS finding.
+   the load-bearing cross-validation of the BPS finding, and it survives dedup
+   intact.
 
-2. **Last-layer collapse — NO, only a mild taper.** On BPS-Motif, L12 was the
-   *worst* layer (0.381, a −0.093 / −20% drop from the L7 peak). On JKUPDD, L12
-   is **0.879 — barely below the peak** (−0.015, −1.7%) and still **above
-   `meanall`**. There is a high plateau across L7–L11 (0.890–0.894) and only a
-   gentle dip at L12, not a collapse. CLaMP3's final-layer specialization for its
-   *global contrastive* objective clearly *does* cost motif-occurrence locality
-   (the L12 taper is real and consistent in direction), but on JKUPDD's tiny,
-   easy pool it costs ~1 MAP point, not ~9.
+2. **Mid-stack ≫ surface — YES, decisively.** L7–L11 form a high plateau
+   (0.825–0.843); L0–L2 sit at 0.68–0.72. Surface layers are **~0.14–0.16 MAP
+   below** the mid-stack on the clean set. The cross-composer evidence for
+   "use a mid-layer, not the surface" is *stronger* after removing the
+   duplicate floor.
 
-3. **Why the discrepancy is expected (and not a contradiction).** JKUPDD is
-   **statistically thin and easy**: 165 windows, no folds, and per-piece relevant
-   sets of ~5–14 occurrences (vs BPS-Motif's long occurrence tails of dozens).
-   With so few distractors, MAP saturates near 0.9 at *every* layer (the floor is
-   0.797, not ~0.4), which **compresses the whole curve** and shrinks every
-   inter-layer gap — including L12's. The differences are directional, not
-   precise. **Read JKUPDD for the cross-composer *shape* (peak location,
+3. **Last-layer taper — still mild, not a collapse.** On BPS-Motif, L12 was the
+   *worst* layer (0.381, a −0.093 / −20 % drop from the L7 peak). On clean
+   JKUPDD, L12 is **0.825 — −0.019 (−2.2 %) below the L7 peak** and still **above
+   `meanall`**. The L7–L12 dip is real and consistent in *direction* (final-layer
+   specialization for CLaMP3's *global contrastive* objective costs
+   motif-occurrence locality), but on JKUPDD's small, easy pool it costs ~2 MAP
+   points, not ~9. (Dedup did **not** change this picture: the L12 taper is the
+   same ~2-point shape before and after.)
+
+4. **Why the magnitude discrepancy with BPS is expected.** JKUPDD is
+   **statistically thin and easy**: 78 windows, no folds, per-group relevant sets
+   of 2–8 occurrences (vs BPS-Motif's long occurrence tails of dozens). With so
+   few distractors, MAP stays high (the clean floor is 0.68, not ~0.4) and the
+   whole curve is compressed, so inter-layer gaps — including L12's — are smaller
+   than BPS's. **Read JKUPDD for the cross-composer *shape* (peak location,
    monotone rise, last-layer taper direction), not the magnitudes.** On *shape*,
    it agrees with BPS-Motif: mid-stack peak at L7, weakest at the surface
    (L1/L2), final layer below the peak.
 
-**Verdict:** the BPS-Motif depth finding **partially generalizes**. The
-actionable half — *use a mid-layer (L7), not the all-layer mean or the final
-layer* — holds across composers. The dramatic L12 collapse is BPS-specific in
-*magnitude* (driven by hard, long occurrence tails) but consistent in
-*direction* (L12 < peak everywhere).
+**Verdict:** the BPS-Motif depth finding **partially generalizes**, and the
+actionable half is now on *firmer* footing. *Use a mid-layer (L7), not the
+all-layer mean or the final layer* holds across composers, and the
+mid-vs-surface gap is **larger** once the trivial duplicates are removed. The
+dramatic L12 collapse remains BPS-specific in *magnitude* (driven by hard, long
+occurrence tails) but consistent in *direction* (L12 < peak everywhere).
 
-## raw vs centered vs whitened
+## raw vs centered vs whitened (dedup'd)
 
-Unlike BPS-Motif — where **centering won at every layer** — on JKUPDD the three
-variants are **within ~0.01 MAP of each other at every layer** and trade the lead
-back and forth (raw best at L0–8, centered at L9/L11/L12, whitened occasionally
-on top). With only 165 windows and a single pool, the anisotropy estimate is too
-noisy for centering/whitening to do reliable work; the post-hoc transforms are a
-**wash** here. Use **raw, layer 7**. (The centering benefit on BPS-Motif came
-from much larger per-fold pools where the common-mean direction is well
-estimated.)
+The three variants stay **within ~0.02 MAP of each other at every layer** and
+trade the lead back and forth (raw best at L0/L7/L8, centered at L9/L11/L12,
+whitened on top at L3–L8). With only 78 windows and a single pool, the
+anisotropy estimate is too noisy for centering/whitening to do reliable work; the
+post-hoc transforms remain a **wash** here. Use **raw, layer 7**. (Whitening
+edges raw at the peak by +0.006 — within noise; the centering benefit on
+BPS-Motif came from much larger per-fold pools where the common-mean direction is
+well estimated.)
 
-## recall@K + secondary metrics (best layer 7)
+## recall@K + secondary metrics (best layer 7, dedup'd)
 
 | K | raw | centered | whitened |
 |---:|----:|---------:|---------:|
-| 1   | 0.2682 | 0.2682 | 0.2694 |
-| 5   | 0.6973 | 0.6961 | 0.6899 |
-| 10  | 0.8764 | 0.8686 | 0.8840 |
+| 1   | 0.3403 | 0.3446 | 0.3540 |
+| 5   | 0.7784 | 0.7766 | 0.7778 |
+| 10  | 0.9217 | 0.9251 | 0.9274 |
 | 50  | 1.0000 | 1.0000 | 1.0000 |
-| 100 | 1.0000 | 1.0000 | 1.0000 |
+| 100 | — | — | — |
 
 | metric | raw / centered / whitened | reading |
 |---|---|---|
-| `map` | 0.8939 / 0.8921 / 0.8943 | near-saturated on this easy pool |
-| `r_precision` | 0.8638 / 0.8578 / 0.8557 | ~86% of relevant retrieved at the R cutoff |
-| `median_rank` | 1.0 / 1.0 / 1.0 | first relevant hit is always rank 1 |
-| `mrr` | 0.9448 / 0.9445 / 0.9502 | first hit at avg rank ≈ 1.06 |
-| `map@1` / `recall@1` | 0.2682 / 0.2682 / 0.2694 | top-1 ≈ 1/R of the occurrence set |
+| `map` | 0.8434 / 0.8393 / 0.8498 | high on this easy pool, but no longer near-1 |
+| `r_precision` | 0.7802 / 0.7689 / 0.7753 | ~78 % of relevant retrieved at the R cutoff |
+| `median_rank` | 1.0 / 1.0 / 1.0 | first relevant hit is still usually rank 1 |
+| `mrr` | 0.8919 / 0.8979 / 0.9246 | first hit at avg rank ≈ 1.1 |
+| `map@1` / `recall@1` | 0.3403 / 0.3403 / 0.3540 | top-1 ≈ 1/R of the occurrence set |
 | `hit_rate@10` | 1.0 / 1.0 / 1.0 | every query has ≥1 relevant in top-10 |
 
-**recall@50 = recall@100 = 1.0** — with only ~165 windows total, the top-50
-always contains *every* same-pattern occurrence. This is the small-pool effect
-in numbers: JKUPDD measures *peak location*, not the occurrence-tail recall that
-makes BPS-Motif (recall@100 only ~0.61) the harder, more discriminating
-benchmark. The two are complementary: JKUPDD = cross-composer breadth, BPS-Motif
-= occurrence-tail depth.
+**recall@1 rises from 0.268 (inflated) to 0.340 (clean)**: the old top-1 was
+artificially low because each query's *own* byte-twin sat at cosine 1.0 and could
+out-rank a genuine variant — removing the twins makes the top-1 a real
+encoder-quality signal. **recall@100 is now N/A** (the dedup'd pool is only 78
+windows < 100). **recall@50 = 1.0** still holds: with 78 windows total, the
+top-50 always contains every same-pattern occurrence. JKUPDD measures *peak
+location*, not the occurrence-tail recall that makes BPS-Motif (recall@100 only
+~0.61) the harder, more discriminating benchmark. The two are complementary:
+JKUPDD = cross-composer breadth, BPS-Motif = occurrence-tail depth.
 
 ## Caveats
 
-- **Statistically thin.** 165 items, 32 patterns, 5 pieces, **no folds** → no
-  error bars. Treat every number as **directional**. The value is the
-  **cross-composer spread** (does the *shape* survive a 5-composer, 4-century
-  set?), not precision.
-- **Easy pool → saturated MAP.** Few distractors compress the layer curve; gaps
-  here are ~⅕ the size of BPS-Motif's. Don't compare JKUPDD and BPS-Motif MAP
+- **Trivial-duplicate artifact (fixed).** The raw build double-counted
+  time-zeroed byte-identical repeats as guaranteed rank-1 hits; this is now
+  removed by default within-group byte-dedup. Re-build with
+  `--no-dedup-within-group` only to reproduce the old inflated numbers.
+- **Statistically thin.** 78 items, 20 groups, 5 pieces, **no folds** → no error
+  bars. Treat every number as **directional**. The value is the **cross-composer
+  spread** (does the *shape* survive a 5-composer, 4-century set?), not precision.
+- **Still an easy pool → high MAP.** Few distractors compress the layer curve;
+  gaps here are smaller than BPS-Motif's. Don't compare JKUPDD and BPS-Motif MAP
   *magnitudes* — only their *shapes*.
 - Symbolic only (CLaMP3-symbolic, MIDI→MTF→M3 tokenisation); one clip-level
   vector per occurrence window (`TimeAvgPool` over patches, single layer).
-- JKUPDD annotators differ per piece (the `(piece, annotator, pattern)` key keeps
-  each annotator's patterns as a separate relevance group, so cross-annotator
-  overlap is correctly *not* counted as relevant).
+- **Cross-annotator byte-twins (unchanged, conservative).** A few occurrence
+  MIDIs are byte-identical across *different* annotator passes (e.g. Mozart K282
+  `barlowAndMorgenstern|A` ≡ `barlowAndMorgensternRevised|C`). Within-group dedup
+  does **not** touch these — they remain in *different* groups and are scored
+  non-relevant despite identical content → a small, *conservative* MAP deflation
+  (it under-states, never inflates). This is why per-group distinct (90) exceeds
+  the global byte-distinct count (88). Pass `--annotators <one-per-piece>` for a
+  single-source pool to avoid it.
 
 ## Reproduce
 
 ```bash
 cd ~/developer/python/marble    # PC: /home/sid/developer/marble (WSL)
-# 13 layers + meanall on a CUDA box (~4 min, zero-shot):
+# 0. build the DEDUP'D dataset (default; 78 windows / 20 groups):
+uv run python scripts/data/build_jkupdd_retrieval.py --jkupdd-root <path>
+#    (add --no-dedup-within-group to reproduce the inflated 165-window build)
+# 1. 13 layers + meanall on a CUDA box (~4 min, zero-shot):
 .venv/bin/python scripts/sweeps/run_sweep_local.py \
   --base-config configs/probe.CLaMP3-symbolic-layers.JKUPDDRetrieval.yaml \
   --num-layers 13 --model-tag CLaMP3-symbolic --task-tag JKUPDDRetrieval \
   --accelerator gpu --skip-fit-if-no-train
-# aggregate (no folds → one run per layer):
+# 2. aggregate (no folds → one run per layer):
 .venv/bin/python scripts/sweeps/jkupdd_retrieval_summary.py \
   --out-csv docs/jkupdd_retrieval_clamp3_leaderboard.csv
-# per-layer MAP figure:
+# 3. per-layer MAP figure:
 .venv/bin/python scripts/sweeps/plot_jkupdd_retrieval.py \
   --csv docs/jkupdd_retrieval_clamp3_leaderboard.csv \
   --out docs/jkupdd_retrieval_clamp3_layersweep.png

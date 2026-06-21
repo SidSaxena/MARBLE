@@ -1,7 +1,8 @@
 """Aggregate the JKUPDD within-piece motif RETRIEVAL layer sweep.
 
 JKUPDD (JKU Patterns Development Database, Collins 2013) ground truth as a
-zero-shot retrieval task: ~165 annotated pattern-occurrence windows from 5
+zero-shot retrieval task: **78 byte-dedup'd** annotated pattern-occurrence
+windows (165 raw, before within-group byte-dedup) across 20 groups from 5
 cross-composer pieces (Bach / Beethoven / Chopin / Gibbons / Mozart). Each
 window is a query; relevance = same ``(piece, annotator, pattern)`` group.
 
@@ -134,15 +135,16 @@ def main():
     def ma(key: str):
         return meanall.get(key) if meanall else None
 
-    ranked = sorted(layer_ids, key=lambda l: (cell(l, "test/map") or -1), reverse=True)
+    ranked = sorted(layer_ids, key=lambda l: cell(l, "test/map") or -1, reverse=True)
     best = ranked[0]
 
     out = []
     out.append("# JKUPDD Retrieval — CLaMP3-symbolic layer sweep (no folds)")
     out.append("")
     out.append(
-        "Within-piece motif retrieval, 5 cross-composer pieces, ~165 occurrence "
-        "windows, **one test set (no CV folds)**. Primary metric: **test/map**."
+        "Within-piece motif retrieval, 5 cross-composer pieces, 78 byte-dedup'd "
+        "occurrence windows / 20 groups, **one test set (no CV folds)**. Primary "
+        "metric: **test/map**."
     )
     out.append("")
 
