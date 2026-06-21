@@ -29,6 +29,7 @@ Usage:
 """
 
 import argparse
+import csv
 import glob
 import json
 import os
@@ -136,6 +137,11 @@ def main():
     ap.add_argument("--metric", default="auc_roc", choices=METRICS)
     ap.add_argument("--out-json", default="/tmp/bps_mnid_summary.json")
     ap.add_argument("--out-md", default="/tmp/bps_mnid_summary.md")
+    ap.add_argument(
+        "--out-csv",
+        default=None,
+        help="Also write a leaderboard CSV ranked best-first by --metric.",
+    )
     args = ap.parse_args()
 
     layers, dupes = load_layers(args.base)
@@ -262,6 +268,32 @@ def main():
     with open(args.out_json, "w") as fh:
         json.dump(payload, fh, indent=2)
     print(f"\n[wrote {args.out_json} and {args.out_md}]")
+
+    if args.out_csv:
+
+        def rnd(x):
+            return round(x, 4) if x is not None else ""
+
+        with open(args.out_csv, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(
+                ["rank", "layer", "n_folds"]
+                + [f"{m}_mean" for m in METRICS]
+                + [f"{m}_std" for m in METRICS]
+            )
+            for i, l in enumerate(ranked, 1):
+                w.writerow(
+                    [i, l, layer_agg[l][pm]["n"]]
+                    + [rnd(layer_agg[l][m]["mean"]) for m in METRICS]
+                    + [rnd(layer_agg[l][m]["std"]) for m in METRICS]
+                )
+            if any(meanall_agg[m]["n"] for m in METRICS):
+                w.writerow(
+                    ["", "meanall", meanall_agg[pm]["n"]]
+                    + [rnd(meanall_agg[m]["mean"]) for m in METRICS]
+                    + [rnd(meanall_agg[m]["std"]) for m in METRICS]
+                )
+        print(f"[wrote {args.out_csv}]")
 
 
 if __name__ == "__main__":

@@ -194,7 +194,22 @@ proxy with ground-truth motif labels. What this sweep tells the discovery pipeli
 
 ---
 
-## 7. Reproducibility
+## 7. Browsing the results
+
+Three views, no ad-hoc scripting needed:
+
+- **wandb (interactive):** in the `CLaMP3-symbolic / BPSMotifMNID` group, filter
+  `job_type = test` (clean `test`/`fit` now) and **group by `sweep/layer`** →
+  each row is the per-layer mean across its 5 folds, sortable by `test/auc_roc`.
+  Every run carries `sweep/{layer,fold,stage,repr}` (stamped live by
+  `LogSweepCoordsCallback`; historical runs backfilled via
+  `fix_wandb_runs.py coords`).
+- **Committed leaderboard:** `docs/data/bps_mnid_leaderboard.csv` — layers ranked
+  best-first (regenerate with `bps_mnid_summary.py --out-csv`).
+- **On disk:** per-fold dirs are layer-primary — `…-layers.layer{N}.fold{F}` — so
+  `ls` groups all folds of a layer together.
+
+## 8. Reproducibility
 
 ```bash
 # sweep (PC, GPU): 5 folds x 13 layers, no meanall
