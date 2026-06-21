@@ -284,21 +284,19 @@ def cmd_set(api, proj, args):
 
 
 def cmd_coords(api, proj, args):
-    """Stamp sweep_{layer,fold,stage,repr} config + normalize job_type to the
+    """Stamp sweep/{layer,fold,stage,repr} config + normalize job_type to the
     clean stage, from each run's name/tags/job_type.
 
     Makes a layer sweep groupable in the wandb UI: filter ``job_type = test``
-    (a native, always-filterable field) or ``sweep_stage = test``, then group
-    by ``sweep_layer`` → per-layer mean across folds, best on top.
+    (a native, always-filterable field) or ``sweep/stage = test``, then group
+    by ``sweep/layer`` → per-layer mean across folds, best on top.
 
-    Flat underscore keys (no '/') so the UI filter/group-by picker handles them
-    — a "sweep/stage" key gets display-nested and is awkward to filter. Only
-    meaningful (non-None) values are written (fit runs get layer/stage/repr but
-    no fold). Idempotent.
+    Only meaningful (non-None) values are written (fit runs get layer/stage/repr
+    but no fold). Idempotent.
 
-    Note: wandb's public API only merges config — it cannot delete keys — so an
-    earlier "sweep/<k>" slash-key scheme cannot be removed here; the flat keys
-    supersede it and the orphans can be hidden in the UI.
+    Note: wandb config is append-only (``run.update`` merges; even ``upsertBucket``
+    merges) — keys can never be deleted. So choose the schema once; a re-run only
+    adds/updates, never removes a stale key.
     """
     from marble.utils.sweep_coords import parse_sweep_coords
 
@@ -311,9 +309,9 @@ def cmd_coords(api, proj, args):
     for r in runs:
         coords = parse_sweep_coords(r.name, getattr(r, "job_type", None), r.tags)
         planned = {
-            f"sweep_{k}": v
+            f"sweep/{k}": v
             for k, v in coords.items()
-            if v is not None and r.config.get(f"sweep_{k}") != v
+            if v is not None and r.config.get(f"sweep/{k}") != v
         }
         new_jt = coords.get("stage")
         jt_change = new_jt is not None and getattr(r, "job_type", None) != new_jt

@@ -135,11 +135,11 @@ class LogSweepCoordsCallback(Callback):
             fold_idx=fold_idx,
             stage=stage,
         )
-        # Flat underscore keys (no '/') so the wandb UI filter/group-by picker
-        # handles them — "sweep/stage" gets display-nested and is awkward to
-        # filter. logging metadata must never break a training/test run.
+        # "sweep/<k>" namespaced keys: the wandb UI groups/filters on these
+        # fine (the slash is display-nesting, not a blocker). logging metadata
+        # must never break a training/test run.
         with contextlib.suppress(Exception):
             run.config.update(
-                {f"sweep_{k}": v for k, v in coords.items()},
+                {f"sweep/{k}": v for k, v in coords.items()},
                 allow_val_change=True,
             )
