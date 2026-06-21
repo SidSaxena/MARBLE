@@ -14,7 +14,8 @@ trainer:
   max_epochs: 0
   num_sanity_val_steps: 0
 
-  callbacks: []
+  callbacks:
+    - class_path: marble.modules.callbacks.LogSweepCoordsCallback
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:

@@ -28,6 +28,7 @@ trainer:
         monitor: "val/f1"
         mode: "max"
     - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
+    - class_path: marble.modules.callbacks.LogSweepCoordsCallback
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: step

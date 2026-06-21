@@ -54,6 +54,7 @@ Usage
     # legacy normalizer
     uv run python scripts/analysis/fix_wandb_runs.py normalize --apply
 """
+
 from __future__ import annotations
 
 import argparse
@@ -68,12 +69,19 @@ ARCHIVE_PROJECT = "marble-archive"
 ARCHIVE_SUFFIX = "[archive]"
 
 KNOWN_MODEL_TAGS = {
-    "MERT-v1-95M", "CLaMP3", "OMARRQ-multifeature25hz", "OMARRQ-multifeature-25hz",
-    "OMARRQ-multifeature-25hz-fsq", "MuQ", "MusicFM", "DaSheng",
+    "MERT-v1-95M",
+    "CLaMP3",
+    "OMARRQ-multifeature25hz",
+    "OMARRQ-multifeature-25hz",
+    "OMARRQ-multifeature-25hz-fsq",
+    "MuQ",
+    "MusicFM",
+    "DaSheng",
 }
 
 
 # ── shared helpers ──────────────────────────────────────────────────────────
+
 
 def _has_test_metric(run) -> bool:
     # wandb's Summary iterates integer indices under `for k in summary`; use
@@ -107,8 +115,9 @@ def _remove_tags(tags: list[str], unwanted: set[str]) -> list[str]:
     return [t for t in tags if t not in unwanted]
 
 
-def _planned_changes(run, *, new_name=None, new_group=None, new_job_type=None,
-                     tag_add=(), tag_remove=()):
+def _planned_changes(
+    run, *, new_name=None, new_group=None, new_job_type=None, tag_add=(), tag_remove=()
+):
     """Changes that would actually flip the run's state (keeps re-runs idempotent)."""
     changes = []
     if new_name and run.name != new_name:
@@ -126,11 +135,15 @@ def _planned_changes(run, *, new_name=None, new_group=None, new_job_type=None,
     return changes
 
 
-def _apply(run, *, new_name=None, new_group=None, new_job_type=None,
-           tag_add=(), tag_remove=()):
-    changes = _planned_changes(run, new_name=new_name, new_group=new_group,
-                               new_job_type=new_job_type, tag_add=tag_add,
-                               tag_remove=tag_remove)
+def _apply(run, *, new_name=None, new_group=None, new_job_type=None, tag_add=(), tag_remove=()):
+    changes = _planned_changes(
+        run,
+        new_name=new_name,
+        new_group=new_group,
+        new_job_type=new_job_type,
+        tag_add=tag_add,
+        tag_remove=tag_remove,
+    )
     fields = []
     for field, value in changes:
         setattr(run, field, value)
@@ -139,6 +152,7 @@ def _apply(run, *, new_name=None, new_group=None, new_job_type=None,
 
 
 # ── run selection ───────────────────────────────────────────────────────────
+
 
 def select_runs(api, proj, args):
     """Return the runs matching the shared selection flags on ``args``."""
@@ -170,11 +184,14 @@ def select_runs(api, proj, args):
 
 def _describe(r) -> str:
     jt = getattr(r, "job_type", None)
-    return (f"{r.id}  state={r.state:<8} group={r.group!r}  name={r.name!r}  "
-            f"job_type={jt!r}  test={_has_test_metric(r)}  tags={r.tags}")
+    return (
+        f"{r.id}  state={r.state:<8} group={r.group!r}  name={r.name!r}  "
+        f"job_type={jt!r}  test={_has_test_metric(r)}  tags={r.tags}"
+    )
 
 
 # ── moveRuns (DANGEROUS — scalar, one id at a time, guarded) ─────────────────
+
 
 def _gql():
     try:
@@ -219,6 +236,7 @@ def _move_one(api, entity, src_project, run_id, *, dest_project=ARCHIVE_PROJECT)
 
 # ── subcommands ─────────────────────────────────────────────────────────────
 
+
 def cmd_list(api, proj, args):
     runs = select_runs(api, proj, args)
     print(f"{len(runs)} run(s) in {proj}:\n")
@@ -235,17 +253,67 @@ def cmd_set(api, proj, args):
     n = 0
     for r in runs:
         planned = _planned_changes(
-            r, new_name=args.name, new_group=args.group_to,
-            new_job_type=args.job_type, tag_add=tuple(args.add_tag or ()),
-            tag_remove=set(args.remove_tag or ()))
+            r,
+            new_name=args.name,
+            new_group=args.group_to,
+            new_job_type=args.job_type,
+            tag_add=tuple(args.add_tag or ()),
+            tag_remove=set(args.remove_tag or ()),
+        )
         if not planned:
             continue
         print("  " + _describe(r))
         print(f"      → {planned}")
         if args.apply:
-            _apply(r, new_name=args.name, new_group=args.group_to,
-                   new_job_type=args.job_type, tag_add=tuple(args.add_tag or ()),
-                   tag_remove=set(args.remove_tag or ()))
+            _apply(
+                r,
+                new_name=args.name,
+                new_group=args.group_to,
+                new_job_type=args.job_type,
+                tag_add=tuple(args.add_tag or ()),
+                tag_remove=set(args.remove_tag or ()),
+            )
+            try:
+                r.update()
+                print("      ✓ written")
+                n += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"      ✗ write failed: {e}")
+            time.sleep(args.sleep)
+    print(f"\n{'Wrote' if args.apply else 'Would write'}: {n if args.apply else '—'}")
+
+
+def cmd_coords(api, proj, args):
+    """Stamp sweep/{layer,fold,stage,repr} config from each run's name/tags/job_type.
+
+    Makes a layer sweep groupable in the wandb UI: filter ``sweep/stage = test``,
+    Group by ``sweep/layer`` → per-layer mean across folds, best on top.
+    Idempotent (skips runs already carrying the right coords); only writes
+    meaningful (non-None) values, so fit runs (no recoverable fold) just get
+    layer/stage/repr.
+    """
+    from marble.utils.sweep_coords import parse_sweep_coords
+
+    runs = select_runs(api, proj, args)
+    if not runs:
+        print("No runs matched the selection.")
+        return
+    print(f"{'APPLY' if args.apply else 'DRY-RUN'}: {len(runs)} run(s) selected\n")
+    n = 0
+    for r in runs:
+        coords = parse_sweep_coords(r.name, getattr(r, "job_type", None), r.tags)
+        planned = {
+            f"sweep/{k}": v
+            for k, v in coords.items()
+            if v is not None and r.config.get(f"sweep/{k}") != v
+        }
+        if not planned:
+            continue
+        print("  " + _describe(r))
+        print(f"      → {planned}")
+        if args.apply:
+            for key, val in planned.items():
+                r.config[key] = val
             try:
                 r.update()
                 print("      ✓ written")
@@ -262,19 +330,25 @@ def cmd_archive(api, proj, args, entity, project):
         print("No runs matched the selection — nothing to archive.")
         return
     # Safety: archive needs an explicit, scoped selection.
-    if not (args.ids or args.group or args.group_regex or args.name_regex
-            or args.layers):
-        print("Refusing to archive without a scoped selection "
-              "(use --ids / --group / --name-regex / --layers).", file=sys.stderr)
+    if not (args.ids or args.group or args.group_regex or args.name_regex or args.layers):
+        print(
+            "Refusing to archive without a scoped selection "
+            "(use --ids / --group / --name-regex / --layers).",
+            file=sys.stderr,
+        )
         sys.exit(2)
     ids = [r.id for r in runs]
-    print(f"{'APPLY' if args.apply else 'DRY-RUN'}: archive {len(runs)} run(s) "
-          f"({proj} → {entity}/{ARCHIVE_PROJECT})\n")
+    print(
+        f"{'APPLY' if args.apply else 'DRY-RUN'}: archive {len(runs)} run(s) "
+        f"({proj} → {entity}/{ARCHIVE_PROJECT})\n"
+    )
     for r in runs:
         print("  " + _describe(r))
     if not args.apply:
-        print("\nRe-run with --apply to (1) suffix the group with "
-              f"'{ARCHIVE_SUFFIX}' and (2) move each run individually.")
+        print(
+            "\nRe-run with --apply to (1) suffix the group with "
+            f"'{ARCHIVE_SUFFIX}' and (2) move each run individually."
+        )
         return
 
     archive_proj = f"{entity}/{ARCHIVE_PROJECT}"
@@ -312,7 +386,6 @@ def cmd_archive(api, proj, args, entity, project):
     print("\n[3/3] verifying (moveRuns is async; polling source project)…")
     deadline = args.verify_timeout
     waited = 0.0
-    src_ids = set(ids)
     while waited < deadline:
         remaining = []
         for rid in moved:
@@ -327,11 +400,14 @@ def cmd_archive(api, proj, args, entity, project):
         waited += 5
     arch_after = _count_runs(api, archive_proj)
     gained = arch_after - arch_before if arch_before >= 0 and arch_after >= 0 else None
-    print(f"\nmarble-archive run count after: {arch_after}"
-          + (f"  (gained {gained}, expected {len(moved)})" if gained is not None else ""))
+    print(
+        f"\nmarble-archive run count after: {arch_after}"
+        + (f"  (gained {gained}, expected {len(moved)})" if gained is not None else "")
+    )
     if gained is not None and gained > len(moved):
-        print("  ⚠️  archive gained MORE runs than moved — investigate immediately.",
-              file=sys.stderr)
+        print(
+            "  ⚠️  archive gained MORE runs than moved — investigate immediately.", file=sys.stderr
+        )
     still = [rid for rid in moved if _run_exists(api, proj, rid)]
     if still:
         print(f"  (still resolving in source, async lag is normal): {still}")
@@ -358,8 +434,10 @@ def cmd_normalize(api, proj, args):
     print(f"Mode: {'APPLY' if args.apply else 'DRY-RUN'}\n")
     MODAL_SHS100K_GROUPS = {"CLaMP3 / SHS100K", "MERT-v1-95M / SHS100K"}
     BROKEN_GROUPS = {"GTZANBeatTracking": None}
-    NONFSQ = {"OMARRQ-multifeature-25hz-nonfsq": "OMARRQ-multifeature-25hz",
-              "OMARRQ-multifeature-nonfsq": "OMARRQ-multifeature"}
+    NONFSQ = {
+        "OMARRQ-multifeature-25hz-nonfsq": "OMARRQ-multifeature-25hz",
+        "OMARRQ-multifeature-nonfsq": "OMARRQ-multifeature",
+    }
     legacy_meanall_names = {"nonfsq-test", "base-test", "25hz-nonfsq-test", "variant-swap"}
     n_touched = n_skipped = 0
     for r in runs:
@@ -404,8 +482,11 @@ def cmd_normalize(api, proj, args):
                 if NONFSQ[enc] not in cur:
                     intent.setdefault("tag_add", []).append(NONFSQ[enc])
         cur = set(r.tags or [])
-        is_meanall = bool(cur & {"mean-agg", "mean-all", "layer-meanall", "variant-swap"}) \
-            or "meanall" in name or name in legacy_meanall_names
+        is_meanall = (
+            bool(cur & {"mean-agg", "mean-all", "layer-meanall", "variant-swap"})
+            or "meanall" in name
+            or name in legacy_meanall_names
+        )
         eff = intent.get("new_group", group)
         if is_meanall and " / " in eff:
             enc, task = eff.split(" / ", 1)
@@ -421,8 +502,22 @@ def cmd_normalize(api, proj, args):
             intent["tag_remove"] = tr | {"single-layer", "mean-agg", "layer-meanall"}
         sp = group.split(" / ", 1)
         enc_part = sp[0] if len(sp) == 2 else group
-        fam = next((f for f in ("OMARRQ", "MERT", "CLaMP3-symbolic", "CLaMP3",
-                                "MuQ", "MusicFM", "DaSheng") if enc_part.startswith(f)), None)
+        fam = next(
+            (
+                f
+                for f in (
+                    "OMARRQ",
+                    "MERT",
+                    "CLaMP3-symbolic",
+                    "CLaMP3",
+                    "MuQ",
+                    "MusicFM",
+                    "DaSheng",
+                )
+                if enc_part.startswith(f)
+            ),
+            None,
+        )
         if fam and fam not in (r.tags or []):
             intent.setdefault("tag_add", []).append(fam)
         if "layer-sweep" not in (r.tags or []) and " / " in group:
@@ -431,26 +526,35 @@ def cmd_normalize(api, proj, args):
             n_skipped += 1
             continue
         planned = _planned_changes(
-            r, new_name=intent.get("new_name"), new_group=intent.get("new_group"),
-            tag_add=intent.get("tag_add", ()), tag_remove=intent.get("tag_remove", set()))
+            r,
+            new_name=intent.get("new_name"),
+            new_group=intent.get("new_group"),
+            tag_add=intent.get("tag_add", ()),
+            tag_remove=intent.get("tag_remove", set()),
+        )
         if not planned:
             n_skipped += 1
             continue
         print(f"{r.id}  group={r.group!r} name={r.name!r} → {planned}")
         if args.apply:
-            _apply(r, new_name=intent.get("new_name"), new_group=intent.get("new_group"),
-                   tag_add=intent.get("tag_add", ()), tag_remove=intent.get("tag_remove", set()))
+            _apply(
+                r,
+                new_name=intent.get("new_name"),
+                new_group=intent.get("new_group"),
+                tag_add=intent.get("tag_add", ()),
+                tag_remove=intent.get("tag_remove", set()),
+            )
             try:
                 r.update()
                 n_touched += 1
             except Exception as e:  # noqa: BLE001
                 print(f"  ✗ write failed: {e}")
             time.sleep(args.sleep)
-    print(f"\n{'Touched' if args.apply else 'Would touch'}: {n_touched}  "
-          f"Skipped: {n_skipped}")
+    print(f"\n{'Touched' if args.apply else 'Would touch'}: {n_touched}  Skipped: {n_skipped}")
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
+
 
 def _add_selection(p):
     p.add_argument("--group")
@@ -463,13 +567,14 @@ def _add_selection(p):
 
 def build_parser():
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--entity", default=DEFAULT_ENTITY)
     ap.add_argument("--project", default=DEFAULT_PROJECT)
-    ap.add_argument("--apply", action="store_true",
-                    help="Write changes (default is dry-run).")
-    ap.add_argument("--sleep", type=float, default=0.3,
-                    help="Seconds between API writes (default 0.3).")
+    ap.add_argument("--apply", action="store_true", help="Write changes (default is dry-run).")
+    ap.add_argument(
+        "--sleep", type=float, default=0.3, help="Seconds between API writes (default 0.3)."
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     pl = sub.add_parser("list", help="show matching runs")
@@ -483,10 +588,17 @@ def build_parser():
     ps.add_argument("--add-tag", nargs="*")
     ps.add_argument("--remove-tag", nargs="*")
 
+    pc = sub.add_parser("coords", help="stamp sweep/{layer,fold,stage,repr} config from name/tags")
+    _add_selection(pc)
+
     pa = sub.add_parser("archive", help="suffix group [archive] + move to marble-archive")
     _add_selection(pa)
-    pa.add_argument("--verify-timeout", type=float, default=120.0,
-                    help="Seconds to poll for async move completion (default 120).")
+    pa.add_argument(
+        "--verify-timeout",
+        type=float,
+        default=120.0,
+        help="Seconds to poll for async move completion (default 120).",
+    )
 
     sub.add_parser("normalize", help="legacy one-off naming normalizer")
     return ap
@@ -495,12 +607,15 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     import wandb
+
     api = wandb.Api()
     proj = f"{args.entity}/{args.project}"
     if args.cmd == "list":
         cmd_list(api, proj, args)
     elif args.cmd == "set":
         cmd_set(api, proj, args)
+    elif args.cmd == "coords":
+        cmd_coords(api, proj, args)
     elif args.cmd == "archive":
         cmd_archive(api, proj, args, args.entity, args.project)
     elif args.cmd == "normalize":

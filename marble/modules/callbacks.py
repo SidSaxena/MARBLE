@@ -1,9 +1,12 @@
 # marble/modules/callbacks.py
+import contextlib
 import glob
 import os
 
 import torch
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
+
+from marble.utils.sweep_coords import resolve_coords
 
 
 class LoadLatestCheckpointCallback(Callback):
@@ -79,3 +82,62 @@ class LoadLatestCheckpointCallback(Callback):
         if trainer.logger is not None:
             trainer.logger.log_metrics({"loaded_ckpt": os.path.basename(chosen)})
         print(f"[LoadLatestCheckpoint] loaded {chosen}  ({why})")
+
+
+def _find_wandb_run(trainer):
+    """Return the active wandb Run object if a WandbLogger is attached, else None.
+
+    Isolated from the callback so it can be monkeypatched in tests (no real
+    wandb session needed). Imports WandbLogger lazily so non-wandb setups
+    don't pay the import.
+    """
+    try:
+        from lightning.pytorch.loggers import WandbLogger
+    except Exception:
+        return None
+    for lg in getattr(trainer, "loggers", None) or []:
+        if isinstance(lg, WandbLogger):
+            return lg.experiment
+    return None
+
+
+class LogSweepCoordsCallback(Callback):
+    """Stamp each wandb run with queryable sweep coordinates.
+
+    A layer sweep encodes layer/fold/stage only in the run name + tags
+    (e.g. ``layer-6-test-fold0``), so wandb cannot "group by layer" or average
+    across folds — those aren't scalar fields. This callback writes
+    ``sweep/layer``, ``sweep/fold``, ``sweep/stage``, ``sweep/repr`` into the
+    run config (derived from the run name/tags and, authoritatively, the
+    datamodule's ``fold_idx``). Then the dashboard can **group by
+    ``sweep/layer``** filtered to ``sweep/stage = test`` and read the per-layer
+    mean across folds directly — no post-hoc script.
+
+    No-op when no WandbLogger is attached; never raises (logging metadata must
+    not break a training/test run).
+    """
+
+    def on_fit_start(self, trainer, pl_module):
+        self._stamp(trainer, "fit")
+
+    def on_test_start(self, trainer, pl_module):
+        self._stamp(trainer, "test")
+
+    def _stamp(self, trainer, stage):
+        run = _find_wandb_run(trainer)
+        if run is None:
+            return
+        fold_idx = getattr(getattr(trainer, "datamodule", None), "fold_idx", None)
+        coords = resolve_coords(
+            getattr(run, "name", "") or "",
+            getattr(run, "job_type", None),
+            list(getattr(run, "tags", []) or []),
+            fold_idx=fold_idx,
+            stage=stage,
+        )
+        # logging metadata must never break a training/test run
+        with contextlib.suppress(Exception):
+            run.config.update(
+                {f"sweep/{k}": v for k, v in coords.items()},
+                allow_val_change=True,
+            )
