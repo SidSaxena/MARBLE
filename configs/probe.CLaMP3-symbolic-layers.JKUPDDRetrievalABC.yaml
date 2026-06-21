@@ -1,0 +1,78 @@
+seed_everything: 1234
+ckpt_path: null
+
+# JKUPDD within-piece motif retrieval — CLaMP3 symbolic, per-layer sweep.
+# ABC VARIANT: each occurrence is tokenised from a score-native interleaved-ABC
+# string (sliced from the piece **kern, preserving key/spelling/meter/bars)
+# instead of the lossy MIDI->MTF window. Same 78 byte-dedup'd occurrences / 20
+# groups and identical (piece, annotator, pattern) relevance as the MTF task, so
+# the per-layer MAP is a clean A/B against
+# docs/jkupdd_retrieval_clamp3_leaderboard.csv. See docs/jkupdd_abc_vs_mtf.md.
+# Build the ABC dataset first:
+#   uv run python scripts/data/build_jkupdd_abc.py \
+#       --jkupdd-root <dist> --kern-dir data/kern_sources/JKUPDD
+# The sweep runner overrides the single-int `layers: [6]` below per layer.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks:
+    - class_path: marble.modules.callbacks.LogSweepCoordsCallback
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "CLaMP3-symbolic / JKUPDDRetrievalABC"
+      tags: ["CLaMP3-symbolic", "JKUPDDRetrievalABC", "layer-sweep", "probe", "symbolic", "abc"]
+      job_type: "test"
+      name: "layer-6-test"
+      save_dir: "./output/probe.JKUPDDRetrievalABC.CLaMP3-symbolic-layers/"
+
+
+model:
+  class_path: marble.tasks.JKUPDDRetrieval.probe.JKUPDDRetrievalTask
+  init_args:
+    sample_rate: 24000
+    cache_embeddings: true
+    # Full retrieval suite (map@1, mrr, recall@{1,5,10,50,100}, hit_rate@K +
+    # _centered/_whitened) on top of the default trim set.
+    log_extended_retrieval_metrics: true
+
+    encoder:
+      class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: [6]   # sweep replaces this per-layer
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+
+data:
+  class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalABCDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 4
+
+    audio_transforms:
+      train: []
+      val:   []
+      test:  []
+
+    train:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalABCDummy
+    val:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalABCDummy
+    test:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalABCTest
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3

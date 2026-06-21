@@ -1,0 +1,75 @@
+seed_everything: 1234
+ckpt_path: null
+
+# JKUPDD within-piece motif retrieval — CLaMP3 symbolic, per-layer sweep.
+# MATCHED-MTF VARIANT: the same lossy MIDI->MTF tokenisation as the base
+# JKUPDDRetrieval task, but restricted to the 66 occurrences / 15 groups that
+# survived ABC alignment (4 composers; Beethoven dropped — degenerate offsets).
+# This is the apples-to-apples MTF arm of the ABC-vs-MTF A/B: identical
+# occurrence pool to probe.CLaMP3-symbolic-layers.JKUPDDRetrievalABC.yaml.
+# Build the matched JSONL first (emitted by the ABC builder):
+#   uv run python scripts/data/build_jkupdd_abc.py \
+#       --jkupdd-root <dist> --kern-dir data/kern_sources/JKUPDD
+# The sweep runner overrides the single-int `layers: [6]` below per layer.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks:
+    - class_path: marble.modules.callbacks.LogSweepCoordsCallback
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "CLaMP3-symbolic / JKUPDDRetrievalMatched"
+      tags: ["CLaMP3-symbolic", "JKUPDDRetrievalMatched", "layer-sweep", "probe", "symbolic", "mtf"]
+      job_type: "test"
+      name: "layer-6-test"
+      save_dir: "./output/probe.JKUPDDRetrievalMatched.CLaMP3-symbolic-layers/"
+
+
+model:
+  class_path: marble.tasks.JKUPDDRetrieval.probe.JKUPDDRetrievalTask
+  init_args:
+    sample_rate: 24000
+    cache_embeddings: true
+    log_extended_retrieval_metrics: true
+
+    encoder:
+      class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: [6]   # sweep replaces this per-layer
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+
+data:
+  class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalMatchedDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 4
+
+    audio_transforms:
+      train: []
+      val:   []
+      test:  []
+
+    train:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalMatchedDummy
+    val:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalMatchedDummy
+    test:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalMatchedTest
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
