@@ -187,12 +187,21 @@ class BaseTask(LightningModule, EmbeddingCacheMixin, ABC):
             batch_size=bs,
         )
 
-        # compute and log metrics
+        # compute and log metrics. Log the Metric OBJECTS (not their per-batch
+        # forward() output): Lightning then accumulates state over the whole
+        # epoch and computes each metric ONCE at epoch end — a GLOBAL value,
+        # auto-reset between epochs. Logging per-batch values and letting
+        # Lightning mean-average them is wrong for ranking metrics — AUROC /
+        # AveragePrecision are undefined on a single-class batch (→ NaN → the
+        # average collapses, e.g. val/auc_roc → 0.5). Verified empirically that
+        # the object pattern reproduces the exact global value the test path
+        # (on_test_epoch_end) computes. (Every task metric is a torchmetrics
+        # Metric subclass, so .update()/object-logging is universally valid.)
         mc: MetricCollection = getattr(self, f"{split}_metrics", None)
         if mc is not None:
-            metrics_out = mc(logits, y)
+            mc.update(logits, y)
             self.log_dict(
-                metrics_out,
+                mc,
                 prog_bar=(split == "val"),
                 on_step=False,
                 on_epoch=True,
