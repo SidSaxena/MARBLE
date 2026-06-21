@@ -76,6 +76,45 @@ already have numbers for** (BPS-Motif), at L7, before committing the whole line 
 ABC will *not* fix JKUPDD's byte-duplicate issue (identical notation → identical ABC too) —
 that's a dataset-dedup problem, separate from representation.
 
+## Follow-up Q&A (2026-06-21)
+
+**Is there loss in `**kern → MusicXML → interleaved-ABC`?** Some at each hop, but far
+less than `→ MIDI → MTF`:
+- `**kern → MusicXML` (converter21/humlib): **high fidelity** for musical content —
+  pitch+spelling, duration, key, meter, accidentals, beams, ties, slurs, articulations,
+  lyrics map cleanly. What doesn't carry: Humdrum-specific *analytical* spines / comments
+  (not notation we feed CLaMP3 anyway).
+- `MusicXML → interleaved-ABC` (CLaMP3 xml2abc): ABC is **less expressive** than MusicXML,
+  so this hop reduces to ABC's vocabulary (some ornaments/layout drop). But this is
+  **intrinsic** — ABC is the representation M3 was *trained on*, so it's the intended input
+  ceiling regardless of path. Net: this is the highest-notation route *into* CLaMP3.
+
+**Is there a direct `**kern → ABC`?** Yes — **`hum2abc`** (Craig Sapp, Humdrum Extras).
+But two reasons to still go via MusicXML: (1) it's **lossy** (the man page notes lyrics are
+dropped), and (2) it emits *standard* ABC, **not CLaMP3's interleaved-ABC dialect** — feeding
+off-distribution ABC to M3 risks worse embeddings than its trained format. The "extra hop"
+through MusicXML → CLaMP3's own xml2abc buys **distribution-match**, which matters more than
+saving a conversion.
+
+**Do BPS-Motif / JKUPDD support an ABC path, or only MIDI?** The MARBLE tasks **confirmedly
+use MIDI→MTF** (`BPSMotif/datamodule.py` → `midi_to_mtf`; `build_jkupdd_retrieval.py` globs
+`*.mid*`). The *distributions* are MIDI-centric:
+- **JKUPDD** ships **point-sets (lisp/CSV)** + MIDI; the **MIDI is explicitly "for
+  verification, discouraged"** (wrong bar position, extra trailing note). Its CSV point-sets
+  carry **morphetic pitch** (spelled) — already richer than the MIDI. No kern/MusicXML in the
+  distribution, **but the pieces are "mainly from KernScores"** → score-native `**kern`
+  exists upstream.
+- **BPS-Motif** ships MIDI windows; the underlying **Beethoven sonatas are a KernScores
+  `**kern` collection** → score-native exists upstream.
+
+So an ABC path for BPS/JKUPDD is **achievable but not free**: re-source the `**kern` from
+KernScores and **re-align the motif/pattern annotations** (which live in MIDI-time / point-set
+coordinates) onto the score before slicing → MusicXML → ABC. The alignment is the hard part.
+**MTC-ANN is the cheap case** (ships `**kern` directly, annotations already note-indexed).
+Cheaper interim win for JKUPDD specifically: rebuild from the **CSV point-sets** (spelled
+pitch, no MIDI bar/echo artifacts) instead of the discouraged MIDI — also sidesteps the
+byte-duplicate/time-zero pathology.
+
 ## Risks / to verify on a sample before building
 
 1. **converter21 fidelity on MTC-ANN's specific `**kern`** (phrase `{ }` markers, fermatas,
