@@ -1,0 +1,215 @@
+seed_everything: 1234
+ckpt_path: null
+
+# BPS-Motif MNID — CLaMP3-symbolic per-layer sweep, ABC INPUT (Option B).
+#
+# ABC counterpart of probe.CLaMP3-symbolic-layers.BPSMotifMNID.yaml. Same task
+# (BPSMotifMNIDTask), same 5-fold movement-level CV, same labels — but each
+# window is tokenised from a notation-preserving interleaved-ABC string (built
+# offline by scripts/data/build_bps_motif_abc.py from the SAME notes the MTF
+# window contains, reconstructed directly from csv_notes) rather than the lossy
+# MIDI→MTF slice. wandb group `CLaMP3-symbolic-abc / BPSMotifMNID` keeps the A/B
+# separate from the MTF group `CLaMP3-symbolic / BPSMotifMNID`; save_dir/dirpath
+# carry the -abc tag so this does NOT clobber the MTF sweep dirs.
+#
+# The sweep runner (scripts/sweeps/gen_sweep_configs.py) overrides `layers: [6]`
+# per layer. Build the ABC dataset first:
+#   uv run python scripts/data/build_bps_motif_abc.py
+# See docs/bps_motif_abc_vs_mtf.md.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  accumulate_grad_batches: 4
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 40
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 0
+  log_every_n_steps: 50
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "./output/probe.BPSMotifMNID.CLaMP3-symbolic-abc-layers/checkpoints/"
+        filename: "best"
+        save_top_k: 1
+        save_last: true
+        monitor: "val/f1"
+        mode: "max"
+    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
+    - class_path: marble.modules.callbacks.LogSweepCoordsCallback
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
+      init_args:
+        monitor: "val/f1"
+        patience: 7
+        mode: "max"
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "CLaMP3-symbolic-abc / BPSMotifMNID"
+      tags: ["CLaMP3-symbolic-abc", "BPSMotifMNID", "layer-sweep", "probe", "symbolic", "abc-input"]
+      job_type: "fit"
+      name: "layer-6-fit"
+      save_dir: "./output/probe.BPSMotifMNID.CLaMP3-symbolic-abc-layers/"
+
+
+model:
+  class_path: marble.tasks.BPSMotif.probe.BPSMotifMNIDTask
+  init_args:
+    sample_rate: 24000
+    cache_embeddings: true
+    use_ema: false
+
+    encoder:
+      class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: [6]   # sweep replaces this per-layer
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+    decoders:
+      - class_path: marble.modules.decoders.MLPDecoder
+        init_args:
+          in_dim: 768
+          out_dim: 2
+          hidden_layers: [256]
+          activation_fn:
+            class_path: torch.nn.ReLU
+          dropout: 0.2
+
+    losses:
+      - class_path: torch.nn.CrossEntropyLoss
+        init_args:
+          reduction: mean
+
+    metrics:
+      train:
+        acc:
+          class_path: torchmetrics.Accuracy
+          init_args:
+            num_classes: 2
+            task: multiclass
+        f1:
+          class_path: torchmetrics.F1Score
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+      val:
+        acc:
+          class_path: torchmetrics.Accuracy
+          init_args:
+            num_classes: 2
+            task: multiclass
+        f1:
+          class_path: torchmetrics.F1Score
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        precision:
+          class_path: torchmetrics.Precision
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        recall:
+          class_path: torchmetrics.Recall
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        auc_pr:
+          class_path: torchmetrics.AveragePrecision
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        auc_roc:
+          class_path: torchmetrics.AUROC
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+      test:
+        acc:
+          class_path: torchmetrics.Accuracy
+          init_args:
+            num_classes: 2
+            task: multiclass
+        f1:
+          class_path: torchmetrics.F1Score
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        precision:
+          class_path: torchmetrics.Precision
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        recall:
+          class_path: torchmetrics.Recall
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        auc_pr:
+          class_path: torchmetrics.AveragePrecision
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        auc_roc:
+          class_path: torchmetrics.AUROC
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+
+
+data:
+  class_path: marble.tasks.BPSMotif.datamodule.BPSMotifMNIDABCDataModule
+  init_args:
+    batch_size: 16
+    num_workers: 4
+
+    audio_transforms:
+      train: []
+      val:   []
+      test:  []
+
+    train:
+      class_path: marble.tasks.BPSMotif.datamodule.BPSMotifMNIDABCTrain
+      init_args:
+        fold_idx: 0
+    val:
+      class_path: marble.tasks.BPSMotif.datamodule.BPSMotifMNIDABCVal
+      init_args:
+        fold_idx: 0
+    test:
+      class_path: marble.tasks.BPSMotif.datamodule.BPSMotifMNIDABCTest
+      init_args:
+        fold_idx: 0
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
+
+lr_scheduler:
+  class_path: lightning.pytorch.cli.ReduceLROnPlateau
+  init_args:
+    mode: "max"
+    factor: 0.5
+    patience: 5
+    monitor: "val/f1"

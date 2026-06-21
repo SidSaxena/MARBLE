@@ -279,3 +279,161 @@ class BPSMotifRetrievalDataModule(BaseDataModule):
     """Thin wrapper — BaseDataModule handles dataloaders + transforms."""
 
     pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ABC variant — score-native interleaved-ABC instead of MIDI → MTF
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# The MTF datasets above tokenise each window's lossy MIDI slice via
+# ``midi_to_mtf`` → ``M3Patchilizer.encode``. The ABC variant below instead reads
+# a pre-built **interleaved-ABC** string per window (produced offline by
+# ``scripts/data/build_bps_motif_abc.py`` — Option B: the same notes the MTF
+# window contains, reconstructed directly from ``csv_notes`` as a single-voice,
+# re-zeroed line, so it carries pitch spelling / meter / bar structure the MIDI
+# round-trip discards) and feeds it through the *same* M3 patchiliser.
+#
+# ``M3Patchilizer.encode`` auto-detects the input format (MTF starts with a
+# ``ticks_per_beat`` header; ABC does not), so the identical encode call
+# bar-segments the ABC. Everything else (label / work_id / relevance / clip_id /
+# the BaseTask + CoverRetrievalTask scoring) is byte-identical to the MTF task,
+# so the per-layer numbers are directly comparable. The JSONLs carry the ABC
+# inline under an ``abc`` field and preserve every MTF field (piece_id, fold,
+# split, is_motif, motif_letter, occurrence_id, start_sec, end_sec).
+
+
+class _BPSMotifABCMixin:
+    """Shared ABC tokenisation: interleaved-ABC string → padded patch tensor.
+
+    Mirrors ``_BPSMotifSymbolicBase._tokenise`` but skips ``midi_to_mtf`` — the
+    JSONL ``abc`` field is already the text CLaMP3 tokenises. Used by both the
+    MNID and Retrieval ABC datasets so the encode path is identical to the MTF
+    one minus the MIDI→MTF step.
+    """
+
+    def _tokenise_abc(self, abc: str) -> torch.Tensor:
+        patches_list = self.patchilizer.encode(
+            abc, patch_size=self.patch_size, add_special_patches=True
+        )
+        patches_list = patches_list[: self.max_patches]
+        patches_t = torch.tensor(patches_list, dtype=torch.long)
+        if patches_t.size(0) < self.max_patches:
+            pad_rows = self.max_patches - patches_t.size(0)
+            pad_block = torch.full(
+                (pad_rows, self.patch_size),
+                self.pad_token_id,
+                dtype=torch.long,
+            )
+            patches_t = torch.cat([patches_t, pad_block], dim=0)
+        return patches_t
+
+
+# ── MNID (binary classification) — ABC input ─────────────────────────────────
+
+
+class _BPSMotifMNIDABCBase(_BPSMotifABCMixin, _BPSMotifSymbolicBase):
+    """Returns ``(patches, label, clip_key, clip_id)`` — same BaseTask 4-tuple
+    as the MTF MNID dataset, but patches come from the JSONL ``abc`` field."""
+
+    JSONL_TEMPLATE = "data/BPS-Motif/BPSMotifABC.MNID.fold{fold}.{split}.jsonl"
+
+    def __init__(
+        self,
+        fold_idx: int = 0,
+        split: str = "train",
+        max_patches: int | None = None,
+        jsonl_template: str | None = None,
+    ):
+        super().__init__(
+            jsonl_template=jsonl_template or self.JSONL_TEMPLATE,
+            split=split,
+            fold_idx=fold_idx,
+            max_patches=max_patches,
+        )
+
+    def __getitem__(self, idx: int):
+        entry = self.meta[idx]
+        patches = self._tokenise_abc(entry["abc"])
+        label = torch.tensor(int(entry["is_motif"]), dtype=torch.long)
+        # No midi_path for the ABC arm; use occurrence_id as the per-window key
+        # for per-file aggregation + emb-cache keys.
+        clip_key = entry["occurrence_id"]
+        clip_id = make_clip_id(clip_key, 0)
+        return patches, label, clip_key, clip_id
+
+
+class BPSMotifMNIDABCTrain(_BPSMotifMNIDABCBase):
+    def __init__(self, **kwargs):
+        kwargs["split"] = "train"
+        super().__init__(**kwargs)
+
+
+class BPSMotifMNIDABCVal(_BPSMotifMNIDABCBase):
+    def __init__(self, **kwargs):
+        kwargs["split"] = "val"
+        super().__init__(**kwargs)
+
+
+class BPSMotifMNIDABCTest(_BPSMotifMNIDABCBase):
+    def __init__(self, **kwargs):
+        kwargs["split"] = "test"
+        super().__init__(**kwargs)
+
+
+# ── Retrieval (zero-shot MAP) — ABC input ────────────────────────────────────
+
+
+class _BPSMotifRetrievalABCBase(_BPSMotifABCMixin, _BPSMotifSymbolicBase):
+    """Returns ``(patches, work_id, clip_key, clip_id)`` — same
+    CoverRetrievalTask contract / ``work_id`` encoding as the MTF Retrieval
+    dataset, but patches come from the JSONL ``abc`` field."""
+
+    JSONL_TEMPLATE = "data/BPS-Motif/BPSMotifABC.Retrieval.fold{fold}.{split}.jsonl"
+
+    def __init__(
+        self,
+        fold_idx: int = 0,
+        split: str = "test",
+        max_patches: int | None = None,
+        jsonl_template: str | None = None,
+    ):
+        super().__init__(
+            jsonl_template=jsonl_template or self.JSONL_TEMPLATE,
+            split=split,
+            fold_idx=fold_idx,
+            max_patches=max_patches,
+        )
+
+    def __getitem__(self, idx: int):
+        entry = self.meta[idx]
+        patches = self._tokenise_abc(entry["abc"])
+        work_id = _encode_work_id(entry["piece_id"], entry["motif_letter"])
+        clip_key = entry["occurrence_id"]
+        clip_id = make_clip_id(clip_key, 0)
+        return patches, work_id, clip_key, clip_id
+
+
+class BPSMotifRetrievalABCTest(_BPSMotifRetrievalABCBase):
+    def __init__(self, **kwargs):
+        kwargs["split"] = "test"
+        super().__init__(**kwargs)
+
+
+class BPSMotifRetrievalABCDummy(_BPSMotifRetrievalABCBase):
+    """Placeholder for max_epochs=0 train/val dataloaders (fit is a no-op)."""
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("split", "test")
+        super().__init__(**kwargs)
+
+
+class BPSMotifMNIDABCDataModule(BaseDataModule):
+    """Thin wrapper for the ABC MNID variant."""
+
+    pass
+
+
+class BPSMotifRetrievalABCDataModule(BaseDataModule):
+    """Thin wrapper for the ABC Retrieval variant."""
+
+    pass
