@@ -124,6 +124,18 @@ model:
             num_classes: 2
             task: multiclass
             average: macro
+        auc_pr:
+          class_path: torchmetrics.AveragePrecision
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        auc_roc:
+          class_path: torchmetrics.AUROC
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
       test:
         acc:
           class_path: torchmetrics.Accuracy
@@ -144,6 +156,18 @@ model:
             average: macro
         recall:
           class_path: torchmetrics.Recall
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        auc_pr:
+          class_path: torchmetrics.AveragePrecision
+          init_args:
+            num_classes: 2
+            task: multiclass
+            average: macro
+        auc_roc:
+          class_path: torchmetrics.AUROC
           init_args:
             num_classes: 2
             task: multiclass

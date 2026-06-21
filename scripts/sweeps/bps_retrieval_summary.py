@@ -30,7 +30,9 @@ RX = re.compile(r"\.fold(\d+)\.layer(\d+)")
 
 def load_runs():
     best: dict[tuple[int, int], dict] = {}
-    for p in glob.glob(PAT):
+    # sorted() so that if a (fold, layer) dir holds multiple completed runs
+    # (e.g. after a re-test), the pick is deterministic rather than glob-order.
+    for p in sorted(glob.glob(PAT)):
         m = RX.search(p)
         if not m:
             continue

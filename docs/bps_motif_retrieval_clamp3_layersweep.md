@@ -62,9 +62,10 @@ cosine-similarity discovery algorithm inherits.
 | 12 | 0.3808 | 0.4103 | 0.3929 |
 
 **Centering wins at *every* layer** (+~1.4 MAP points): a mild common-mean
-(anisotropy) direction is worth removing. **Whitening consistently *hurts*** —
-ZCA over the modest per-fold pools amplifies noise directions. Use **centered,
-layer 7**.
+(anisotropy) direction is worth removing. **Whitening hurts** — it is below
+centered at every layer, and below raw at every layer except the weakest
+(layer 12, 0.393 vs 0.381); ZCA over the modest per-fold pools amplifies noise
+directions. Use **centered, layer 7**.
 
 ## recall@K (best layer 7, mean across folds)
 

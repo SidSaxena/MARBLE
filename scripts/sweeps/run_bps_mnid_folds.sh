@@ -3,28 +3,25 @@
 # all 5 CV folds x 13 CLaMP3 layers. SUPERVISED — trains an MLP head per run
 # (40 epochs, early-stop on val/f1) and writes checkpoints.
 #
-# !! STORAGE !! Each checkpoint bundles the frozen 552M-param CLaMP3 encoder
-# (~2.2 GB). With save_top_k=1 + save_last that is ~4.4 GB/run x 65 runs ~= 286 GB.
-# Choose a checkpoint root with --ckpt-root (e.g. an external drive) OR apply the
-# encoder-stripping fix first (see docs). On the PC, internal disk is usually fine.
+# Checkpoints are tiny (~0.9 MB) thanks to the frozen-encoder strip in BaseTask
+# (the 552M-param CLaMP3 encoder is dropped on save + re-injected on load), so
+# the full sweep's checkpoints total ~113 MB — internal disk is always fine.
 #
 # Usage:
 #   scripts/sweeps/run_bps_mnid_folds.sh [--accelerator mps|gpu] [--folds "0 1 2 3 4"] \
-#       [--ckpt-root /Volumes/WD\ Black/marble] [--layers "0 1 ... 12"]
+#       [--layers "0 1 ... 12"]
 #
-# Mac:  scripts/sweeps/run_bps_mnid_folds.sh --accelerator mps --ckpt-root "/Volumes/WD Black/marble"
+# Mac:  scripts/sweeps/run_bps_mnid_folds.sh --accelerator mps
 # PC :  scripts/sweeps/run_bps_mnid_folds.sh --accelerator gpu
 set -uo pipefail
 
 ACCEL="gpu"
 FOLDS="0 1 2 3 4"
-CKPT_ROOT=""
 LAYERS_ARG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --accelerator) ACCEL="$2"; shift 2 ;;
     --folds) FOLDS="$2"; shift 2 ;;
-    --ckpt-root) CKPT_ROOT="$2"; shift 2 ;;
     --layers) LAYERS_ARG="$2"; shift 2 ;;
     *) echo "unknown arg: $1"; exit 2 ;;
   esac
@@ -44,13 +41,7 @@ for F in $FOLDS; do
   sed -e "s/fold_idx: 0/fold_idx: ${F}/g" \
       -e "s#CLaMP3-symbolic-layers/#CLaMP3-symbolic-layers.fold${F}/#g" \
       "$BASE" > "$CFG"
-  # Optionally redirect checkpoints off the internal disk.
-  if [[ -n "$CKPT_ROOT" ]]; then
-    sed -i.bak \
-      -e "s#dirpath: \"\./output/#dirpath: \"${CKPT_ROOT}/output/#g" \
-      "$CFG" && rm -f "${CFG}.bak"
-  fi
-  echo "===== MNID FOLD ${F} (accelerator=${ACCEL}, ckpt_root=${CKPT_ROOT:-./output}) ====="
+  echo "===== MNID FOLD ${F} (accelerator=${ACCEL}) ====="
   "$PY" scripts/sweeps/run_sweep_local.py \
     --base-config "$CFG" \
     --num-layers 13 --model-tag CLaMP3-symbolic --task-tag BPSMotifMNID \

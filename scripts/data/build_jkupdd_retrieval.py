@@ -12,6 +12,13 @@ pattern. We keep the annotator in the key because JKUPDD has several
 overlapping annotation sources per piece (barlowAndMorgenstern, schoenberg,
 tomCollins, …); mixing them into one class would conflate distinct analyses.
 
+Caveat (keeping all annotators): a few occurrence MIDIs are byte-identical
+across *different* annotator passes (e.g. Mozart K282 ``barlowAndMorgenstern|A``
+≡ ``barlowAndMorgensternRevised|C``). Those are scored non-relevant (different
+group) despite identical content → a small, *conservative* MAP deflation (it
+under-states, never inflates). Pass ``--annotators <one-per-piece>`` for a
+single-source pool if you want to avoid it.
+
 This is a SMALL benchmark (~165 occurrence windows across 5 pieces) — a
 cross-composer (Bach/Beethoven/Chopin/Gibbons/Mozart) Layer-1 sanity check
 complementing the Beethoven-only BPS-Motif retrieval, not a large eval.
