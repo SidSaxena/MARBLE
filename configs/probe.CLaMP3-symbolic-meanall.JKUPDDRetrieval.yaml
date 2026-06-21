@@ -1,14 +1,13 @@
 seed_everything: 1234
 ckpt_path: null
 
-# JKUPDD within-piece motif retrieval — CLaMP3 symbolic, per-layer sweep.
-# Zero-shot (max_epochs=0): embed every annotated pattern-occurrence window,
-# rank by cosine, relevance = same (piece, annotator, pattern) group. SMALL
-# benchmark (~165 occurrence windows, 5 pieces) — a cross-composer Layer-1
-# sanity check complementing the Beethoven-only BPS-Motif retrieval.
-# Build the dataset first:
-#   uv run python scripts/data/build_jkupdd_retrieval.py --jkupdd-root <path>
-# The sweep runner overrides the single-int `layers: [6]` below per layer.
+# JKUPDD within-piece motif retrieval — CLaMP3 symbolic, meanall baseline.
+#
+# Zero-shot: max_epochs=0. Embed every annotated pattern-occurrence window in
+# the test set, compute pairwise cosine similarity, and report MAP / MAP@1 /
+# MRR. Relevance: same (piece, annotator, pattern) group — the mean-of-all-13-
+# layers reference for the per-layer JKUPDD sweep. SMALL benchmark (~165
+# occurrence windows, 5 cross-composer pieces).
 
 trainer:
   fast_dev_run: false
@@ -26,10 +25,10 @@ trainer:
     init_args:
       project: "marble"
       group: "CLaMP3-symbolic / JKUPDDRetrieval"
-      tags: ["CLaMP3-symbolic", "JKUPDDRetrieval", "layer-sweep", "probe", "symbolic"]
+      tags: ["CLaMP3-symbolic", "JKUPDDRetrieval", "layer-sweep", "probe", "symbolic", "mean-all"]
       job_type: "test"
-      name: "layer-6-test"
-      save_dir: "./output/probe.JKUPDDRetrieval.CLaMP3-symbolic-layers/"
+      name: "layer-meanall-test"
+      save_dir: "./output/probe.JKUPDDRetrieval.CLaMP3-symbolic-meanall/"
 
 
 model:
@@ -38,7 +37,8 @@ model:
     sample_rate: 24000
     cache_embeddings: true
     # Full retrieval suite (map@1, mrr, recall@{1,5,10,50,100}, hit_rate@K +
-    # _centered/_whitened) on top of the default trim set.
+    # _centered/_whitened) on top of the default trim set. The test pool is
+    # SMALL (~165 windows) — high-K recall is sparsely populated.
     log_extended_retrieval_metrics: true
 
     encoder:
@@ -47,7 +47,8 @@ model:
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          layers: [6]   # sweep replaces this per-layer
+          layers: ["0..12"]
+          mode: mean
       - class_path: marble.modules.transforms.TimeAvgPool
 
 
