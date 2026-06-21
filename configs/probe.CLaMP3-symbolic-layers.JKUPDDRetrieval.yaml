@@ -1,0 +1,74 @@
+seed_everything: 1234
+ckpt_path: null
+
+# JKUPDD within-piece motif retrieval — CLaMP3 symbolic, per-layer sweep.
+# Zero-shot (max_epochs=0): embed every annotated pattern-occurrence window,
+# rank by cosine, relevance = same (piece, annotator, pattern) group. SMALL
+# benchmark (~165 occurrence windows, 5 pieces) — a cross-composer Layer-1
+# sanity check complementing the Beethoven-only BPS-Motif retrieval.
+# Build the dataset first:
+#   uv run python scripts/data/build_jkupdd_retrieval.py --jkupdd-root <path>
+# The sweep runner overrides the single-int `layers: [6]` below per layer.
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks: []
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "CLaMP3-symbolic / JKUPDDRetrieval"
+      tags: ["CLaMP3-symbolic", "JKUPDDRetrieval", "layer-sweep", "probe", "symbolic"]
+      job_type: "test"
+      name: "layer-6-test"
+      save_dir: "./output/probe.JKUPDDRetrieval.CLaMP3-symbolic-layers/"
+
+
+model:
+  class_path: marble.tasks.JKUPDDRetrieval.probe.JKUPDDRetrievalTask
+  init_args:
+    sample_rate: 24000
+    cache_embeddings: true
+    # Full retrieval suite (map@1, mrr, recall@{1,5,10,50,100}, hit_rate@K +
+    # _centered/_whitened) on top of the default trim set.
+    log_extended_retrieval_metrics: true
+
+    encoder:
+      class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: [6]   # sweep replaces this per-layer
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+
+data:
+  class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 4
+
+    audio_transforms:
+      train: []
+      val:   []
+      test:  []
+
+    train:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalDummy
+    val:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalDummy
+    test:
+      class_path: marble.tasks.JKUPDDRetrieval.datamodule.JKUPDDRetrievalTest
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
