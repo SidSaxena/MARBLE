@@ -74,10 +74,16 @@ symbolic-midi = [
 # of MIDI/MTF). music21 handles .mxl → musicxml + bar-range slicing;
 # the vendored xml2abc handles musicxml → ABC; abctoolkit handles the
 # post-xml2abc cleanup + voice-rotation that CLaMP3 used during training.
-# See docs/data/supermario_setup.md § Option E.
+# converter21 registers a humlib-derived **kern → MusicXML importer into
+# music21 (higher fidelity than music21's built-in Humdrum reader) — used
+# by marble/encoders/CLaMP3/abc_util.py for the score-native symbolic
+# benchmarks (MTC-ANN / JKUPDD / BPS-Motif).
+# See docs/data/supermario_setup.md § Option E and
+# docs/symbolic_kern_to_abc_conversion.md.
 symbolic-abc = [
     "music21>=9.0",
     "abctoolkit>=0.0.4",
+    "converter21>=4.0.1",
 ]
 # uv sync --extra xcodec
 xcodec = [
