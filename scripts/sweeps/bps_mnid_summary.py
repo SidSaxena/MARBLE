@@ -36,8 +36,22 @@ import re
 import statistics
 
 METRICS = ["acc", "auc_pr", "auc_roc", "f1", "precision", "recall"]
-LAYER_RX = re.compile(r"\.fold(\d+)\.layer(\d+)")
 MEANALL_RX = re.compile(r"-meanall\.fold(\d+)")
+_LAYER_PRIMARY_RX = re.compile(r"\.layer(\d+)\.fold(\d+)")
+_FOLD_PRIMARY_RX = re.compile(r"\.fold(\d+)\.layer(\d+)")
+
+
+def parse_fold_layer(name: str) -> tuple[int, int] | None:
+    """Return (fold, layer) from a sweep dir name, accepting both orderings:
+    layer-primary ``...-layers.layer6.fold3`` (current) and fold-primary
+    ``...-layers.fold3.layer6`` (legacy). None if neither matches."""
+    m = _LAYER_PRIMARY_RX.search(name)
+    if m:
+        return int(m.group(2)), int(m.group(1))
+    m = _FOLD_PRIMARY_RX.search(name)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None
 
 
 def _latest_test_summary(run_glob: str) -> dict | None:
@@ -73,12 +87,11 @@ def load_layers(base: str) -> tuple[dict, dict]:
     """Return ({(fold,layer): summary}, {(fold,layer): n_completed_runs})."""
     cells: dict[tuple[int, int], dict] = {}
     dupes: dict[tuple[int, int], int] = {}
-    root = os.path.join(base, "output", "probe.BPSMotifMNID.CLaMP3-symbolic-layers.fold*.layer*")
+    root = os.path.join(base, "output", "probe.BPSMotifMNID.CLaMP3-symbolic-layers.*")
     for d in sorted(glob.glob(root)):
-        m = LAYER_RX.search(d)
-        if not m:
+        key = parse_fold_layer(d)
+        if key is None:
             continue
-        key = (int(m.group(1)), int(m.group(2)))
         g = os.path.join(d, "wandb", "run-*", "files", "wandb-summary.json")
         summ = _latest_test_summary(g)
         if summ is not None:

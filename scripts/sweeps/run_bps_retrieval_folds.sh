@@ -32,15 +32,15 @@ BASE="configs/probe.CLaMP3-symbolic-layers.BPSMotifRetrieval.yaml"
 
 for F in $FOLDS; do
   CFG="configs/_bps_retr_fold${F}.yaml"
-  sed -e "s/fold_idx: 0/fold_idx: ${F}/g" \
-      -e "s#CLaMP3-symbolic-layers/#CLaMP3-symbolic-layers.fold${F}/#g" \
-      "$BASE" > "$CFG"
+  # Patch only the CV split; the per-fold output dir is appended by
+  # run_sweep_local via --dir-suffix (layer-primary: ...-layers.layer{N}.fold{F}).
+  sed -e "s/fold_idx: 0/fold_idx: ${F}/g" "$BASE" > "$CFG"
   echo "===== FOLD ${F} (accelerator=${ACCEL}) ====="
   "$PY" scripts/sweeps/run_sweep_local.py \
     --base-config "$CFG" \
     --num-layers 13 --model-tag CLaMP3-symbolic --task-tag BPSMotifRetrieval \
     --accelerator "$ACCEL" --skip-fit-if-no-train --skip-meanall \
-    --extra-tag "fold${F}"
+    --extra-tag "fold${F}" --dir-suffix ".fold${F}"
 done
 
 echo "===== aggregating ====="

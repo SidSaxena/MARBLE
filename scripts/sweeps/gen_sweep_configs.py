@@ -57,6 +57,24 @@ def patch_wandb_name(text: str, layer: int) -> str:
     )
 
 
+def patch_output_dirs(text: str, layer: int, dir_suffix: str = "") -> str:
+    """Append ``.layer{N}{dir_suffix}`` to the first path segment of the
+    ``dirpath`` and ``save_dir`` output paths.
+
+    ``dir_suffix`` (e.g. ``".fold3"``) lands AFTER the layer token, so a fold
+    sweep produces **layer-primary** dirs (``...-layers.layer6.fold3``) — an
+    ``ls`` then groups all folds of a layer together. Default ``""`` preserves
+    the historical ``...-layers.layer6`` naming for non-fold sweeps.
+    """
+
+    def repl(m: re.Match) -> str:
+        return f"{m.group(1)}output/{m.group(2)}.layer{layer}{dir_suffix}"
+
+    text = re.sub(r'(dirpath:\s*"?\.?/?)output/([^/\n"\']+)', repl, text)
+    text = re.sub(r'(save_dir:\s*"?\.?/?)output/([^/\n"\']+)', repl, text)
+    return text
+
+
 def encoder_family(encoder: str) -> str:
     """Map encoder slug to its family tag for cross-variant filtering.
 
@@ -142,6 +160,12 @@ def main():
         nargs="*",
         help="Subset of layers to generate (default: all 0..num_layers-1)",
     )
+    parser.add_argument(
+        "--dir-suffix",
+        default="",
+        help="Appended to each per-layer output dir AFTER .layer{N} (e.g. "
+        "'.fold3' → ...-layers.layer6.fold3). Default '' keeps historical naming.",
+    )
     args = parser.parse_args()
 
     base_path = Path(args.base_config)
@@ -175,22 +199,10 @@ def main():
         # 1. LayerSelector index
         text = patch_layers(text, layer)
 
-        # 2. Checkpoint dirpath  (output/<base>  →  output/<base>.layerN)
-        # `layer=layer` default-arg binding pins each lambda to its own
-        # loop-iteration value (ruff B023). re.sub is eager so it doesn't
-        # matter in practice, but being explicit makes the intent clear.
-        text = re.sub(
-            r'(dirpath:\s*"?\.?/?)output/([^/\n"\']+)',
-            lambda m, layer=layer: f"{m.group(1)}output/{m.group(2)}.layer{layer}",
-            text,
-        )
-
-        # 3. WandB save_dir  (same pattern)
-        text = re.sub(
-            r'(save_dir:\s*"?\.?/?)output/([^/\n"\']+)',
-            lambda m, layer=layer: f"{m.group(1)}output/{m.group(2)}.layer{layer}",
-            text,
-        )
+        # 2+3. Checkpoint dirpath + WandB save_dir
+        #   output/<base>  →  output/<base>.layer{N}{dir_suffix}
+        # dir_suffix (e.g. ".fold3") lands after the layer → layer-primary dirs.
+        text = patch_output_dirs(text, layer, args.dir_suffix)
 
         # 4. WandB run name → "layer-N"  (fit/test suffix is added at runtime
         #    via --trainer.logger.init_args.name override in run_sweep_local)

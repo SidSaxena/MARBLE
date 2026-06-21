@@ -40,14 +40,15 @@ EXTRA_LAYERS=()
 
 for F in $FOLDS; do
   CFG="configs/_bps_mnid_fold${F}.yaml"
-  sed -e "s/fold_idx: 0/fold_idx: ${F}/g" \
-      -e "s#CLaMP3-symbolic-layers/#CLaMP3-symbolic-layers.fold${F}/#g" \
-      "$BASE" > "$CFG"
+  # Patch only the CV split here; the per-fold output dir is appended by
+  # run_sweep_local via --dir-suffix so it lands AFTER .layer{N}
+  # (layer-primary: ...-layers.layer{N}.fold{F}).
+  sed -e "s/fold_idx: 0/fold_idx: ${F}/g" "$BASE" > "$CFG"
   echo "===== MNID FOLD ${F} (accelerator=${ACCEL}, concurrency=${CONCURRENCY}) ====="
   "$PY" scripts/sweeps/run_sweep_local.py \
     --base-config "$CFG" \
     --num-layers 13 --model-tag CLaMP3-symbolic --task-tag BPSMotifMNID \
     --accelerator "$ACCEL" --skip-meanall --concurrency "$CONCURRENCY" \
-    --extra-tag "fold${F}" "${EXTRA_LAYERS[@]}"
+    --extra-tag "fold${F}" --dir-suffix ".fold${F}" "${EXTRA_LAYERS[@]}"
 done
 echo "===== MNID sweep complete ====="

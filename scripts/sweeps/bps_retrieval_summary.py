@@ -19,13 +19,26 @@ BASE = os.path.expanduser("~/developer/python/marble")
 PAT = os.path.join(
     BASE,
     "output",
-    "probe.BPSMotifRetrieval.CLaMP3-symbolic-layers.fold*.layer*",
+    "probe.BPSMotifRetrieval.CLaMP3-symbolic-layers.*",
     "wandb",
     "run-*",
     "files",
     "wandb-summary.json",
 )
-RX = re.compile(r"\.fold(\d+)\.layer(\d+)")
+# Accept both dir orderings: layer-primary "...layer6.fold3" (current) and
+# fold-primary "...fold3.layer6" (legacy).
+_LAYER_PRIMARY_RX = re.compile(r"\.layer(\d+)\.fold(\d+)")
+_FOLD_PRIMARY_RX = re.compile(r"\.fold(\d+)\.layer(\d+)")
+
+
+def _parse_fold_layer(path: str):
+    m = _LAYER_PRIMARY_RX.search(path)
+    if m:
+        return int(m.group(2)), int(m.group(1))
+    m = _FOLD_PRIMARY_RX.search(path)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None
 
 
 def load_runs():
@@ -33,10 +46,10 @@ def load_runs():
     # sorted() so that if a (fold, layer) dir holds multiple completed runs
     # (e.g. after a re-test), the pick is deterministic rather than glob-order.
     for p in sorted(glob.glob(PAT)):
-        m = RX.search(p)
-        if not m:
+        fl = _parse_fold_layer(p)
+        if fl is None:
             continue
-        f, l = int(m.group(1)), int(m.group(2))
+        f, l = fl
         try:
             with open(p) as fh:
                 d = json.load(fh)

@@ -814,6 +814,13 @@ def main():
         "from the original layer-N-test runs. Stacks with the tags in the "
         "base config — the new tag is appended, not replacing.",
     )
+    parser.add_argument(
+        "--dir-suffix",
+        default="",
+        help="Passed to gen_sweep_configs: appended to each per-layer output "
+        "dir AFTER .layer{N} (e.g. '.fold3' → ...-layers.layer6.fold3 for "
+        "layer-primary per-fold dirs). Default '' keeps historical naming.",
+    )
     args = parser.parse_args()
 
     if args.concurrency < 1:
@@ -842,6 +849,8 @@ def main():
                 args.task_tag,
                 "--out-dir",
                 sweep_dir,
+                "--dir-suffix",
+                args.dir_suffix,
             ]
         )
 
