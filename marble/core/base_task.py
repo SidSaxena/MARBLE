@@ -47,6 +47,7 @@ class BaseTask(LightningModule, EmbeddingCacheMixin, ABC):
         use_ema: bool = False,
         cache_embeddings: bool = False,
         cache_pool_time: bool = True,
+        strip_frozen_encoder_from_ckpt: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -86,6 +87,9 @@ class BaseTask(LightningModule, EmbeddingCacheMixin, ABC):
         # docs/embedding_cache_correctness.md §9 for the trade-off.
         self.cache_embeddings = bool(cache_embeddings)
         self.cache_pool_time = bool(cache_pool_time)
+        # Drop the frozen encoder's weights from saved checkpoints (huge + always
+        # reloaded fresh at __init__). See on_save_checkpoint / on_load_checkpoint.
+        self.strip_frozen_encoder_from_ckpt = bool(strip_frozen_encoder_from_ckpt)
         self._init_cache_state()
 
     def setup(self, stage: str | None = None) -> None:
@@ -94,6 +98,45 @@ class BaseTask(LightningModule, EmbeddingCacheMixin, ABC):
         super().setup(stage)
         self._ensure_cache()
         self._inject_cache_check_into_datasets()
+
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        """Strip the FROZEN encoder's weights from the saved checkpoint.
+
+        The encoder (e.g. CLaMP3 = 552M params ≈ 2.2 GB) is reconstructed and
+        reloads its own pretrained weights at ``__init__``, so persisting it in
+        every probe checkpoint is pure waste — ``save_top_k`` + ``save_last``
+        over a layer×fold sweep multiplies it into hundreds of GB. We drop the
+        ``encoder.*`` keys ONLY when the encoder is fully frozen (no grads); a
+        fine-tuned encoder IS the trained result and must be kept. The matching
+        ``on_load_checkpoint`` re-injects the live weights so a strict
+        ``load_state_dict`` still matches. Disable with
+        ``strip_frozen_encoder_from_ckpt=False``.
+        """
+        super().on_save_checkpoint(checkpoint)
+        if not self.strip_frozen_encoder_from_ckpt:
+            return
+        sd = checkpoint.get("state_dict")
+        if sd is None or any(p.requires_grad for p in self.encoder.parameters()):
+            return
+        for k in [k for k in sd if k.startswith("encoder.")]:
+            del sd[k]
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        """Re-inject the live encoder weights into a checkpoint whose
+        ``encoder.*`` keys were stripped on save, so a strict
+        ``load_state_dict`` matches. The encoder is reconstructed (and reloads
+        its pretrained weights) at ``__init__``, so these are the correct frozen
+        weights — the loaded module is bit-identical to one loaded from a full
+        checkpoint. A full (un-stripped) checkpoint already has the keys and is
+        left untouched (back-compat). Idempotent — safe for the
+        ``LoadLatestCheckpointCallback`` to call before its manual load.
+        """
+        super().on_load_checkpoint(checkpoint)
+        sd = checkpoint.get("state_dict")
+        if sd is None or any(k.startswith("encoder.") for k in sd):
+            return
+        for k, v in self.encoder.state_dict().items():
+            sd[f"encoder.{k}"] = v
 
     def forward(
         self,

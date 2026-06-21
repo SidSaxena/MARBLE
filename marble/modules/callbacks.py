@@ -68,6 +68,11 @@ class LoadLatestCheckpointCallback(Callback):
         if pl_module.device.type == "cuda":
             map_loc = {"cuda:0": f"cuda:{pl_module.device.index or 0}"}
         checkpoint = torch.load(chosen, map_location=map_loc)
+        # Let the module re-inject anything it strips on save (e.g. a frozen
+        # encoder dropped by BaseTask.on_save_checkpoint) so the strict load
+        # below still matches. No-op for modules that don't strip / full ckpts.
+        if hasattr(pl_module, "on_load_checkpoint"):
+            pl_module.on_load_checkpoint(checkpoint)
         state_dict = checkpoint.get("state_dict", checkpoint)
         pl_module.load_state_dict(state_dict)
 
