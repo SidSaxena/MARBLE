@@ -1,4 +1,4 @@
-"""LogSweepCoordsCallback writes sweep/* coords into the wandb run config.
+"""LogSweepCoordsCallback writes sweep_* coords into the wandb run config.
 
 The wandb-run lookup is isolated in ``_find_wandb_run`` so these tests can
 inject a fake run (no real wandb session) and assert the stamped config.
@@ -35,10 +35,10 @@ def test_callback_stamps_test_run(monkeypatch):
     monkeypatch.setattr(cb, "_find_wandb_run", lambda trainer: run)
     cb.LogSweepCoordsCallback().on_test_start(_trainer(0), None)
     assert run.config.updated == {
-        "sweep/layer": 6,
-        "sweep/fold": 0,
-        "sweep/stage": "test",
-        "sweep/repr": "single",
+        "sweep_layer": 6,
+        "sweep_fold": 0,
+        "sweep_stage": "test",
+        "sweep_repr": "single",
     }
 
 
@@ -47,9 +47,9 @@ def test_callback_recovers_fold_for_fit_run_from_datamodule(monkeypatch):
     run = _FakeRun("layer-6-fit", "fit", ["layer-6"])
     monkeypatch.setattr(cb, "_find_wandb_run", lambda trainer: run)
     cb.LogSweepCoordsCallback().on_fit_start(_trainer(3), None)
-    assert run.config.updated["sweep/fold"] == 3
-    assert run.config.updated["sweep/stage"] == "fit"
-    assert run.config.updated["sweep/layer"] == 6
+    assert run.config.updated["sweep_fold"] == 3
+    assert run.config.updated["sweep_stage"] == "fit"
+    assert run.config.updated["sweep_layer"] == 6
 
 
 def test_callback_noop_without_wandb(monkeypatch):

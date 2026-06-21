@@ -284,13 +284,21 @@ def cmd_set(api, proj, args):
 
 
 def cmd_coords(api, proj, args):
-    """Stamp sweep/{layer,fold,stage,repr} config from each run's name/tags/job_type.
+    """Stamp sweep_{layer,fold,stage,repr} config + normalize job_type to the
+    clean stage, from each run's name/tags/job_type.
 
-    Makes a layer sweep groupable in the wandb UI: filter ``sweep/stage = test``,
-    Group by ``sweep/layer`` → per-layer mean across folds, best on top.
-    Idempotent (skips runs already carrying the right coords); only writes
-    meaningful (non-None) values, so fit runs (no recoverable fold) just get
-    layer/stage/repr.
+    Makes a layer sweep groupable in the wandb UI: filter ``job_type = test``
+    (a native, always-filterable field) or ``sweep_stage = test``, then group
+    by ``sweep_layer`` → per-layer mean across folds, best on top.
+
+    Flat underscore keys (no '/') so the UI filter/group-by picker handles them
+    — a "sweep/stage" key gets display-nested and is awkward to filter. Only
+    meaningful (non-None) values are written (fit runs get layer/stage/repr but
+    no fold). Idempotent.
+
+    Note: wandb's public API only merges config — it cannot delete keys — so an
+    earlier "sweep/<k>" slash-key scheme cannot be removed here; the flat keys
+    supersede it and the orphans can be hidden in the UI.
     """
     from marble.utils.sweep_coords import parse_sweep_coords
 
@@ -303,17 +311,24 @@ def cmd_coords(api, proj, args):
     for r in runs:
         coords = parse_sweep_coords(r.name, getattr(r, "job_type", None), r.tags)
         planned = {
-            f"sweep/{k}": v
+            f"sweep_{k}": v
             for k, v in coords.items()
-            if v is not None and r.config.get(f"sweep/{k}") != v
+            if v is not None and r.config.get(f"sweep_{k}") != v
         }
-        if not planned:
+        new_jt = coords.get("stage")
+        jt_change = new_jt is not None and getattr(r, "job_type", None) != new_jt
+        if not planned and not jt_change:
             continue
         print("  " + _describe(r))
-        print(f"      → {planned}")
+        if planned:
+            print(f"      → config {planned}")
+        if jt_change:
+            print(f"      → job_type {getattr(r, 'job_type', None)!r} → {new_jt!r}")
         if args.apply:
             for key, val in planned.items():
                 r.config[key] = val
+            if jt_change:
+                r.job_type = new_jt
             try:
                 r.update()
                 print("      ✓ written")
