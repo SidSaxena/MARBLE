@@ -437,3 +437,112 @@ class BPSMotifRetrievalABCDataModule(BaseDataModule):
     """Thin wrapper for the ABC Retrieval variant."""
 
     pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Within-piece phrase-window — ABC input (within-movement same-motif retrieval)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# The Retrieval task above slices ONE ABC fragment per labelled motif occurrence
+# and scores cross-piece within-letter retrieval (same piece + same letter via
+# the packed work_id). The WITHIN-PIECE task below instead slides N-bar phrase
+# windows (stride 1) over each WHOLE movement (dataset built offline by
+# ``scripts/data/build_bps_motif_within_piece.py``) and measures, PER MOVEMENT,
+# whether two windows that share a motif letter retrieve each other — genuine
+# within-movement recurrence. The semantics are the shuffle-control-validated
+# leitmotifs prototype (scripts/eval/bps_within_piece_metric.py::within_movement_map).
+#
+# The inherited single-label full-gallery CoverRetrievalTask MAP can't express
+# this (it's multi-label + per-movement-gallery + same-occurrence-excluded), so
+# the dataset emits a 6-tuple and BPSMotifWithinPieceTask runs its own metric.
+# The 6-tuple mirrors MTCANN's 6-tuple shape (datamodule.py:186-204): the two
+# extra slots ride through default collation as a list-of-str (like ``paths``).
+
+
+import hashlib  # noqa: E402 — local to the within-piece block
+
+
+def _movement_group_id(movement_id: str) -> int:
+    """Stable int gallery-group id for a movement (the within-piece group key).
+
+    The within-piece metric restricts each query's gallery to its OWN movement,
+    keyed by integer equality on this id. We take the first 8 hex of a SHA-1
+    (<= 2^32, fits int64) — identical discipline to MTCANN's ``_work_id`` so the
+    relevance machinery is shared. Collision probability over 32 movements in a
+    32-bit space is negligible.
+    """
+    return int(hashlib.sha1(movement_id.encode("utf-8")).hexdigest()[:8], 16)
+
+
+class _BPSMotifWithinPieceABCBase(_BPSMotifABCMixin, _BPSMotifSymbolicBase):
+    """Returns the within-piece 6-tuple
+    ``(patches, movement_id_int, occ_ids_str, letters_str, clip_key, clip_id)``.
+
+    * ``patches`` — tokenised from the JSONL ``abc`` field (the phrase-window
+      fragment), identical encode path to every other ABC dataset here.
+    * ``movement_id_int`` — stable sha1-hash int of ``movement_id`` (the gallery
+      group: the metric restricts each query's gallery to its own movement).
+    * ``occ_ids_str`` / ``letters_str`` — ``'|'``-joined strings of the window's
+      occurrence ids / motif letters. Emitting them as plain ``str`` lets them
+      ride through PyTorch's default collation as a list-of-str (exactly like
+      the ``paths`` slot in the other datasets) without a custom collate_fn; the
+      task splits on ``'|'`` to recover the sets. Empty → ``""``.
+    * ``clip_key`` — the per-window key (``window_id``) for per-file aggregation
+      + emb-cache keys (there is no midi_path here).
+    * ``clip_id`` — ``make_clip_id(window_id, 0)``.
+    """
+
+    JSONL_TEMPLATE: str = ""  # set by subclass
+
+    def __init__(self, split: str = "test", max_patches=None, jsonl_template=None):
+        super().__init__(
+            jsonl_template=jsonl_template or self.JSONL_TEMPLATE,
+            split=split,
+            fold_idx=0,
+            max_patches=max_patches,
+        )
+
+    def __getitem__(self, idx: int):
+        entry = self.meta[idx]
+        patches = self._tokenise_abc(entry["abc"])
+        movement_id_int = _movement_group_id(entry["movement_id"])
+        # '|'-joined so the two variable-length label sets survive default
+        # collation as a list-of-str; "" when empty. The task splits on '|'.
+        occ_ids_str = "|".join(entry.get("occurrence_ids", []))
+        letters_str = "|".join(entry.get("letters", []))
+        clip_key = entry["window_id"]
+        clip_id = make_clip_id(clip_key, 0)
+        return (
+            patches,
+            torch.tensor(movement_id_int, dtype=torch.long),
+            occ_ids_str,
+            letters_str,
+            clip_key,
+            clip_id,
+        )
+
+
+class BPSMotifWithinPieceN4ABCTest(_BPSMotifWithinPieceABCBase):
+    """Within-piece N=4 phrase-window test split (zero-shot)."""
+
+    JSONL_TEMPLATE = "data/BPS-Motif/BPSMotifWithinPiece.N4.ABC.jsonl"
+
+    def __init__(self, **kwargs):
+        kwargs["split"] = "test"
+        super().__init__(**kwargs)
+
+
+class BPSMotifWithinPieceN4ABCDummy(_BPSMotifWithinPieceABCBase):
+    """Placeholder for the max_epochs=0 train/val dataloaders (fit is a no-op)."""
+
+    JSONL_TEMPLATE = "data/BPS-Motif/BPSMotifWithinPiece.N4.ABC.jsonl"
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("split", "test")
+        super().__init__(**kwargs)
+
+
+class BPSMotifWithinPieceABCDataModule(BaseDataModule):
+    """Thin wrapper for the within-piece phrase-window ABC variant."""
+
+    pass
