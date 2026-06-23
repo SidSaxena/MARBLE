@@ -179,11 +179,14 @@ class BPSMotifWithinPieceTask(CoverRetrievalTask):
         self._wp_keys.extend(list(clip_keys))
 
     def on_test_epoch_end(self) -> None:
+        import os
+
         import torch.nn.functional as F
 
         from marble.utils.retrieval_metrics import (
             anisotropy_metrics,
             compute_within_group_multilabel_map,
+            compute_within_group_multilabel_map_with_null,
         )
 
         if not self._wp_embeddings:
@@ -246,6 +249,25 @@ class BPSMotifWithinPieceTask(CoverRetrievalTask):
         )
         print(f"[BPSMotifWithinPiece] MAP (centered) = {map_centered:.4f}")
         self.log("test/map_centered", map_centered, prog_bar=False, rank_zero_only=True)
+
+        # ── prevalence permutation null on the centered metric (Method A) ────
+        # Raw MAP inflates monotonically with window size (wider window → more
+        # letters → "shares >=1 letter" trivially true). The within-group label
+        # permutation gives the prevalence chance level; lift = real - null is the
+        # honest same-motif-discovery signal, and the breaking-point of the
+        # window-size sweep is where lift peaks (not raw MAP).
+        n_perms = int(os.environ.get("BPS_NULL_PERMS", "100"))
+        real_c, null_c, _std_c, p_c = compute_within_group_multilabel_map_with_null(
+            embs_c, file_groups, file_letters, file_occ, n_perms=n_perms
+        )
+        lift_c = real_c - null_c
+        print(
+            f"[BPSMotifWithinPiece] NULL (centered): null={null_c:.4f}  "
+            f"lift={lift_c:+.4f}  p={p_c:.3f}  (n_perms={n_perms})"
+        )
+        self.log("test/map_centered_null", null_c, rank_zero_only=True)
+        self.log("test/map_centered_lift", lift_c, prog_bar=True, rank_zero_only=True)
+        self.log("test/map_centered_p", p_c, rank_zero_only=True)
 
         # ── anisotropy diagnostics (same as CoverRetrievalTask) ──────────────
         ani = anisotropy_metrics(embs)
@@ -476,11 +498,14 @@ class BPSMotifWithinPieceWholeTask(CoverRetrievalTask):
                 self._wp_letters.append(set(spec["letters"]))
 
     def on_test_epoch_end(self) -> None:
+        import os
+
         import torch.nn.functional as F
 
         from marble.utils.retrieval_metrics import (
             anisotropy_metrics,
             compute_within_group_multilabel_map,
+            compute_within_group_multilabel_map_with_null,
         )
 
         if not self._wp_embeddings:
@@ -517,6 +542,23 @@ class BPSMotifWithinPieceWholeTask(CoverRetrievalTask):
         )
         print(f"[BPSMotifWithinPieceWhole] MAP (centered) = {map_centered:.4f}")
         self.log("test/map_centered", map_centered, prog_bar=False, rank_zero_only=True)
+
+        # ── prevalence permutation null on the centered metric (Method A) ────
+        # Identical control to the clip-isolated arm: within-group label
+        # permutation → prevalence chance level; lift = real - null is the honest
+        # window-size signal (raw MAP inflates with window via letter prevalence).
+        n_perms = int(os.environ.get("BPS_NULL_PERMS", "100"))
+        real_c, null_c, _std_c, p_c = compute_within_group_multilabel_map_with_null(
+            embs_c, file_groups, file_letters, file_occ, n_perms=n_perms
+        )
+        lift_c = real_c - null_c
+        print(
+            f"[BPSMotifWithinPieceWhole] NULL (centered): null={null_c:.4f}  "
+            f"lift={lift_c:+.4f}  p={p_c:.3f}  (n_perms={n_perms})"
+        )
+        self.log("test/map_centered_null", null_c, rank_zero_only=True)
+        self.log("test/map_centered_lift", lift_c, prog_bar=True, rank_zero_only=True)
+        self.log("test/map_centered_p", p_c, rank_zero_only=True)
 
         # ── anisotropy diagnostics ───────────────────────────────────────────
         ani = anisotropy_metrics(embs)

@@ -2,6 +2,7 @@
 import contextlib
 import glob
 import os
+import re
 
 import torch
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
@@ -162,16 +163,44 @@ class LogSweepCoordsCallback(Callback):
                     return fi
         return None
 
+    @staticmethod
+    def _resolve_window(datamodule):
+        """Best-effort within-piece window size (bars) from the JSONL path.
+
+        The within-piece window-size sweep points each run at a per-N JSONL
+        (e.g. ``data/BPS-Motif/BPSMotifWithinPiece.N8.ABC.jsonl``). Parsing ``N``
+        from the test split's ``jsonl_template`` stamps ``sweep/window``
+        authoritatively — independent of run naming — exactly as
+        ``_resolve_fold_idx`` does for the CV fold, so window is recoverable on
+        BOTH fit and test runs. Returns an int window or None (tasks without a
+        per-N JSONL: every non-within-piece task).
+        """
+        if datamodule is None:
+            return None
+        rx = re.compile(r"\.N(\d+)\.")
+        for attr in ("test_config", "val_config", "train_config"):
+            cfg = getattr(datamodule, attr, None)
+            if isinstance(cfg, dict):
+                tmpl = (cfg.get("init_args") or {}).get("jsonl_template")
+                if isinstance(tmpl, str):
+                    m = rx.search(tmpl)
+                    if m:
+                        return int(m.group(1))
+        return None
+
     def _stamp(self, trainer, stage):
         run = _find_wandb_run(trainer)
         if run is None:
             return
-        fold_idx = self._resolve_fold_idx(getattr(trainer, "datamodule", None))
+        dm = getattr(trainer, "datamodule", None)
+        fold_idx = self._resolve_fold_idx(dm)
+        window = self._resolve_window(dm)
         coords = resolve_coords(
             getattr(run, "name", "") or "",
             getattr(run, "job_type", None),
             list(getattr(run, "tags", []) or []),
             fold_idx=fold_idx,
+            window=window,
             stage=stage,
         )
         # "sweep/<k>" namespaced keys: the wandb UI groups/filters on these

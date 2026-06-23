@@ -23,6 +23,7 @@ import re
 
 _LAYER_RX = re.compile(r"layer-(\d+)")
 _FOLD_RX = re.compile(r"fold[-_]?(\d+)")
+_WINDOW_RX = re.compile(r"window[-_]?(\d+)")
 
 
 def parse_sweep_coords(
@@ -56,6 +57,18 @@ def parse_sweep_coords(
     fm = _FOLD_RX.search(name) or _FOLD_RX.search(job_type)
     fold = int(fm.group(1)) if fm else None
 
+    # window: within-piece window-size sweep coord (bars), from name/job_type/tags
+    # (e.g. "layer-6-test-window8"). Analogous to fold for the BPSMotifWithinPiece
+    # window breaking-point sweep, so the wandb UI can group by sweep/layer and
+    # read MAP vs sweep/window directly.
+    wm = _WINDOW_RX.search(name) or _WINDOW_RX.search(job_type)
+    if not wm:
+        for t in tags:
+            wm = _WINDOW_RX.search(t)
+            if wm:
+                break
+    window = int(wm.group(1)) if wm else None
+
     # stage: prefer job_type's leading token, fall back to name content
     if job_type.startswith("test") or "-test" in name or name.endswith("test"):
         stage: str | None = "test"
@@ -67,6 +80,7 @@ def parse_sweep_coords(
     return {
         "layer": layer,
         "fold": fold,
+        "window": window,
         "stage": stage,
         "repr": "meanall" if is_meanall else "single",
     }
@@ -78,6 +92,7 @@ def resolve_coords(
     tags: list[str] | None = None,
     *,
     fold_idx: int | None = None,
+    window: int | None = None,
     stage: str | None = None,
 ) -> dict:
     """``parse_sweep_coords`` plus authoritative overrides.
@@ -90,6 +105,8 @@ def resolve_coords(
     coords = parse_sweep_coords(name, job_type, tags)
     if fold_idx is not None:
         coords["fold"] = int(fold_idx)
+    if window is not None:
+        coords["window"] = int(window)
     if stage is not None:
         coords["stage"] = stage
     return coords

@@ -1003,6 +1003,132 @@ def compute_within_group_multilabel_map(
     return float(sum(aps) / len(aps))
 
 
+def compute_within_group_multilabel_map_with_null(
+    embs: torch.Tensor,
+    groups: list[int] | torch.Tensor,
+    letters: list[set[str]],
+    occ_ids: list[set[str]],
+    *,
+    n_perms: int = 100,
+    seed: int = 0,
+) -> tuple[float, float, float, float]:
+    """:func:`compute_within_group_multilabel_map` + a label-PERMUTATION NULL.
+
+    The prevalence control for the within-piece window-size sweep, and the direct
+    analog of the audio pipeline's permutation null
+    (``floor_analysis.null_precision_bands`` / ``pairwise_links.permutation_null_f1``,
+    EVALUATION.md "Method A"). The within-movement same-motif MAP rises
+    monotonically with window size simply because wider windows carry more motif
+    letters, so "shares >=1 letter" is trivially satisfied (prevalence inflation).
+    This holds the embeddings, the per-group occurrence-excluded gallery, and the
+    cosine ranking FIXED, then permutes *which window carries which letter-set* and
+    recomputes the MAP ``n_perms`` times.
+
+    CRITICAL — the permutation is **within-group** (within movement). The gallery
+    is restricted to the query's own group, so the correct exchangeability unit is
+    the group: letter-sets are shuffled only among windows of the SAME movement,
+    never across movements (a global shuffle would corrupt each movement's
+    prevalence and is the wrong null). This matches the leitmotifs prototype, which
+    scored each movement separately (per-movement permutation) before averaging.
+
+    The honest window signal is the LIFT = real - null_mean (and the empirical
+    ``p`` = fraction of null perms >= real, +1-smoothed). Vectorised: a letter-
+    overlap matrix is precomputed once, so each permutation is pure integer
+    indexing (no per-perm O(n^2) Python set ops).
+
+    Returns ``(real, null_mean, null_std, p_value)``. ``real`` is byte-identical to
+    :func:`compute_within_group_multilabel_map`. If ``real`` is NaN (nothing
+    scorable), returns ``(nan, nan, nan, nan)``; if no permutation is scorable,
+    ``(real, nan, nan, nan)``.
+    """
+    import random
+    import statistics
+    from collections import defaultdict
+
+    n = embs.shape[0]
+    nan4 = (float("nan"), float("nan"), float("nan"), float("nan"))
+    if n == 0 or not (len(letters) == len(occ_ids) == n):
+        return nan4
+    grp = groups.tolist() if isinstance(groups, torch.Tensor) else list(groups)
+    if len(grp) != n:
+        return nan4
+
+    normed = torch.nn.functional.normalize(embs.to(torch.float64), dim=-1)
+    sims = normed @ normed.T
+
+    # Letter-overlap matrix, precomputed ONCE; label permutation is then pure
+    # integer indexing. ``shares[i,j]`` = windows i and j share >=1 motif letter.
+    vocab = sorted({ltr for s in letters for ltr in s})
+    lut = {ltr: k for k, ltr in enumerate(vocab)}
+    if vocab:
+        membership = torch.zeros((n, len(vocab)), dtype=torch.float64)
+        for i, s in enumerate(letters):
+            for ltr in s:
+                membership[i, lut[ltr]] = 1.0
+        shares = (membership @ membership.T) > 0
+    else:
+        shares = torch.zeros((n, n), dtype=torch.bool)
+    has_letter = [bool(s) for s in letters]
+
+    # Per-query gallery (same-group, occ-excluded — label-INDEPENDENT) + ranking.
+    galleries: list[torch.Tensor] = []
+    orders: list[torch.Tensor] = []
+    for q in range(n):
+        g = [w for w in range(n) if w != q and grp[w] == grp[q] and not (occ_ids[w] & occ_ids[q])]
+        g_t = torch.tensor(g, dtype=torch.long)
+        galleries.append(g_t)
+        orders.append(
+            torch.argsort(sims[q, g_t], descending=True) if g else torch.empty(0, dtype=torch.long)
+        )
+
+    # Group -> member positions, for WITHIN-group label permutation.
+    group_members: dict[int, list[int]] = defaultdict(list)
+    for i, gg in enumerate(grp):
+        group_members[gg].append(i)
+
+    def _map_for(perm: torch.Tensor) -> float:
+        """Mean AP when window position ``q`` is assigned source row ``perm[q]``."""
+        aps: list[float] = []
+        for q in range(n):
+            pq = int(perm[q])
+            if not has_letter[pq]:
+                continue
+            g = galleries[q]
+            if g.numel() == 0:
+                continue
+            rel = shares[pq, perm[g]].to(torch.float64)
+            if rel.sum().item() == 0:
+                continue
+            rr = rel[orders[q]]
+            cum_rel = torch.cumsum(rr, dim=0)
+            ranks = torch.arange(1, rr.shape[0] + 1, dtype=torch.float64)
+            aps.append(float((cum_rel / ranks * rr).sum().item() / rr.sum().item()))
+        return float(sum(aps) / len(aps)) if aps else float("nan")
+
+    real = _map_for(torch.arange(n, dtype=torch.long))
+    if real != real:  # NaN
+        return nan4
+
+    rng = random.Random(seed)
+    nulls: list[float] = []
+    for _ in range(max(1, n_perms)):
+        perm = list(range(n))
+        for members in group_members.values():
+            shuffled = members[:]
+            rng.shuffle(shuffled)
+            for pos, src in zip(members, shuffled, strict=True):
+                perm[pos] = src
+        nm = _map_for(torch.tensor(perm, dtype=torch.long))
+        if nm == nm:  # not NaN
+            nulls.append(nm)
+    if not nulls:
+        return (real, float("nan"), float("nan"), float("nan"))
+    null_mean = statistics.fmean(nulls)
+    null_std = statistics.pstdev(nulls) if len(nulls) > 1 else 0.0
+    p_value = (sum(1 for x in nulls if x >= real) + 1) / (len(nulls) + 1)
+    return (real, null_mean, null_std, p_value)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Per-condition (cross-instrument / cross-soundfont) MAP
 # ──────────────────────────────────────────────────────────────────────
