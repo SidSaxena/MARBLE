@@ -909,6 +909,101 @@ def compute_masked_map(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Within-group multi-label MAP (within-piece phrase-window same-motif)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def compute_within_group_multilabel_map(
+    embs: torch.Tensor,
+    groups: list[int] | torch.Tensor,
+    letters: list[set[str]],
+    occ_ids: list[set[str]],
+) -> float:
+    """Mean within-group, multi-label, same-occurrence-excluded retrieval MAP.
+
+    The generalisation of the leitmotifs-prototype ``within_movement_map``
+    (``scripts/eval/bps_within_piece_metric.py``, shuffle-control-validated) to a
+    per-group sub-matrix evaluation. Used by the BPS-Motif within-piece
+    phrase-window task: each query window is a phrase-window slice carrying the
+    union of its bars' motif letters; relevance is "same group (movement) AND
+    shares >=1 motif letter", with the query's own overlapping windows removed so
+    we measure genuine recurrence rather than self-similarity.
+
+    For every query ``q`` with ``letters[q] != set()``:
+
+      * gallery = items ``w`` with ``groups[w] == groups[q]``, ``w != q``, and
+        ``occ_ids[w] & occ_ids[q] == set()`` (same-occurrence exclusion — drop
+        the query's own overlapping windows);
+      * relevant = gallery items with ``letters[w] & letters[q] != set()``;
+      * rank the gallery by descending cosine similarity to ``q`` on ``embs``;
+      * standard AP (precision@k averaged over the ranks of the relevant items).
+
+    Returns the mean AP over queries that have >=1 relevant gallery item, or
+    ``float('nan')`` if no such query exists (nothing genuine to retrieve).
+
+    Mirrors :func:`compute_masked_map` discipline: per-query row materialisation,
+    self-/cross-group masking via the gallery-index restriction (not a finite
+    similarity sentinel), and a NaN return on the degenerate empty case.
+
+    Args:
+        embs: ``(N, H)`` per-window embeddings. Cosine is taken after an internal
+            L2-normalise, so the caller may pass raw OR centered embeddings (the
+            within-piece task passes both for ``map`` and ``map_centered``).
+        groups: ``(N,)`` group label per window (the movement id — gallery is
+            restricted to the query's own group).
+        letters: length-``N`` list of motif-letter sets (``set()`` = no motif →
+            never a query, but still a valid non-relevant gallery distractor).
+        occ_ids: length-``N`` list of occurrence-id sets (same-occurrence
+            exclusion key).
+
+    Returns:
+        Mean within-group multi-label AP, or ``float('nan')`` if unscorable.
+    """
+    n = embs.shape[0]
+    if n == 0 or not (len(letters) == len(occ_ids) == n):
+        return float("nan")
+
+    grp = groups.tolist() if isinstance(groups, torch.Tensor) else list(groups)
+    if len(grp) != n:
+        return float("nan")
+
+    # Cosine over L2-normalised rows (fp64 for a stable argsort tie-break).
+    normed = torch.nn.functional.normalize(embs.to(torch.float64), dim=-1)
+    sims = normed @ normed.T  # (N, N)
+
+    aps: list[float] = []
+    for q in range(n):
+        q_letters = letters[q]
+        if not q_letters:
+            continue  # no motif → not a query
+        q_occ = occ_ids[q]
+        q_grp = grp[q]
+        gallery_idx = [
+            w for w in range(n) if w != q and grp[w] == q_grp and not (occ_ids[w] & q_occ)
+        ]
+        if not gallery_idx:
+            continue
+        relevant = torch.tensor(
+            [1.0 if (letters[w] & q_letters) else 0.0 for w in gallery_idx],
+            dtype=torch.float64,
+        )
+        if relevant.sum().item() == 0:
+            continue  # no genuine same-letter recurrence to retrieve
+        g_sims = sims[q, gallery_idx]
+        order = torch.argsort(g_sims, descending=True)
+        rel_ranked = relevant[order]
+        cum_rel = torch.cumsum(rel_ranked, dim=0)
+        ranks = torch.arange(1, rel_ranked.shape[0] + 1, dtype=torch.float64)
+        precision_at_k = cum_rel / ranks
+        ap = float((precision_at_k * rel_ranked).sum().item() / rel_ranked.sum().item())
+        aps.append(ap)
+
+    if not aps:
+        return float("nan")
+    return float(sum(aps) / len(aps))
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Per-condition (cross-instrument / cross-soundfont) MAP
 # ──────────────────────────────────────────────────────────────────────
 
