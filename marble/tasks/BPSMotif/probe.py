@@ -227,9 +227,7 @@ class BPSMotifWithinPieceTask(CoverRetrievalTask):
         )
 
         # ── raw within-group multi-label MAP (the headline) ──────────────────
-        map_raw = compute_within_group_multilabel_map(
-            embs, file_groups, file_letters, file_occ
-        )
+        map_raw = compute_within_group_multilabel_map(embs, file_groups, file_letters, file_occ)
         print(f"[BPSMotifWithinPiece] MAP (raw)      = {map_raw:.4f}")
         self.log("test/map", map_raw, prog_bar=True, rank_zero_only=True)
 
@@ -257,5 +255,276 @@ class BPSMotifWithinPieceTask(CoverRetrievalTask):
         )
         print(
             f"[BPSMotifWithinPiece] Anisotropy: mean_vec_norm={ani['mean_vec_norm']:.3f}  "
+            f"eff_rank={ani['effective_rank']:.1f}"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Whole-piece-context within-piece task
+# ──────────────────────────────────────────────────────────────────────────────
+
+import re  # noqa: E402 — local to the whole-piece block
+
+_VOICE_TAG_RE = re.compile(r"\[V:([^\]]+)\]")
+
+
+def _bar_of_patch_from_texts(patch_texts: list[str]) -> list[int]:
+    """Physical bar number for each patch, from its decoded ABC text.
+
+    Bit-identical port of the leitmotifs canonical kernel
+    (``leitmotifs-symbolic/scripts/diagnostics/annotate_clusters_with_bars.py::
+    _bar_of_patch_from_texts``) so the whole-piece probe's patch→bar mapping
+    matches the dataset assembler's physical-bar axis exactly.
+
+    Bar 0 = header patches (no ``[V:n]`` tag, or before the first one). Bars 1+
+    count from the first ``[V:first_voice]`` occurrence onward; the bar number
+    increments every time another ``[V:first_voice]`` patch is seen. "First voice"
+    is the first voice that appears in patch order (defensive against pieces where
+    V:1 has no content). ``search`` (not ``match``) because the tag often appears
+    mid-patch in the patchilised stream.
+    """
+    first_voice: str | None = None
+    voice_per_patch: list[str | None] = []
+    for t in patch_texts:
+        m = _VOICE_TAG_RE.search(t)
+        v = m.group(1).strip() if m else None
+        voice_per_patch.append(v)
+        if first_voice is None and v is not None:
+            first_voice = v
+
+    bars: list[int] = []
+    bar = 0
+    for voice in voice_per_patch:
+        if voice == first_voice and voice is not None:
+            bar += 1
+        bars.append(bar if voice is not None else 0)
+    return bars
+
+
+class BPSMotifWithinPieceWholeTask(CoverRetrievalTask):
+    """WHOLE-PIECE-CONTEXT within-movement same-motif retrieval on BPS-Motif.
+
+    The whole-piece-context counterpart of :class:`BPSMotifWithinPieceTask`. Both
+    score the SAME metric (``compute_within_group_multilabel_map``) on the SAME
+    windows (same physical-bar spans, labels, occurrence ids). The ONLY difference
+    is the ENCODING:
+
+    * :class:`BPSMotifWithinPieceTask` (clip-isolated): the datamodule tokenises
+      each 4-bar window's OWN ABC slice and the encoder time-avg-pools it — the
+      encoder never sees the rest of the movement. Peaked shallow-mid (≈L4).
+
+    * THIS task (whole-piece): the datamodule yields the WHOLE movement's patches
+      (un-truncated) + the window specs. Per movement we encode the whole ABC ONCE
+      at PER-PATCH resolution (segmenting >512, stitching — the encoder's
+      datamodule cap of 512 would otherwise drop most of a movement), map
+      patches→physical bars, then pool each window's bar-patches → window vectors
+      IN MOVEMENT CONTEXT. This reproduces the leitmotifs whole-piece prototype,
+      which peaked DEEP (≈L8: raw L8≈0.598, L2≈0.498).
+
+    The selected hidden layer (or meanall) is read from the ``LayerSelector`` in
+    ``emb_transforms`` — the standard ``forward`` pipeline is bypassed because it
+    pools patches away; we need the pre-pool per-patch states. ``cache_embeddings``
+    is ignored here (the per-patch whole-movement encode is not the cacheable
+    post-pool ``(L, H)`` tensor).
+
+    Logs ``test/map`` (raw) and ``test/map_centered`` (per-movement centered),
+    identical to the clip-isolated task.
+    """
+
+    # ── layer selection (read off the LayerSelector transform) ──────────────
+    def _selected_layers(self) -> tuple[list[int], str]:
+        """Return ``(layer_indices, mode)`` from the configured LayerSelector.
+
+        ``mode`` is ``"select"`` (single layer in ``layer_indices``) or one of
+        ``"mean"``/``"sum"`` (meanall over ``layer_indices``). Defaults to layer 6
+        if no LayerSelector is present (matches the config default).
+        """
+        from marble.modules.transforms import LayerSelector
+
+        for t in self.emb_transforms:
+            if isinstance(t, LayerSelector):
+                return list(t.layers), t.mode
+        return [6], "select"
+
+    # ── whole-movement per-patch encode (segmenting >512) ───────────────────
+    @torch.no_grad()
+    def _encode_movement_all_hidden(self, patches_full: torch.Tensor) -> torch.Tensor:
+        """One whole movement's patches ``(P, PATCH_SIZE)`` → ``(13, P, H)``.
+
+        Reaches into the symbolic encoder's inner ``BertModel`` to request
+        per-patch ``output_hidden_states=True``, segmenting inputs >``PATCH_LENGTH``
+        (final segment overlaps back) and stitching — mirroring the leitmotifs
+        adapter's ``encode_symbolic_per_patch_all_hidden`` exactly. SEGMENTATION,
+        not truncation: every patch of a 144–1250-patch movement is kept.
+        """
+        import torch.nn.functional as F
+
+        enc = self.encoder
+        cfg = enc.config
+        device = next(enc.model.parameters()).device
+        sym = enc.model.symbolic_model  # M3PatchEncoder
+        bert = sym.base  # HF BertModel
+        patch_embed = sym.patch_embedding  # Linear(PATCH_SIZE*128 → H)
+        pad_id = enc.patchilizer.pad_token_id
+        max_len = cfg.PATCH_LENGTH
+        n_layers = cfg.PATCH_NUM_LAYERS + 1  # 13
+        H = cfg.M3_HIDDEN_SIZE
+
+        total = patches_full.size(0)
+        if total == 0:
+            return torch.zeros((n_layers, 0, H))
+
+        segments = [patches_full[i : i + max_len] for i in range(0, total, max_len)]
+        if len(segments) > 1 and segments[-1].size(0) < max_len:
+            segments[-1] = patches_full[-max_len:]
+
+        per_layer: list[list[torch.Tensor]] = [[] for _ in range(n_layers)]
+        for segment in segments:
+            seg_len = segment.size(0)
+            pad_len = max_len - seg_len
+            mask = F.pad(torch.ones(seg_len, device=device), (0, pad_len), value=0.0)
+            pad_token = torch.full(
+                (pad_len, cfg.PATCH_SIZE), pad_id, dtype=segment.dtype, device=device
+            )
+            seg_padded = torch.cat((segment.to(device), pad_token), dim=0).long()
+
+            oh = F.one_hot(seg_padded, num_classes=128).float()  # (P, PS, 128)
+            flat = oh.reshape(seg_padded.size(0), -1)  # (P, PS*128)
+            emb = patch_embed(flat).unsqueeze(0)  # (1, P, H)
+
+            out = bert(
+                inputs_embeds=emb,
+                attention_mask=mask.unsqueeze(0),
+                output_hidden_states=True,
+            )
+            valid = int(mask.sum().item())
+            for li in range(n_layers):
+                per_layer[li].append(out.hidden_states[li][0, :valid, :].cpu())
+
+        remainder = total % max_len
+        layers: list[torch.Tensor] = []
+        for li in range(n_layers):
+            outs = per_layer[li]
+            if len(outs) > 1 and remainder != 0:
+                outs[-1] = outs[-1][-remainder:]
+            layers.append(torch.cat(outs, dim=0))  # (P, H)
+        return torch.stack(layers, dim=0)  # (13, P, H)
+
+    def _select_layer_feats(self, all_layers: torch.Tensor) -> torch.Tensor:
+        """``(13, P, H)`` → ``(P, H)`` for the configured layer / meanall."""
+        layer_idx, mode = self._selected_layers()
+        if mode in ("mean", "sum") and len(layer_idx) > 1:
+            sel = all_layers[layer_idx]  # (L, P, H)
+            return sel.mean(dim=0) if mode == "mean" else sel.sum(dim=0)
+        return all_layers[layer_idx[0]]  # (P, H)
+
+    # ── test hooks ───────────────────────────────────────────────────────────
+    def on_test_start(self) -> None:
+        self._wp_embeddings: list[torch.Tensor] = []
+        self._wp_groups: list[int] = []
+        self._wp_occ: list[set] = []
+        self._wp_letters: list[set] = []
+
+    def test_step(self, batch, batch_idx):
+        import json
+
+        import torch.nn.functional as F
+
+        from marble.encoders.CLaMP3.clamp3_util import M3Patchilizer
+
+        patchilizer = M3Patchilizer()
+
+        # batch is a python list (identity collate); typically one movement.
+        for item in batch:
+            patches_full, movement_id_int, windows_json, _movement_id = item
+            group = int(movement_id_int)
+            windows = json.loads(windows_json)
+
+            all_layers = self._encode_movement_all_hidden(patches_full)  # (13, P, H)
+            feats = self._select_layer_feats(all_layers)  # (P, H)
+
+            # Decode each patch to its ABC text → physical bar number per patch.
+            patch_texts = [patchilizer.patch2bar(p.tolist()) for p in patches_full]
+            bar_of_patch = _bar_of_patch_from_texts(patch_texts)
+            if len(bar_of_patch) != feats.shape[0]:
+                raise RuntimeError(
+                    f"{_movement_id}: bar map len {len(bar_of_patch)} != "
+                    f"patch feats {feats.shape[0]} (rows misaligned)"
+                )
+
+            # Group patch indices by physical bar (drop header bar 0).
+            bar_to_idx: dict[int, list[int]] = {}
+            for pi, b in enumerate(bar_of_patch):
+                if b > 0:
+                    bar_to_idx.setdefault(b, []).append(pi)
+
+            # Pool each window's bar-patches → one vector per window.
+            for spec in windows:
+                idxs: list[int] = []
+                for b in range(spec["bar_start"], spec["bar_end"] + 1):
+                    idxs.extend(bar_to_idx.get(b, []))
+                if not idxs:
+                    # Window covers only empty/header bars — fall back to the
+                    # whole-movement mean so the window still yields a vector
+                    # (vanishingly rare; keeps the window count aligned).
+                    win_vec = feats.mean(dim=0)
+                else:
+                    win_vec = feats[idxs].mean(dim=0)
+                self._wp_embeddings.append(F.normalize(win_vec, dim=-1))
+                self._wp_groups.append(group)
+                self._wp_occ.append(set(spec["occurrence_ids"]))
+                self._wp_letters.append(set(spec["letters"]))
+
+    def on_test_epoch_end(self) -> None:
+        import torch.nn.functional as F
+
+        from marble.utils.retrieval_metrics import (
+            anisotropy_metrics,
+            compute_within_group_multilabel_map,
+        )
+
+        if not self._wp_embeddings:
+            return
+
+        embs = torch.stack(self._wp_embeddings)  # (N, H), L2-normed
+        file_groups = list(self._wp_groups)
+        file_letters = list(self._wp_letters)
+        file_occ = list(self._wp_occ)
+
+        N = embs.shape[0]
+        n_movements = len(set(file_groups))
+        layer_idx, mode = self._selected_layers()
+        print(
+            f"\n[BPSMotifWithinPieceWhole] Evaluating WHOLE-PIECE-CONTEXT "
+            f"within-movement same-motif MAP over {N} windows "
+            f"({n_movements} movements); layers={layer_idx} mode={mode}."
+        )
+
+        # ── raw within-group multi-label MAP (the headline) ──────────────────
+        map_raw = compute_within_group_multilabel_map(embs, file_groups, file_letters, file_occ)
+        print(f"[BPSMotifWithinPieceWhole] MAP (raw)      = {map_raw:.4f}")
+        self.log("test/map", map_raw, prog_bar=True, rank_zero_only=True)
+
+        # ── per-movement-centered MAP ────────────────────────────────────────
+        groups_t = torch.tensor(file_groups)
+        embs_c = embs.clone()
+        for g in torch.unique(groups_t):
+            mask = groups_t == g
+            embs_c[mask] = embs[mask] - embs[mask].mean(dim=0, keepdim=True)
+        embs_c = F.normalize(embs_c, dim=-1)
+        map_centered = compute_within_group_multilabel_map(
+            embs_c, file_groups, file_letters, file_occ
+        )
+        print(f"[BPSMotifWithinPieceWhole] MAP (centered) = {map_centered:.4f}")
+        self.log("test/map_centered", map_centered, prog_bar=False, rank_zero_only=True)
+
+        # ── anisotropy diagnostics ───────────────────────────────────────────
+        ani = anisotropy_metrics(embs)
+        self.log("test/anisotropy/mean_vec_norm", float(ani["mean_vec_norm"]), rank_zero_only=True)
+        self.log(
+            "test/anisotropy/effective_rank", float(ani["effective_rank"]), rank_zero_only=True
+        )
+        print(
+            f"[BPSMotifWithinPieceWhole] Anisotropy: mean_vec_norm={ani['mean_vec_norm']:.3f}  "
             f"eff_rank={ani['effective_rank']:.1f}"
         )

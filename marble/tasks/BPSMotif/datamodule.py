@@ -546,3 +546,149 @@ class BPSMotifWithinPieceABCDataModule(BaseDataModule):
     """Thin wrapper for the within-piece phrase-window ABC variant."""
 
     pass
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Within-piece WHOLE-PIECE-CONTEXT — ABC input
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# The clip-isolated within-piece task above tokenises each 4-bar window's OWN ABC
+# slice (≈4 patches) — the encoder never sees the rest of the movement. The
+# WHOLE-PIECE task below instead yields the WHOLE-movement ABC patches (NO 512
+# truncation) plus the per-window specs, so BPSMotifWithinPieceWholeTask can
+# encode each movement ONCE (per-patch, segmenting >512), map patches→physical
+# bars, and pool each window's bar-patches IN MOVEMENT CONTEXT. The metric +
+# windows + labels are byte-identical to the clip-isolated task — ONLY the
+# encoding context differs — so the two layer curves are directly comparable.
+#
+# Built offline by `build_bps_motif_within_piece.py --whole`. Each JSONL row is
+# one MOVEMENT: {movement_id, abc(whole 2-voice movement), max_bar,
+# windows:[{window_id, bar_start, bar_end, letters, occurrence_ids, n_bars}]}.
+#
+# CRITICAL: the per-item patches must NOT be truncated to 512 (movements run
+# 144–1250 patches; truncating would silently drop windows). So this dataset
+# does its OWN un-capped tokenisation (NO `max_patches` slice, NO padding) and
+# yields a variable-length patch tensor + a JSON window-spec string. A custom
+# collate keeps items as a python list (no stacking of ragged movements).
+
+
+def _whole_collate(batch: list) -> list:
+    """Identity collate — keep ragged whole-movement items as a python list.
+
+    Whole movements have wildly different patch counts (144–1250), so the default
+    stacking collate would fail. The probe iterates the list and encodes each
+    movement separately. batch_size is therefore effectively 1-at-a-time inside
+    the probe regardless of the loader's batch_size.
+    """
+    return batch
+
+
+class _BPSMotifWithinPieceWholeABCBase(_BPSMotifABCMixin, _BPSMotifSymbolicBase):
+    """Yields one WHOLE-movement item for the whole-piece-context probe.
+
+    Returns ``(patches_full, movement_id_int, windows_json, movement_id_str)``:
+
+    * ``patches_full`` — the WHOLE movement's patches, shape ``(P, PATCH_SIZE)``,
+      UN-truncated and UN-padded (``P`` may exceed 512). Tokenised with
+      ``add_special_patches=True`` then the BOS/EOS bookends stripped so the row
+      index space matches the bar map (identical to the leitmotifs adapter's
+      ``symbolic_patches_with_text``).
+    * ``movement_id_int`` — stable sha1-hash int (the gallery group key, shared
+      with the clip-isolated task via ``_movement_group_id``).
+    * ``windows_json`` — JSON string of the row's ``windows`` list (rides default
+      collation as a plain str; the probe parses it). Each spec carries
+      ``bar_start``/``bar_end``/``letters``/``occurrence_ids``/``window_id``.
+    * ``movement_id_str`` — the raw movement id (for logging / clip keys).
+    """
+
+    JSONL_TEMPLATE: str = ""  # set by subclass
+
+    def __init__(self, split: str = "test", max_patches=None, jsonl_template=None):
+        super().__init__(
+            jsonl_template=jsonl_template or self.JSONL_TEMPLATE,
+            split=split,
+            fold_idx=0,
+            max_patches=max_patches,
+        )
+
+    def _tokenise_abc_full(self, abc: str) -> torch.Tensor:
+        """Whole-movement ABC → UN-truncated ``(P, PATCH_SIZE)`` patch tensor.
+
+        Unlike ``_tokenise_abc`` this does NOT cap at ``max_patches`` and does NOT
+        pad — the probe segments >512 itself. BOS/EOS bookends added by
+        ``add_special_patches=True`` are stripped so row 0 == first content patch,
+        matching ``_bar_of_patch_from_texts``' patch index space.
+        """
+        patches_list = self.patchilizer.encode(
+            abc, patch_size=self.patch_size, add_special_patches=True
+        )
+        if len(patches_list) < 3:
+            raise ValueError("Whole-movement ABC produced no non-special patches.")
+        patches_list = patches_list[1:-1]  # drop BOS/EOS
+        return torch.tensor(patches_list, dtype=torch.long)
+
+    def __getitem__(self, idx: int):
+        import json
+
+        entry = self.meta[idx]
+        patches_full = self._tokenise_abc_full(entry["abc"])
+        movement_id_int = _movement_group_id(entry["movement_id"])
+        windows_json = json.dumps(entry["windows"])
+        return (
+            patches_full,
+            torch.tensor(movement_id_int, dtype=torch.long),
+            windows_json,
+            entry["movement_id"],
+        )
+
+
+class BPSMotifWithinPieceWholeN4ABCTest(_BPSMotifWithinPieceWholeABCBase):
+    """Whole-piece-context N=4 phrase-window test split (zero-shot)."""
+
+    JSONL_TEMPLATE = "data/BPS-Motif/BPSMotifWithinPieceWhole.N4.ABC.jsonl"
+
+    def __init__(self, **kwargs):
+        kwargs["split"] = "test"
+        super().__init__(**kwargs)
+
+
+class BPSMotifWithinPieceWholeN4ABCDummy(_BPSMotifWithinPieceWholeABCBase):
+    """Placeholder for the max_epochs=0 train/val dataloaders (fit is a no-op)."""
+
+    JSONL_TEMPLATE = "data/BPS-Motif/BPSMotifWithinPieceWhole.N4.ABC.jsonl"
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("split", "test")
+        super().__init__(**kwargs)
+
+
+class BPSMotifWithinPieceWholeABCDataModule(BaseDataModule):
+    """Thin wrapper for the whole-piece-context within-piece ABC variant.
+
+    Overrides the dataloaders to use the ragged-list identity collate at
+    ``batch_size=1``: whole movements have wildly different patch counts
+    (144–1250) so the default stacking collate would fail, and the probe encodes
+    each movement separately anyway. ``num_workers=0`` keeps the CLaMP3
+    patchilizer init (lazy-imported in ``_BPSMotifSymbolicBase.__init__``) in the
+    main process and avoids re-pickling the big patch tensors across workers.
+    """
+
+    def _whole_loader(self, dataset):
+        from torch.utils.data import DataLoader
+
+        return DataLoader(
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=0,
+            collate_fn=_whole_collate,
+        )
+
+    def train_dataloader(self):
+        return self._whole_loader(self.train_dataset)
+
+    def val_dataloader(self):
+        return self._whole_loader(self.val_dataset)
+
+    def test_dataloader(self):
+        return self._whole_loader(self.test_dataset)

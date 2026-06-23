@@ -367,12 +367,30 @@ def assemble_movement(
     movement_id: str,
     window: int,
     stride: int,
+    whole: bool = False,
 ) -> tuple[list[dict], dict]:
     """Assemble one movement → list of window rows + a per-movement stat dict.
 
-    Returns ``(rows, stat)``. ``rows`` is a list of JSONL dicts (one per window);
-    ``stat`` carries the per-movement provenance (max bar, n_windows, V1/V2
-    parity, exclusion reason if the movement was dropped).
+    Returns ``(rows, stat)``. ``stat`` carries the per-movement provenance (max
+    bar, n_windows, V1/V2 parity, exclusion reason if the movement was dropped).
+
+    Two emission modes share the SAME assembler (same physical-bar axis, same
+    windows / labels / occurrence ids), differing ONLY in what each JSONL row
+    carries — so the clip-isolated and whole-piece-context encodings are measured
+    on identical windows + metric and differ purely in the encoder's context:
+
+    * ``whole=False`` (clip-isolated, default): ``rows`` is one dict PER WINDOW,
+      each carrying the window's OWN ``abc`` slice (``[bar_start, bar_end]``). The
+      datamodule tokenises that short slice in isolation → the encoder sees the
+      4-bar clip only. This is the existing ``BPSMotifWithinPieceN4`` task.
+
+    * ``whole=True`` (whole-piece-context): ``rows`` is a SINGLE dict for the
+      whole MOVEMENT, carrying the WHOLE-movement ``abc`` plus a ``windows`` list
+      of ``{bar_start, bar_end, letters, occurrence_ids, n_bars}`` specs. The
+      whole-piece probe encodes the whole movement once (per-patch, segmented
+      >512), maps patches→bars, and pools each window's bar-patches — so every
+      window is encoded IN MOVEMENT CONTEXT. This is the new
+      ``BPSMotifWithinPieceWholeN4`` task.
     """
     notes = parse_notes_csv(notes_csv)
     labels = parse_label_csv(label_csv)
@@ -433,32 +451,80 @@ def assemble_movement(
         occurrences.append({"letter": r["letter"], "bars": bars, "occ_id": occ_id})
 
     spans = _window_spans(max_bar, window, stride)
-    rows: list[dict] = []
-    n_v1 = 0
-    n_v2 = 0
     abc_failures: list[str] = []
+
+    # Build the per-window specs once (shared by both emission modes): the
+    # window's physical bar range, the union of its bars' motif letters, and the
+    # occurrence ids whose physical bars intersect the window. Identical to the
+    # clip-isolated path so the two encodings are scored on the same windows.
+    window_specs: list[dict] = []
     for bar_start, bar_end in spans:
-        abc = _window_abc_from_bars(header, bar_lines, bar_start, bar_end)
-        has_v1 = "[V:1]" in abc
-        has_v2 = "[V:2]" in abc
-        n_v1 += int(has_v1)
-        n_v2 += int(has_v2)
         win_bars = set(range(bar_start, bar_end + 1))
         letters: set[str] = set()
         for b in win_bars:
             letters |= bar_letters.get(b, set())
         occ_ids = sorted(o["occ_id"] for o in occurrences if o["bars"] & win_bars)
-        window_id = f"{movement_id}:w{bar_start:04d}-{bar_end:04d}"
-        rows.append(
+        window_specs.append(
             {
-                "movement_id": movement_id,
-                "window_id": window_id,
+                "window_id": f"{movement_id}:w{bar_start:04d}-{bar_end:04d}",
                 "bar_start": bar_start,
                 "bar_end": bar_end,
-                "abc": abc,
                 "letters": sorted(letters),
                 "occurrence_ids": occ_ids,
                 "n_bars": bar_end - bar_start + 1,
+            }
+        )
+
+    if whole:
+        # ── whole-piece-context: ONE movement-level row ──────────────────────
+        # Carries the WHOLE-movement ABC plus the window specs. The whole-piece
+        # probe encodes this ABC once (per-patch, segmenting >512), maps
+        # patches→bars, and pools each window's bar-patches IN CONTEXT.
+        movement_abc_full = "\n".join(header + bar_lines) + "\n"
+        has_v1 = "[V:1]" in movement_abc_full
+        has_v2 = "[V:2]" in movement_abc_full
+        rows = [
+            {
+                "movement_id": movement_id,
+                "abc": movement_abc_full,
+                "max_bar": max_bar,
+                "windows": window_specs,
+                "split": "test",
+            }
+        ]
+        stat = {
+            "movement_id": movement_id,
+            "built": True,
+            "ts": ts,
+            "max_bar": max_bar,
+            "n_windows": len(window_specs),
+            "n_windows_with_v1": len(window_specs) if has_v1 else 0,
+            "n_windows_with_v2": len(window_specs) if has_v2 else 0,
+            "n_occurrences": len(occurrences),
+            "n_labelled_bars": len(bar_letters),
+            "abc_failures": abc_failures,
+            "whole": True,
+        }
+        return rows, stat
+
+    # ── clip-isolated: ONE row PER WINDOW (each carries its own ABC slice) ────
+    rows: list[dict] = []
+    n_v1 = 0
+    n_v2 = 0
+    for spec in window_specs:
+        abc = _window_abc_from_bars(header, bar_lines, spec["bar_start"], spec["bar_end"])
+        n_v1 += int("[V:1]" in abc)
+        n_v2 += int("[V:2]" in abc)
+        rows.append(
+            {
+                "movement_id": movement_id,
+                "window_id": spec["window_id"],
+                "bar_start": spec["bar_start"],
+                "bar_end": spec["bar_end"],
+                "abc": abc,
+                "letters": spec["letters"],
+                "occurrence_ids": spec["occurrence_ids"],
+                "n_bars": spec["n_bars"],
                 "split": "test",
             }
         )
@@ -493,7 +559,7 @@ def _worker_init() -> None:
 
 
 def _build_one(job: tuple) -> tuple:
-    upstream_s, movement_id, window, stride = job
+    upstream_s, movement_id, window, stride, whole = job
     _worker_init()
     upstream = Path(upstream_s)
     rows, stat = assemble_movement(
@@ -503,6 +569,7 @@ def _build_one(job: tuple) -> tuple:
         movement_id,
         window,
         stride,
+        whole=whole,
     )
     return movement_id, rows, stat
 
@@ -515,12 +582,20 @@ def _list_movements(upstream: Path) -> list[str]:
     return sorted(p.stem for p in notes_dir.glob("*.csv"))
 
 
-def build(out_dir: Path, upstream: Path, window: int, stride: int, workers: int) -> dict:
+def build(
+    out_dir: Path,
+    upstream: Path,
+    window: int,
+    stride: int,
+    workers: int,
+    whole: bool = False,
+) -> dict:
     movements = _list_movements(upstream)
-    jobs = [(str(upstream), mov, window, stride) for mov in movements]
+    jobs = [(str(upstream), mov, window, stride, whole) for mov in movements]
 
     print(
-        f"[build] {len(movements)} movements; window={window} stride={stride} workers={workers}",
+        f"[build] {len(movements)} movements; window={window} stride={stride} "
+        f"whole={whole} workers={workers}",
         file=sys.stderr,
         flush=True,
     )
@@ -563,26 +638,36 @@ def build(out_dir: Path, upstream: Path, window: int, stride: int, workers: int)
             excluded.append({"movement_id": stat["movement_id"], "reason": stat.get("reason")})
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    jsonl_path = out_dir / f"BPSMotifWithinPiece.N{window}.ABC.jsonl"
+    tag = "Whole" if whole else ""
+    jsonl_path = out_dir / f"BPSMotifWithinPiece{tag}.N{window}.ABC.jsonl"
     with jsonl_path.open("w") as fh:
         for rec in all_rows:
             fh.write(json.dumps(rec) + "\n")
 
+    # In whole mode rows are per-MOVEMENT; the window total comes from the
+    # per-movement ``n_windows`` stat. In clip mode rows ARE windows.
+    total_windows = (
+        sum(s.get("n_windows", 0) for s in per_movement if s.get("built"))
+        if whole
+        else len(all_rows)
+    )
     stats = {
+        "whole": whole,
         "window": window,
         "stride": stride,
         "movements_total": len(movements),
         "movements_built": built,
         "movements_excluded": len(movements) - built,
-        "total_windows": len(all_rows),
+        "n_rows": len(all_rows),
+        "total_windows": total_windows,
         "windows_with_v1": total_v1,
         "windows_with_v2": total_v2,
-        "v1_v2_parity_ok": total_v1 == total_v2 == len(all_rows),
+        "v1_v2_parity_ok": total_v1 == total_v2 == total_windows,
         "jsonl_path": str(jsonl_path),
         "excluded_detail": excluded,
         "per_movement": per_movement,
     }
-    stats_path = out_dir / f"BPSMotifWithinPiece.N{window}.ABC.stats.json"
+    stats_path = out_dir / f"BPSMotifWithinPiece{tag}.N{window}.ABC.stats.json"
     stats_path.write_text(json.dumps(stats, indent=2))
     return stats
 
@@ -607,6 +692,13 @@ def main() -> None:
         default=None,
         help="Parallel worker processes (default: os.cpu_count() − 1).",
     )
+    ap.add_argument(
+        "--whole",
+        action="store_true",
+        help="Emit one WHOLE-movement row (abc + windows[] specs) instead of one "
+        "row per window — for the whole-piece-context probe "
+        "(BPSMotifWithinPieceWholeN4). Output: BPSMotifWithinPieceWhole.N{N}.ABC.jsonl",
+    )
     args = ap.parse_args()
 
     upstream = Path(args.upstream_dir)
@@ -615,7 +707,7 @@ def main() -> None:
         sys.exit(1)
 
     workers = args.workers if args.workers is not None else max(1, (os.cpu_count() or 2) - 1)
-    stats = build(Path(args.out_dir), upstream, args.window, args.stride, workers)
+    stats = build(Path(args.out_dir), upstream, args.window, args.stride, workers, whole=args.whole)
     # Print a compact provenance summary (full per-movement detail is in the
     # stats.json next to the JSONL).
     summary = {k: v for k, v in stats.items() if k not in ("per_movement", "excluded_detail")}
