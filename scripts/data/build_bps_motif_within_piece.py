@@ -67,6 +67,7 @@ import csv
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -360,37 +361,25 @@ def _window_spans(max_bar: int, window: int, stride: int) -> list[tuple[int, int
     return [(s, s + window - 1) for s in range(1, max_bar - window + 2, stride)]
 
 
-def assemble_movement(
+def assemble_movement_core(
     notes_csv: Path,
     label_csv: Path,
     pickup_csv: Path,
     movement_id: str,
-    window: int,
-    stride: int,
-    whole: bool = False,
-) -> tuple[list[dict], dict]:
-    """Assemble one movement → list of window rows + a per-movement stat dict.
+) -> tuple[dict | None, dict | None]:
+    """Window-INDEPENDENT per-movement assembly (the expensive part).
 
-    Returns ``(rows, stat)``. ``stat`` carries the per-movement provenance (max
-    bar, n_windows, V1/V2 parity, exclusion reason if the movement was dropped).
+    Does everything that does NOT depend on the window size: parse the note/label
+    CSVs, build the music21 movement score, derive bar→letters + physical bar
+    count, convert the WHOLE movement to interleaved ABC ONCE (``score_to_abc``),
+    split it into header + bar lines, and build the occurrence bar-sets. The
+    window-size sweep re-uses this prepared core for EVERY window N, so the heavy
+    CSV/score/ABC work is done once per movement instead of once per (movement,
+    window) — the source of the per-build redundancy.
 
-    Two emission modes share the SAME assembler (same physical-bar axis, same
-    windows / labels / occurrence ids), differing ONLY in what each JSONL row
-    carries — so the clip-isolated and whole-piece-context encodings are measured
-    on identical windows + metric and differ purely in the encoder's context:
-
-    * ``whole=False`` (clip-isolated, default): ``rows`` is one dict PER WINDOW,
-      each carrying the window's OWN ``abc`` slice (``[bar_start, bar_end]``). The
-      datamodule tokenises that short slice in isolation → the encoder sees the
-      4-bar clip only. This is the existing ``BPSMotifWithinPieceN4`` task.
-
-    * ``whole=True`` (whole-piece-context): ``rows`` is a SINGLE dict for the
-      whole MOVEMENT, carrying the WHOLE-movement ``abc`` plus a ``windows`` list
-      of ``{bar_start, bar_end, letters, occurrence_ids, n_bars}`` specs. The
-      whole-piece probe encodes the whole movement once (per-patch, segmented
-      >512), maps patches→bars, and pools each window's bar-patches — so every
-      window is encoded IN MOVEMENT CONTEXT. This is the new
-      ``BPSMotifWithinPieceWholeN4`` task.
+    Returns ``(prepared, None)`` on success (``prepared`` carries header,
+    bar_lines, bar_letters, max_bar, occurrences, ts) or ``(None, fail_stat)`` if
+    the movement is dropped (same drop reasons + stat shape as before).
     """
     notes = parse_notes_csv(notes_csv)
     labels = parse_label_csv(label_csv)
@@ -399,7 +388,7 @@ def assemble_movement(
     try:
         score, part0 = build_movement_score(notes, ts)
     except Exception as e:  # noqa: BLE001
-        return [], {
+        return None, {
             "movement_id": movement_id,
             "built": False,
             "reason": f"score build failed: {type(e).__name__}: {e}",
@@ -408,7 +397,7 @@ def assemble_movement(
     bar_letters = bar_letters_from_part(part0)
     max_bar = max((m.measureNumber for m in part0.getElementsByClass("Measure")), default=0)
     if max_bar <= 0:
-        return [], {
+        return None, {
             "movement_id": movement_id,
             "built": False,
             "reason": "no physical measures after makeMeasures",
@@ -423,7 +412,7 @@ def assemble_movement(
     try:
         movement_abc = score_to_abc(score)
     except Exception as e:  # noqa: BLE001
-        return [], {
+        return None, {
             "movement_id": movement_id,
             "built": False,
             "reason": f"whole-movement score_to_abc failed: {type(e).__name__}: {e}",
@@ -433,7 +422,7 @@ def assemble_movement(
     # whole-movement approach relies on). If it ever diverges, drop the movement
     # rather than silently misalign labels to bars.
     if len(bar_lines) != max_bar:
-        return [], {
+        return None, {
             "movement_id": movement_id,
             "built": False,
             "reason": (
@@ -449,6 +438,38 @@ def assemble_movement(
             continue
         occ_id = f"{movement_id}:{r['letter']}:{r['start_beat']}"
         occurrences.append({"letter": r["letter"], "bars": bars, "occ_id": occ_id})
+
+    prepared = {
+        "header": header,
+        "bar_lines": bar_lines,
+        "bar_letters": bar_letters,
+        "max_bar": max_bar,
+        "occurrences": occurrences,
+        "ts": ts,
+    }
+    return prepared, None
+
+
+def emit_movement_windows(
+    prepared: dict,
+    movement_id: str,
+    window: int,
+    stride: int,
+    whole: bool = False,
+) -> tuple[list[dict], dict]:
+    """Window-DEPENDENT emission (cheap) from a prepared core → ``(rows, stat)``.
+
+    Slices the prepared movement into ``window``-bar phrase windows and emits the
+    JSONL rows + per-movement stat — byte-identical to what the monolithic
+    ``assemble_movement`` produced for the same (movement, window, whole), since
+    it runs the exact same slicing/spec/row code on the same prepared inputs.
+    """
+    header = prepared["header"]
+    bar_lines = prepared["bar_lines"]
+    bar_letters = prepared["bar_letters"]
+    max_bar = prepared["max_bar"]
+    occurrences = prepared["occurrences"]
+    ts = prepared["ts"]
 
     spans = _window_spans(max_bar, window, stride)
     abc_failures: list[str] = []
@@ -544,6 +565,35 @@ def assemble_movement(
     return rows, stat
 
 
+def assemble_movement(
+    notes_csv: Path,
+    label_csv: Path,
+    pickup_csv: Path,
+    movement_id: str,
+    window: int,
+    stride: int,
+    whole: bool = False,
+) -> tuple[list[dict], dict]:
+    """Assemble one movement → list of window rows + a per-movement stat dict.
+
+    Thin composition of :func:`assemble_movement_core` (the window-independent
+    expensive work) and :func:`emit_movement_windows` (the cheap per-window
+    slicing) — kept as the single-window entry point so existing callers and
+    outputs are unchanged. The multi-window build path calls the core ONCE and
+    ``emit_movement_windows`` per window to avoid re-doing the core per N.
+
+    Two emission modes share the SAME assembler (same physical-bar axis, same
+    windows / labels / occurrence ids), differing ONLY in what each JSONL row
+    carries — clip-isolated (``whole=False``, one row per window with its own ABC
+    slice) vs whole-piece-context (``whole=True``, one movement row + window
+    specs).
+    """
+    prepared, fail = assemble_movement_core(notes_csv, label_csv, pickup_csv, movement_id)
+    if prepared is None:
+        return [], fail
+    return emit_movement_windows(prepared, movement_id, window, stride, whole)
+
+
 # ── parallel worker ──────────────────────────────────────────────────────────
 
 _WORKER_READY = False
@@ -582,37 +632,84 @@ def _list_movements(upstream: Path) -> list[str]:
     return sorted(p.stem for p in notes_dir.glob("*.csv"))
 
 
-def build(
-    out_dir: Path,
-    upstream: Path,
-    window: int,
-    stride: int,
+def _run_movement_jobs(
+    worker_fn,
+    jobs: list[tuple],
     workers: int,
-    whole: bool = False,
-) -> dict:
-    movements = _list_movements(upstream)
-    jobs = [(str(upstream), mov, window, stride, whole) for mov in movements]
+    *,
+    label: str = "",
+    progress_path: Path | None = None,
+) -> list[tuple]:
+    """Map ``worker_fn`` over per-movement ``jobs`` (process pool or serial).
 
-    print(
-        f"[build] {len(movements)} movements; window={window} stride={stride} "
-        f"whole={whole} workers={workers}",
-        file=sys.stderr,
-        flush=True,
-    )
-
+    Emits live progress as movements COMPLETE — a ``[build] label k/N (p%) …``
+    heartbeat to stderr (visible in the run log) and, if ``progress_path`` is
+    given, a ``progress.json`` ({done,total,pct,label,elapsed_s,eta_s,ts}) rewritten
+    each completion so a remote watcher can poll a single file. Results are
+    returned unordered-by-completion; the caller sorts by movement id, so using
+    ``as_completed`` for snappy progress is safe.
+    """
+    total = len(jobs)
     results: list[tuple] = []
+    start = time.time()
+
+    def _emit(done: int) -> None:
+        elapsed = time.time() - start
+        pct = (100 * done // total) if total else 100
+        eta = (elapsed / done * (total - done)) if done else 0.0
+        print(
+            f"[build] {label}{done}/{total} movements ({pct}%) "
+            f"elapsed={elapsed:.0f}s eta={eta:.0f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+        if progress_path is not None:
+            try:
+                progress_path.parent.mkdir(parents=True, exist_ok=True)
+                progress_path.write_text(
+                    json.dumps(
+                        {
+                            "label": label.strip(),
+                            "done": done,
+                            "total": total,
+                            "pct": pct,
+                            "elapsed_s": round(elapsed, 1),
+                            "eta_s": round(eta, 1),
+                            "ts": time.time(),
+                        }
+                    )
+                )
+            except OSError:
+                pass  # progress is best-effort; never fail a build over it
+
     if workers <= 1:
         _worker_init()
         for j in jobs:
-            results.append(_build_one(j))
+            results.append(worker_fn(j))
+            _emit(len(results))
     else:
-        from concurrent.futures import ProcessPoolExecutor
+        from concurrent.futures import ProcessPoolExecutor, as_completed
 
         with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as ex:
-            for res in ex.map(_build_one, jobs):
-                results.append(res)
+            futs = [ex.submit(worker_fn, j) for j in jobs]
+            for fut in as_completed(futs):
+                results.append(fut.result())
+                _emit(len(results))
+    return results
 
-    results.sort(key=lambda r: r[0])
+
+def _aggregate_and_write(
+    out_dir: Path,
+    window: int,
+    stride: int,
+    whole: bool,
+    results: list[tuple],
+    movements_total: int,
+) -> dict:
+    """Aggregate per-movement ``(mov, rows, stat)`` for ONE (window, whole) and
+    write its JSONL + stats.json. Shared by ``build`` (single window) and
+    ``build_multi`` (one-pass many windows) so both emit byte-identical files."""
+    results = sorted(results, key=lambda r: r[0])
     all_rows: list[dict] = []
     per_movement: list[dict] = []
     built = 0
@@ -655,9 +752,9 @@ def build(
         "whole": whole,
         "window": window,
         "stride": stride,
-        "movements_total": len(movements),
+        "movements_total": movements_total,
         "movements_built": built,
-        "movements_excluded": len(movements) - built,
+        "movements_excluded": movements_total - built,
         "n_rows": len(all_rows),
         "total_windows": total_windows,
         "windows_with_v1": total_v1,
@@ -672,6 +769,109 @@ def build(
     return stats
 
 
+def build(
+    out_dir: Path,
+    upstream: Path,
+    window: int,
+    stride: int,
+    workers: int,
+    whole: bool = False,
+) -> dict:
+    """Single-window build (unchanged behaviour + output)."""
+    movements = _list_movements(upstream)
+    jobs = [(str(upstream), mov, window, stride, whole) for mov in movements]
+    print(
+        f"[build] {len(movements)} movements; window={window} stride={stride} "
+        f"whole={whole} workers={workers}",
+        file=sys.stderr,
+        flush=True,
+    )
+    tag = "whole" if whole else "clip"
+    results = _run_movement_jobs(
+        _build_one,
+        jobs,
+        workers,
+        label=f"N{window}-{tag} ",
+        progress_path=out_dir / f"_progress.{tag}.N{window}.json",
+    )
+    return _aggregate_and_write(out_dir, window, stride, whole, results, len(movements))
+
+
+def _build_one_multi(job: tuple) -> tuple:
+    """Worker: assemble the movement CORE once, then emit every (window, arm).
+
+    Returns ``(movement_id, {(window, whole): (rows, stat)})``. The expensive core
+    (CSV parse + music21 score + whole-movement score_to_abc) runs ONCE per
+    movement; each (window, whole) is a cheap re-slice of the prepared core."""
+    upstream_s, movement_id, windows, stride, arms = job
+    _worker_init()
+    upstream = Path(upstream_s)
+    prepared, fail = assemble_movement_core(
+        upstream / "csv_notes" / f"{movement_id}.csv",
+        upstream / "csv_label" / f"{movement_id}.csv",
+        upstream / "pickup.csv",
+        movement_id,
+    )
+    out: dict[tuple, tuple] = {}
+    for window in windows:
+        for whole in arms:
+            if prepared is None:
+                out[(window, whole)] = ([], fail)
+            else:
+                out[(window, whole)] = emit_movement_windows(
+                    prepared, movement_id, window, stride, whole
+                )
+    return movement_id, out
+
+
+def build_multi(
+    out_dir: Path,
+    upstream: Path,
+    windows: list[int],
+    stride: int,
+    workers: int,
+    arms: list[bool],
+) -> dict:
+    """One-pass build of MANY window sizes (and/or both arms).
+
+    Assembles each movement's core ONCE and emits all (window, arm) combinations,
+    avoiding the per-build CSV/score/ABC redundancy of repeated single-window
+    builds. ``arms`` is a list of whole-flags: ``[False]`` clip, ``[True]`` whole,
+    ``[False, True]`` both. Each (window, arm) is written to the SAME path the
+    single-window build uses, byte-identical."""
+    movements = _list_movements(upstream)
+    jobs = [(str(upstream), mov, windows, stride, arms) for mov in movements]
+    print(
+        f"[build] ONE-PASS {len(movements)} movements; windows={windows} "
+        f"arms={'+'.join('whole' if a else 'clip' for a in arms)} "
+        f"stride={stride} workers={workers}",
+        file=sys.stderr,
+        flush=True,
+    )
+    results = _run_movement_jobs(
+        _build_one_multi,
+        jobs,
+        workers,
+        label=f"multi-{len(windows)}win-{len(arms)}arm ",
+        progress_path=out_dir / "_progress.multi.json",
+    )
+    all_stats: dict[str, dict] = {}
+    for window in windows:
+        for whole in arms:
+            combo = [(mov, *res[(window, whole)]) for mov, res in results]
+            stats = _aggregate_and_write(out_dir, window, stride, whole, combo, len(movements))
+            tag = "Whole" if whole else ""
+            key = f"BPSMotifWithinPiece{tag}.N{window}"
+            all_stats[key] = stats
+            print(
+                f"[build]   wrote {key}: built={stats['movements_built']} "
+                f"rows={stats['n_rows']} parity_ok={stats['v1_v2_parity_ok']}",
+                file=sys.stderr,
+                flush=True,
+            )
+    return all_stats
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -684,7 +884,16 @@ def main() -> None:
         "data/kern_sources/BPS-Motif/beethoven_motif_csv checkout.",
     )
     ap.add_argument("--out-dir", default="data/BPS-Motif")
-    ap.add_argument("--window", type=int, required=True, help="phrase-window bars (N)")
+    win = ap.add_mutually_exclusive_group(required=True)
+    win.add_argument("--window", type=int, help="ONE phrase-window size (bars).")
+    win.add_argument(
+        "--windows",
+        type=int,
+        nargs="+",
+        help="MANY window sizes in ONE pass (e.g. 1 2 3 4 6 8 12 16 24 32). Each "
+        "movement's expensive core (CSV/score/ABC) is assembled ONCE and re-sliced "
+        "per window — far faster than repeated single --window builds.",
+    )
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument(
         "--workers",
@@ -696,8 +905,14 @@ def main() -> None:
         "--whole",
         action="store_true",
         help="Emit one WHOLE-movement row (abc + windows[] specs) instead of one "
-        "row per window — for the whole-piece-context probe "
-        "(BPSMotifWithinPieceWholeN4). Output: BPSMotifWithinPieceWhole.N{N}.ABC.jsonl",
+        "row per window — for the whole-piece-context probe. Output: "
+        "BPSMotifWithinPieceWhole.N{N}.ABC.jsonl",
+    )
+    ap.add_argument(
+        "--both",
+        action="store_true",
+        help="Emit BOTH the clip-isolated AND whole-piece arms in the same pass "
+        "(only with --windows; the core is shared across arms too).",
     )
     args = ap.parse_args()
 
@@ -705,9 +920,24 @@ def main() -> None:
     if not (upstream / "csv_notes").is_dir():
         print(f"ERROR: csv_notes/ not found under {upstream}", file=sys.stderr)
         sys.exit(1)
+    if args.both and args.windows is None:
+        print("ERROR: --both requires --windows (the one-pass path).", file=sys.stderr)
+        sys.exit(1)
 
     workers = args.workers if args.workers is not None else max(1, (os.cpu_count() or 2) - 1)
-    stats = build(Path(args.out_dir), upstream, args.window, args.stride, workers, whole=args.whole)
+    out_dir = Path(args.out_dir)
+
+    if args.windows is not None:
+        arms = [False, True] if args.both else ([True] if args.whole else [False])
+        all_stats = build_multi(out_dir, upstream, args.windows, args.stride, workers, arms)
+        summary = {
+            key: {k: v for k, v in st.items() if k not in ("per_movement", "excluded_detail")}
+            for key, st in all_stats.items()
+        }
+        print(json.dumps(summary, indent=2))
+        return
+
+    stats = build(out_dir, upstream, args.window, args.stride, workers, whole=args.whole)
     # Print a compact provenance summary (full per-movement detail is in the
     # stats.json next to the JSONL).
     summary = {k: v for k, v in stats.items() if k not in ("per_movement", "excluded_detail")}
