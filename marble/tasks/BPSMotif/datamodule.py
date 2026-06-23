@@ -542,6 +542,47 @@ class BPSMotifWithinPieceN4ABCDummy(_BPSMotifWithinPieceABCBase):
         super().__init__(**kwargs)
 
 
+# ── Generic, N-parameterised within-piece datasets (window-size sweep) ─────────
+#
+# The N4 classes above hardcode the JSONL path so the original task needed no
+# init args. The window-size breaking-point sweep scores MANY N at once, so we
+# need ONE generic class that takes the JSONL path as an init arg and per-N
+# config files that differ ONLY in that path (+ wandb group / save_dir / task
+# tag). Per-N YAMLs supply ``jsonl_template`` via ``data.init_args.test.init_args``
+# — which LightningCLI instantiates natively from the nested ``init_args`` block
+# (this DOES propagate, unlike a ``--data.init_args.test.init_args.jsonl_template``
+# CLI override, which silently no-ops). ``jsonl_template`` is the FULL path to the
+# window's JSONL (no ``{fold}`` placeholder — within-piece is single-pool, fold 0);
+# the inherited ``_BPSMotifSymbolicBase.__init__`` calls ``.format(fold=0, split=...)``
+# which is a no-op on a path that contains no braces.
+
+
+class BPSMotifWithinPieceABCTest(_BPSMotifWithinPieceABCBase):
+    """Generic within-piece phrase-window test split — JSONL path via init arg.
+
+    ``jsonl_template`` (required) is the path to the window-size's JSONL, e.g.
+    ``data/BPS-Motif/BPSMotifWithinPiece.N8.ABC.jsonl``. Supply it from the
+    per-N config under ``data.init_args.test.init_args.jsonl_template``.
+    """
+
+    def __init__(self, jsonl_template: str, **kwargs):
+        kwargs["split"] = "test"
+        super().__init__(jsonl_template=jsonl_template, **kwargs)
+
+
+class BPSMotifWithinPieceABCDummy(_BPSMotifWithinPieceABCBase):
+    """Generic placeholder for the max_epochs=0 train/val dataloaders.
+
+    Points at the same JSONL as the test split but is never iterated when
+    ``max_epochs=0`` (fit is a no-op). Takes ``jsonl_template`` so the config's
+    train/val/test all resolve through the same generic class.
+    """
+
+    def __init__(self, jsonl_template: str, **kwargs):
+        kwargs.setdefault("split", "test")
+        super().__init__(jsonl_template=jsonl_template, **kwargs)
+
+
 class BPSMotifWithinPieceABCDataModule(BaseDataModule):
     """Thin wrapper for the within-piece phrase-window ABC variant."""
 

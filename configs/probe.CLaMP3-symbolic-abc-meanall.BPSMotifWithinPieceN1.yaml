@@ -1,0 +1,83 @@
+seed_everything: 1234
+ckpt_path: null
+
+# BPS-Motif WITHIN-PIECE phrase-window same-motif retrieval — CLaMP3 symbolic
+# meanall, ABC INPUT.
+#
+# Mean-of-all-13-layers baseline for the within-piece N=4-bar phrase-window task
+# (see the per-layer sibling probe.CLaMP3-symbolic-abc-layers.BPSMotifWithinPieceN1.yaml
+# for the full task description). Multi-label + per-movement-gallery +
+# same-occurrence-excluded MAP via BPSMotifWithinPieceTask; test/map is the
+# headline. Zero-shot (max_epochs=0). wandb group
+# `CLaMP3-symbolic-abc / BPSMotifWithinPieceN1` (shared with the per-layer
+# sweep); save_dir carries the within-piece meanall tag. Build the dataset first:
+#   uv run python scripts/data/build_bps_motif_within_piece.py --window 1
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 0
+  num_sanity_val_steps: 0
+
+  callbacks:
+    - class_path: marble.modules.callbacks.LogSweepCoordsCallback
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "CLaMP3-symbolic-abc / BPSMotifWithinPieceN1"
+      tags: ["CLaMP3-symbolic-abc", "BPSMotifWithinPieceN1", "layer-sweep", "probe", "symbolic", "abc-input", "within-piece", "mean-all"]
+      job_type: "test"
+      name: "layer-meanall-test"
+      save_dir: "./output/probe.BPSMotifWithinPieceN1.CLaMP3-symbolic-abc-meanall/"
+
+
+model:
+  class_path: marble.tasks.BPSMotif.probe.BPSMotifWithinPieceTask
+  init_args:
+    sample_rate: 24000
+    cache_embeddings: true
+    log_extended_retrieval_metrics: true
+
+    encoder:
+      class_path: marble.encoders.CLaMP3.model.CLaMP3_Symbolic_Encoder
+
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: ["0..12"]
+          mode: mean
+      - class_path: marble.modules.transforms.TimeAvgPool
+
+
+data:
+  class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCDataModule
+  init_args:
+    batch_size: 8
+    num_workers: 4
+
+    audio_transforms:
+      train: []
+      val:   []
+      test:  []
+
+    train:
+      class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCDummy
+      init_args:
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N1.ABC.jsonl
+    val:
+      class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCDummy
+      init_args:
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N1.ABC.jsonl
+    test:
+      class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCTest
+      init_args:
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N1.ABC.jsonl
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
