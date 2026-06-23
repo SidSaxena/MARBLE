@@ -198,32 +198,43 @@ def test_null_separable_lifts_above_chance():
 
 
 def test_null_permutation_is_within_group_not_global():
-    """Distinguishing test: would FAIL if the null permuted labels globally.
+    """Distinguishing test: FAILS if the null permuted labels globally.
 
-    Letters = [{x},{x} | {x},{y}] across group 0 = {0,1}, group 1 = {2,3}. Only
-    group 0 is scorable (both {x} → each retrieves the other); group 1 never is
-    ({x} vs {y} share nothing). Under WITHIN-group permutation, group 0's two
-    identical {x} sets are permutation-invariant, so every null == real → null_mean
-    == real, p == 1.0. Under a (wrong) GLOBAL permutation, an {x} could swap into
-    group 0 for a {y}, breaking group 0's scorability and pulling null_mean below
-    real — which this asserts against.
+    (Verified empirically — see below — that within-group and global nulls give
+    DIFFERENT null_means on this fixture, so the assertions actually discriminate.
+    An earlier version used [{x},{x},{x},{y}] which a global null also scored 1.0,
+    giving false confidence; this fixture fixes that.)
+
+    Layout: group 0 = positions {1,2}, both ``{c}`` and mutually nearest →
+    scorable, MAP 1.0. group 1 = positions {0,3,4} = ``set(), set(), {a,b}`` →
+    its only lettered window ({a,b}) has no same-group same-letter peer → group 1
+    is NEVER scorable.
+
+      * WITHIN-group null: group 0's two identical ``{c}`` sets are
+        permutation-invariant (and group 1 is unscorable under any permutation),
+        so every permutation reproduces MAP 1.0 → null_mean == 1.0, std 0, p 1.0.
+      * GLOBAL null (the WRONG one): a ``{c}`` can migrate into group 1 while
+        group 0 receives ``set()``/``{a,b}``, breaking group 0's scorability →
+        null_mean ≈ 0.81 (empirically), which FAILS the ``null_mean == 1.0``
+        assertion below. That is exactly the within-group property we lock here.
     """
     embs = torch.tensor(
         [
-            [1.0, 0.9, 0.0, 0.0],  # 0  group0 {x}
-            [0.9, 1.0, 0.0, 0.0],  # 1  group0 {x} (nearest to 0)
-            [0.0, 0.0, 1.0, 0.9],  # 2  group1 {x}
-            [0.0, 0.0, 0.9, 1.0],  # 3  group1 {y}
+            [0.0, 0.0, 1.0, 0.0, 0.0],  # 0  group1 set()
+            [1.0, 0.9, 0.0, 0.0, 0.0],  # 1  group0 {c}
+            [0.9, 1.0, 0.0, 0.0, 0.0],  # 2  group0 {c} (nearest to 1)
+            [0.0, 0.0, 0.0, 1.0, 0.0],  # 3  group1 set()
+            [0.0, 0.0, 0.0, 0.0, 1.0],  # 4  group1 {a,b} (no same-group peer)
         ]
     )
-    groups = [0, 0, 1, 1]
-    letters = [{"x"}, {"x"}, {"x"}, {"y"}]
-    occ = [{"o0"}, {"o1"}, {"o2"}, {"o3"}]
+    groups = [1, 0, 0, 1, 1]
+    letters = [set(), {"c"}, {"c"}, set(), {"a", "b"}]
+    occ = [{"o0"}, {"o1"}, {"o2"}, {"o3"}, {"o4"}]
     real, null_mean, null_std, p = compute_within_group_multilabel_map_with_null(
-        embs, groups, letters, occ, n_perms=200, seed=0
+        embs, groups, letters, occ, n_perms=300, seed=0
     )
     assert abs(real - 1.0) < 1e-9, real
-    assert abs(null_mean - real) < 1e-9, (null_mean, real)  # within-group → invariant
+    assert abs(null_mean - 1.0) < 1e-9, (null_mean, real)  # within-group → invariant
     assert null_std < 1e-9, null_std
     assert abs(p - 1.0) < 1e-9, p
 
