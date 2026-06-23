@@ -703,6 +703,28 @@ class BPSMotifWithinPieceWholeN4ABCDummy(_BPSMotifWithinPieceWholeABCBase):
         super().__init__(**kwargs)
 
 
+class BPSMotifWithinPieceWholeABCTest(_BPSMotifWithinPieceWholeABCBase):
+    """Generic whole-piece-context test split — JSONL path via init arg.
+
+    Whole-piece counterpart of :class:`BPSMotifWithinPieceABCTest`. Takes the
+    window-size's JSONL (e.g. ``BPSMotifWithinPieceWhole.N8.ABC.jsonl``) as an
+    init arg so the window-size sweep can point one generic class at each N's
+    data, exactly as the clip-isolated arm does.
+    """
+
+    def __init__(self, jsonl_template: str, **kwargs):
+        kwargs["split"] = "test"
+        super().__init__(jsonl_template=jsonl_template, **kwargs)
+
+
+class BPSMotifWithinPieceWholeABCDummy(_BPSMotifWithinPieceWholeABCBase):
+    """Generic whole-piece placeholder for the max_epochs=0 train/val loaders."""
+
+    def __init__(self, jsonl_template: str, **kwargs):
+        kwargs.setdefault("split", "test")
+        super().__init__(jsonl_template=jsonl_template, **kwargs)
+
+
 class BPSMotifWithinPieceWholeABCDataModule(BaseDataModule):
     """Thin wrapper for the whole-piece-context within-piece ABC variant.
 

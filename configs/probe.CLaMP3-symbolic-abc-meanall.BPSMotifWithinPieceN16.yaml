@@ -28,7 +28,7 @@ trainer:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
       project: "marble"
-      group: "CLaMP3-symbolic-abc / BPSMotifWithinPieceN16"
+      group: "CLaMP3-symbolic-abc / BPSMotifWithinPiece"
       tags: ["CLaMP3-symbolic-abc", "BPSMotifWithinPieceN16", "layer-sweep", "probe", "symbolic", "abc-input", "within-piece", "mean-all"]
       job_type: "test"
       name: "layer-meanall-test"
@@ -67,15 +67,15 @@ data:
     train:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCDummy
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N16.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N4.ABC.jsonl
     val:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCDummy
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N16.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N4.ABC.jsonl
     test:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCTest
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N16.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N4.ABC.jsonl
 
 optimizer:
   class_path: torch.optim.Adam

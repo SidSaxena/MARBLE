@@ -15,9 +15,9 @@ ckpt_path: null
 # This reproduces the leitmotifs whole-piece prototype, which peaked DEEP (~L8:
 # raw L8~0.598, L2~0.498) — vs the clip-isolated task's shallow-mid (~L4) peak.
 # Zero-shot (max_epochs=0). wandb group
-# `CLaMP3-symbolic-abc / BPSMotifWithinPieceWholeN4`. The sweep runner overrides
+# `CLaMP3-symbolic-abc / BPSMotifWithinPieceWholeN2`. The sweep runner overrides
 # `layers: [6]` per layer. Build the dataset first:
-#   uv run python scripts/data/build_bps_motif_within_piece.py --window 4 --whole
+#   uv run python scripts/data/build_bps_motif_within_piece.py --window 2 --whole
 
 trainer:
   fast_dev_run: false
@@ -35,10 +35,10 @@ trainer:
     init_args:
       project: "marble"
       group: "CLaMP3-symbolic-abc / BPSMotifWithinPieceWhole"
-      tags: ["CLaMP3-symbolic-abc", "BPSMotifWithinPieceWholeN4", "layer-sweep", "probe", "symbolic", "abc-input", "within-piece", "whole-piece"]
+      tags: ["CLaMP3-symbolic-abc", "BPSMotifWithinPieceWholeN2", "layer-sweep", "probe", "symbolic", "abc-input", "within-piece", "whole-piece"]
       job_type: "test"
       name: "layer-6-test"
-      save_dir: "./output/probe.BPSMotifWithinPieceWholeN4.CLaMP3-symbolic-abc-layers/"
+      save_dir: "./output/probe.BPSMotifWithinPieceWholeN2.CLaMP3-symbolic-abc-layers/"
 
 
 model:
@@ -72,15 +72,15 @@ data:
     train:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceWholeABCDummy
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPieceWhole.N4.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPieceWhole.N2.ABC.jsonl
     val:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceWholeABCDummy
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPieceWhole.N4.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPieceWhole.N2.ABC.jsonl
     test:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceWholeABCTest
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPieceWhole.N4.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPieceWhole.N2.ABC.jsonl
 
 optimizer:
   class_path: torch.optim.Adam

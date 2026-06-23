@@ -2,22 +2,19 @@ seed_everything: 1234
 ckpt_path: null
 
 # BPS-Motif WITHIN-PIECE WHOLE-PIECE-CONTEXT same-motif retrieval — CLaMP3
-# symbolic per-layer sweep, ABC INPUT.
+# symbolic meanall, ABC INPUT.
 #
-# The whole-piece-context counterpart of
-# probe.CLaMP3-symbolic-abc-layers.BPSMotifWithinPieceN4.yaml (clip-isolated).
-# SAME metric (compute_within_group_multilabel_map), SAME windows / labels /
-# occurrence ids — the ONLY difference is the ENCODING: instead of tokenising
-# each 4-bar window's own ABC slice in isolation, the probe encodes the WHOLE
-# movement ONCE at per-patch resolution (segmenting >512 — NOT truncating, or
-# most of a 144-1250-patch movement would be silently dropped), maps
-# patches->physical bars, and pools each window's bar-patches IN MOVEMENT CONTEXT.
-# This reproduces the leitmotifs whole-piece prototype, which peaked DEEP (~L8:
-# raw L8~0.598, L2~0.498) — vs the clip-isolated task's shallow-mid (~L4) peak.
-# Zero-shot (max_epochs=0). wandb group
-# `CLaMP3-symbolic-abc / BPSMotifWithinPieceWholeN4`. The sweep runner overrides
-# `layers: [6]` per layer. Build the dataset first:
-#   uv run python scripts/data/build_bps_motif_within_piece.py --window 4 --whole
+# Mean-of-all-13-layers baseline for the whole-piece-context within-piece N=4-bar
+# phrase-window task (see the per-layer sibling
+# probe.CLaMP3-symbolic-abc-layers.BPSMotifWithinPieceWholeN6.yaml for the full
+# task description). Whole movement encoded once at per-patch resolution
+# (segmenting >512), window vectors pooled from each window's bar-patches IN
+# MOVEMENT CONTEXT, then the SAME multi-label + per-movement-gallery +
+# same-occurrence-excluded MAP via BPSMotifWithinPieceWholeTask; test/map is the
+# headline. Zero-shot (max_epochs=0). wandb group
+# `CLaMP3-symbolic-abc / BPSMotifWithinPieceWholeN6` (shared with the per-layer
+# sweep). Build the dataset first:
+#   uv run python scripts/data/build_bps_motif_within_piece.py --window 6 --whole
 
 trainer:
   fast_dev_run: false
@@ -35,10 +32,10 @@ trainer:
     init_args:
       project: "marble"
       group: "CLaMP3-symbolic-abc / BPSMotifWithinPieceWhole"
-      tags: ["CLaMP3-symbolic-abc", "BPSMotifWithinPieceWholeN4", "layer-sweep", "probe", "symbolic", "abc-input", "within-piece", "whole-piece"]
+      tags: ["CLaMP3-symbolic-abc", "BPSMotifWithinPieceWholeN6", "layer-sweep", "probe", "symbolic", "abc-input", "within-piece", "whole-piece", "mean-all"]
       job_type: "test"
-      name: "layer-6-test"
-      save_dir: "./output/probe.BPSMotifWithinPieceWholeN4.CLaMP3-symbolic-abc-layers/"
+      name: "layer-meanall-test"
+      save_dir: "./output/probe.BPSMotifWithinPieceWholeN6.CLaMP3-symbolic-abc-meanall/"
 
 
 model:
@@ -54,7 +51,8 @@ model:
     emb_transforms:
       - class_path: marble.modules.transforms.LayerSelector
         init_args:
-          layers: [6]   # sweep replaces this per-layer
+          layers: ["0..12"]
+          mode: mean
       - class_path: marble.modules.transforms.TimeAvgPool
 
 
