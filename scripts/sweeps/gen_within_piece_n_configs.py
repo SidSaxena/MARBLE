@@ -120,6 +120,17 @@ def _rewrite_datasets(text: str, arm: dict, n: int) -> str:
         _test_repl,
         text,
     )
+
+    # Robustness / idempotency (BUGFIX): whatever class form the template used,
+    # FORCE every jsonl_template to THIS window's data. The class-name regexes
+    # above only match the CANONICAL N4 template; if a template was already
+    # rewritten to the generic class (e.g. --include-n4 overwrites the N4 template
+    # in place, then later windows read THAT file), those regexes no-op and the
+    # jsonl would silently stay at N4 — the bug that made windows 6..32 all encode
+    # N4 data. This catch-all replaces any ``<stem>.N<d>.ABC.jsonl`` for THIS
+    # arm's stem with the correct window, regardless of class form.
+    stem = arm["jsonl"].split(".N")[0]  # data/.../BPSMotifWithinPiece[Whole]
+    text = re.sub(re.escape(stem) + r"\.N\d+\.ABC\.jsonl", jsonl, text)
     return text
 
 
@@ -162,6 +173,8 @@ def _patch_window_comment(text: str, n: int) -> str:
 def gen_for_n(arm_name: str, n: int) -> list[Path]:
     arm = ARMS[arm_name]
     written: list[Path] = []
+    expected_jsonl = arm["jsonl"].format(n=n)
+    wrong_jsonl = arm["jsonl"].format(n=4)  # the silent-failure value
     for tmpl_key in ("layers_tmpl", "meanall_tmpl"):
         src = CONFIGS / arm[tmpl_key]
         text = src.read_text()
@@ -169,6 +182,14 @@ def gen_for_n(arm_name: str, n: int) -> list[Path]:
         text = _retag(text, arm, n)
         text = _neutralize_group(text, arm, n)
         text = _patch_window_comment(text, n)
+        # FAIL LOUD: every split must point at THIS window's JSONL, and (for n!=4)
+        # NONE may still point at N4. This catches the regression where windows
+        # >4 silently inherited N4's jsonl and encoded the wrong data.
+        if expected_jsonl not in text or (n != 4 and wrong_jsonl in text):
+            raise SystemExit(
+                f"[gen] {arm_name} N={n}: jsonl rewrite FAILED for {arm[tmpl_key]} "
+                f"— expected '{expected_jsonl}' present and '{wrong_jsonl}' absent."
+            )
         out_name = arm[tmpl_key].replace("N4", f"N{n}")
         out_path = CONFIGS / out_name
         out_path.write_text(text)

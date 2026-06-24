@@ -67,15 +67,15 @@ data:
     train:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCDummy
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N4.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N32.ABC.jsonl
     val:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCDummy
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N4.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N32.ABC.jsonl
     test:
       class_path: marble.tasks.BPSMotif.datamodule.BPSMotifWithinPieceABCTest
       init_args:
-        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N4.ABC.jsonl
+        jsonl_template: data/BPS-Motif/BPSMotifWithinPiece.N32.ABC.jsonl
 
 optimizer:
   class_path: torch.optim.Adam
