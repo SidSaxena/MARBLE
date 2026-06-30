@@ -444,3 +444,7 @@ configs/_bps_mnid_fold*.yaml
 .ruff_cache/
 .pre-commit-cache/
 .claude/
+
+# IR assets for VGMIDITVar-timbre reverb (tracked deliberately)
+!data/ir/
+!data/ir/**
