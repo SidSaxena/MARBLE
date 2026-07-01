@@ -150,8 +150,9 @@ class LogSweepCoordsCallback(Callback):
             return direct
         for attr in ("test_dataset", "train_dataset", "val_dataset"):
             ds = getattr(datamodule, attr, None)
-            # AudioTransformDataset wraps the real dataset under `.dataset`.
-            for cand in (ds, getattr(ds, "dataset", None)):
+            # AudioTransformDataset wraps the real dataset under `.base`
+            # (symbolic/other wrappers may use `.dataset`) — probe both.
+            for cand in (ds, getattr(ds, "base", None), getattr(ds, "dataset", None)):
                 fi = getattr(cand, "fold_idx", None)
                 if fi is not None:
                     return fi

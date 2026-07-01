@@ -1,0 +1,184 @@
+# Layer-sweep config for OMAR-RQ (multifeature-25hz) encoder on MedleyDBMelody.
+# OMARRQ-multifeature-25hz has 24 Conformer layers; use --num-layers 24.
+#
+# MedleyDBMelody — frame-level melody pitch classification (MARBLE melody task,
+# MELODY2 predominant-f0). OMARRQ token rate is 25 Hz → label_freq=25.
+# Frame-level task → NO TimeAvgPool, decoder preserves the time dimension.
+
+seed_everything: 1234
+ckpt_path: null
+
+trainer:
+  fast_dev_run: false
+  accelerator: gpu
+  devices: [0]
+  accumulate_grad_batches: 4
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: 40
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 10
+  log_every_n_steps: 50
+
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "./output/probe.MedleyDBMelody.OMARRQ-multifeature-25hz-meanall/checkpoints/"
+        filename: "best"
+        save_top_k: 1
+        save_last: true   # always write last.ckpt so a killed run resumes
+        monitor: "val/acc_rpa"
+        mode: "max"
+    - class_path: marble.modules.callbacks.LoadLatestCheckpointCallback
+    - class_path: marble.modules.callbacks.LogSweepCoordsCallback
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: step
+    - class_path: lightning.pytorch.callbacks.early_stopping.EarlyStopping
+      init_args:
+        monitor: "val/acc_rpa"
+        patience: 7
+        mode: "max"
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      project: "marble"
+      group: "OMARRQ-multifeature-25hz / MedleyDBMelody"
+      tags: ["OMARRQ-multifeature-25hz", "MedleyDBMelody", "layer-sweep", "probe", "OMARRQ", "mean-all"]
+      job_type: "probe"
+      name: "layer-meanall-fit"
+      save_dir: "./output/probe.MedleyDBMelody.OMARRQ-multifeature-25hz-meanall/"
+
+
+model:
+  class_path: marble.tasks.MedleyDBMelody.probe.ProbeAudioTask
+  init_args:
+    sample_rate: 24000
+    use_ema: false
+    # Embedding cache for frame-level probes. Default off — frame-level
+    # (L,T,H) caching is feasible for MedleyDB (small corpus) but not wired
+    # yet; see docs/medleydb_melody_sweep_plan.md §6 (Track B).
+    # cache_pool_time MUST be false here (frame-level decoder needs T axis).
+    cache_embeddings: false
+    cache_pool_time: false
+
+    encoder:
+      class_path: marble.encoders.OMAR_RQ.model.OMARRQ_Multifeature25hz_Encoder
+      init_args:
+        model_id: "mtg-upf/omar-rq-multifeature-25hz"
+        compile_mode: default
+    emb_transforms:
+      - class_path: marble.modules.transforms.LayerSelector
+        init_args:
+          layers: ["0..23"]
+          mode: mean
+      # NO TimeAvgPool — preserve the time dimension for per-frame labels
+
+    decoders:
+      - class_path: marble.modules.decoders.MLPDecoderKeepTime
+        init_args:
+          in_dim: 1024   # OMARRQ-multifeature-25hz hidden size
+          out_dim: 128   # full MIDI range 0..127
+          hidden_layers: [256]
+          activation_fn:
+            class_path: torch.nn.ReLU
+          dropout: 0.2
+
+    losses:
+      - class_path: marble.tasks.MedleyDBMelody.probe.MelodyCrossEntropyLoss
+        init_args:
+          time_dim_mismatch_tol: 5
+          ignore_index: -1
+
+    metrics:
+      train:
+        acc_rpa:
+          class_path: marble.tasks.MedleyDBMelody.probe.RawPitchAccuracy
+          init_args:
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
+        acc_rca:
+          class_path: marble.tasks.MedleyDBMelody.probe.RawChromaAccuracy
+          init_args:
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
+      val:
+        acc_rpa:
+          class_path: marble.tasks.MedleyDBMelody.probe.RawPitchAccuracy
+          init_args:
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
+        acc_rca:
+          class_path: marble.tasks.MedleyDBMelody.probe.RawChromaAccuracy
+          init_args:
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
+      test:
+        acc_rpa:
+          class_path: marble.tasks.MedleyDBMelody.probe.RawPitchAccuracy
+          init_args:
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
+        acc_rca:
+          class_path: marble.tasks.MedleyDBMelody.probe.RawChromaAccuracy
+          init_args:
+            time_dim_mismatch_tol: 5
+            ignore_index: -1
+
+data:
+  class_path: marble.tasks.MedleyDBMelody.datamodule.MedleyDBMelodyDataModule
+  init_args:
+    batch_size: 16
+    num_workers: 8
+
+    audio_transforms:
+      train:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      val:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+      test:
+        - class_path: marble.encoders.OMAR_RQ.model.OMARRQ_FeatureExtractor
+
+    train:
+      class_path: marble.tasks.MedleyDBMelody.datamodule.MedleyDBMelodyTrain
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: random
+        fold_idx: 0
+        label_freq: 25
+    val:
+      class_path: marble.tasks.MedleyDBMelody.datamodule.MedleyDBMelodyVal
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        fold_idx: 0
+        label_freq: 25
+    test:
+      class_path: marble.tasks.MedleyDBMelody.datamodule.MedleyDBMelodyTest
+      init_args:
+        sample_rate: 24000
+        channels: 1
+        clip_seconds: 15.0
+        min_clip_ratio: 0.5
+        channel_mode: mix
+        fold_idx: 0
+        label_freq: 25
+
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
+
+lr_scheduler:
+  class_path: lightning.pytorch.cli.ReduceLROnPlateau
+  init_args:
+    mode: "max"
+    factor: 0.5
+    patience: 5
+    monitor: "val/acc_rpa"

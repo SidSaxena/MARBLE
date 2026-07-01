@@ -452,6 +452,34 @@ SWEEPS: list[SweepDef] = [
         note="Melody pitch   | 128 MIDI  | frame-level 25Hz | OMARRQ 24 layers + meanall",
     ),
     # ══════════════════════════════════════════════════════════════════════════
+    # MELODY — MedleyDB melody extraction (MARBLE melody task, MELODY2 f0→MIDI)
+    # Frame-level, uncached (same machinery as HookTheoryMelody) but a much
+    # smaller corpus (108 tracks / ~7.3 h vs ~50 h) → ~1/7 the per-epoch cost.
+    # Build the JSONLs first: scripts/data/build_medleydb_melody_jsonl.py.
+    # Same priority order: MuQ → MERT → OMARRQ.
+    # ══════════════════════════════════════════════════════════════════════════
+    SweepDef(
+        model="MuQ",
+        task="MedleyDBMelody",
+        base_config="configs/probe.MuQ-layers.MedleyDBMelody.yaml",
+        num_layers=13,
+        note="Melody f0      | 128 MIDI  | frame-level 25Hz | MuQ 13 layers + meanall",
+    ),
+    SweepDef(
+        model="MERT-v1-95M",
+        task="MedleyDBMelody",
+        base_config="configs/probe.MERT-v1-95M-layers.MedleyDBMelody.yaml",
+        num_layers=13,
+        note="Melody f0      | 128 MIDI  | frame-level 75Hz | MERT 13 layers + meanall",
+    ),
+    SweepDef(
+        model="OMARRQ-multifeature-25hz",
+        task="MedleyDBMelody",
+        base_config="configs/probe.OMARRQ-multifeature-25hz-layers.MedleyDBMelody.yaml",
+        num_layers=24,
+        note="Melody f0      | 128 MIDI  | frame-level 25Hz | OMARRQ 24 layers + meanall",
+    ),
+    # ══════════════════════════════════════════════════════════════════════════
     # LONG — NSynth pitch classification (50K train cap, still multi-hour/layer)
     # Same priority order as HookTheoryMelody: MuQ → MERT → OMARRQ → CLaMP3.
     # ══════════════════════════════════════════════════════════════════════════
@@ -734,6 +762,11 @@ def _data_present(task: str) -> bool:
         # build with `scripts/data/build_hooktheory_melody_jsonl.py` after a
         # full HookTheory download (zips/audio/*.tar, ~104 GB).
         "HookTheoryMelody": "data/HookTheory/HookTheory.train.jsonl",
+        # MedleyDBMelody: 5-fold CV; build with build_medleydb_melody_jsonl.py
+        # from a local MedleyDB copy (Zenodo audio + marl/medleydb annotations).
+        # fold0.train is the "all folds built in one shot" marker (BPS convention).
+        # run_all_sweeps runs fold0 only; full 5-fold via run_medleydb_melody_folds.sh.
+        "MedleyDBMelody": "data/MedleyDB/MedleyDBMelody.fold0.train.jsonl",
         # VGMIDITVar: built from MIDI zip via scripts/data/build_vgmiditvar_dataset.py
         # (single JSONL covering both train + test splits; no .train/.test variant).
         "VGMIDITVar": "data/VGMIDITVar/VGMIDITVar.jsonl",
