@@ -59,7 +59,7 @@ from pathlib import Path
 import torch
 import yaml
 
-from marble.core.utils import instantiate_from_config
+from marble.core.utils import instantiate_from_config, instantiate_recursive
 from marble.utils.emb_cache import EmbeddingCache, compute_config_hash
 
 
@@ -279,7 +279,12 @@ def main() -> None:
     print(f"\nInstantiating task + encoder on {args.device} ...")
     model_cfg = cfg["model"]
     model_cfg.setdefault("init_args", {})["cache_embeddings"] = True
-    task = instantiate_from_config(model_cfg)
+    # Recursive: the model's init_args carry nested class_path configs
+    # (encoder, emb_transforms, decoders, losses, metrics) that BaseTask expects
+    # as instantiated Modules. Non-recursive instantiate_from_config passes them
+    # as raw dicts → "dict is not a Module subclass". (The datamodule above stays
+    # non-recursive on purpose — it stores split configs raw until setup().)
+    task = instantiate_recursive(model_cfg)
     task.eval().to(args.device)
 
     # Attach the pre-built cache and short-circuit lazy init. This bypasses

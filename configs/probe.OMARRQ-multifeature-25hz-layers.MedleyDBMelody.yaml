@@ -145,7 +145,7 @@ data:
         channels: 1
         clip_seconds: 15.0
         min_clip_ratio: 0.5
-        channel_mode: random
+        channel_mode: mix
         fold_idx: 0
         label_freq: 25
     val:
