@@ -54,13 +54,13 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+import types
 from pathlib import Path
 
 import torch
 import yaml
 
 from marble.core.utils import instantiate_from_config, instantiate_recursive
-from marble.utils.emb_cache import EmbeddingCache, compute_config_hash
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,105 +113,6 @@ def parse_args() -> argparse.Namespace:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Cache-key derivation from a raw YAML config
-# ──────────────────────────────────────────────────────────────────────────
-
-
-def _dig(d: dict, *keys, default=None):
-    cur = d
-    for k in keys:
-        if not isinstance(cur, dict) or k not in cur:
-            return default
-        cur = cur[k]
-    return cur
-
-
-def derive_cache_from_config(cfg: dict) -> tuple[EmbeddingCache, dict]:
-    """Mirror of CoverRetrievalTask._ensure_cache, driven by raw YAML
-    dict instead of trainer/datamodule attributes. Returns the built
-    cache + a dict of the derivation inputs (for logging)."""
-
-    # 1. encoder_slug + task_name from the WandB group, with fallbacks
-    #    that match the runtime's _derive_cache_slugs logic.
-    group = _dig(cfg, "trainer", "logger", "init_args", "group")
-    if isinstance(group, str) and " / " in group:
-        encoder_slug, task_name = (s.strip() for s in group.split(" / ", 1))
-    else:
-        # Fallback: class names taken from the config (no class-instantiation
-        # needed for this step — `class_path` ends with the class name).
-        enc_cp = _dig(cfg, "model", "init_args", "encoder", "class_path", default="")
-        encoder_slug = enc_cp.rsplit(".", 1)[-1] if enc_cp else "encoder"
-        task_cp = _dig(cfg, "model", "class_path", default="")
-        task_name = task_cp.rsplit(".", 1)[-1] if task_cp else "task"
-
-    # 2. encoder_model_id from model.init_args.encoder.init_args.model_id
-    #    when present (OMARRQ), else fall back to the slug — same as the
-    #    runtime's `getattr(self.encoder, "HUGGINGFACE_MODEL_NAME", ...)`.
-    model_id = _dig(cfg, "model", "init_args", "encoder", "init_args", "model_id")
-    if not model_id:
-        model_id = encoder_slug
-
-    # 3. sample_rate from model.init_args.sample_rate (encoder isn't yet
-    #    instantiated here, so we trust the config's declared sample_rate).
-    sample_rate = _dig(cfg, "model", "init_args", "sample_rate", default=0)
-
-    # 4. clip_seconds from the test dataset's init_args (where the encoder
-    #    actually consumes audio — matches the runtime's _derive_clip_seconds).
-    clip_seconds = _dig(
-        cfg,
-        "data",
-        "init_args",
-        "test",
-        "init_args",
-        "clip_seconds",
-        default=0.0,
-    )
-
-    # 5. pipeline signature from the test audio_transforms class_paths.
-    transforms = _dig(cfg, "data", "init_args", "audio_transforms", "test", default=[]) or []
-    sig_parts = [t.get("class_path", repr(t)) for t in transforms]
-    pipeline_signature = "|".join(sig_parts)
-
-    # 6. pool_time from model.init_args.cache_pool_time — MUST match the runtime
-    #    (_ensure_cache) or the frame-level cache lands in a different dir (with a
-    #    'frame' key suffix) than the probe reads, silently pre-warming nothing.
-    pool_time = bool(_dig(cfg, "model", "init_args", "cache_pool_time", default=True))
-
-    config_hash = compute_config_hash(
-        encoder_model_id=model_id,
-        sample_rate=sample_rate,
-        clip_seconds=clip_seconds,
-        pipeline_signature=pipeline_signature,
-        pool_time=pool_time,
-    )
-
-    cache = EmbeddingCache(
-        encoder_slug=encoder_slug,
-        task_name=task_name,
-        config_hash=config_hash,
-        pool_time=pool_time,
-        metadata={
-            "encoder_model_id": str(model_id),
-            "sample_rate": sample_rate,
-            "clip_seconds": float(clip_seconds),
-            "pipeline_signature": pipeline_signature,
-            "pool_time": pool_time,
-            "extracted_via": "scripts/embeddings/extract.py",
-        },
-    )
-
-    return cache, {
-        "encoder_slug": encoder_slug,
-        "task_name": task_name,
-        "config_hash": config_hash,
-        "model_id": model_id,
-        "sample_rate": sample_rate,
-        "clip_seconds": clip_seconds,
-        "pipeline_signature": pipeline_signature,
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -224,14 +125,6 @@ def main() -> None:
 
     cfg = yaml.safe_load(args.config.read_text())
 
-    # ── Build the cache up front so we can do an early "everything's
-    #    already cached, exit fast" check when --no-skip isn't set.
-    cache, derived = derive_cache_from_config(cfg)
-    print(f"Cache directory: {cache.dir}")
-    print("Derived cache key:")
-    for k, v in derived.items():
-        print(f"  {k}: {v}")
-
     # ── Apply overrides to the data config before instantiation
     if args.batch_size is not None:
         cfg.setdefault("data", {}).setdefault("init_args", {})["batch_size"] = args.batch_size
@@ -239,7 +132,7 @@ def main() -> None:
         cfg.setdefault("data", {}).setdefault("init_args", {})["num_workers"] = args.num_workers
 
     # ── Instantiate the datamodule + the chosen dataloader
-    print(f"\nInstantiating datamodule for split={args.split} ...")
+    print(f"Instantiating datamodule for split={args.split} ...")
     dm = instantiate_from_config(cfg["data"])
     dm.setup(stage=args.split)
     loader = {
@@ -247,29 +140,56 @@ def main() -> None:
         "val": dm.val_dataloader,
         "test": dm.test_dataloader,
     }[args.split]()
-
     n_batches = len(loader)
     print(f"  loader has {n_batches} batch(es)")
 
-    # ── Fast-path: scan the loader once and see if all clip_ids are cached.
-    #    Saves spinning up the encoder model just to find a fully-warm cache.
+    # ── Instantiate the task (loads the encoder). Recursive: BaseTask expects
+    #    instantiated submodules (encoder/decoders/metrics); non-recursive
+    #    instantiate_from_config would pass raw dicts → "dict is not a Module
+    #    subclass". (The datamodule above stays non-recursive on purpose — it
+    #    stores split configs raw until setup().)
+    print(f"\nInstantiating task + encoder on {args.device} ...")
+    model_cfg = cfg["model"]
+    model_cfg.setdefault("init_args", {})["cache_embeddings"] = True
+    task = instantiate_recursive(model_cfg)
+    task.eval().to(args.device)
+
+    # ── Build the cache via the task's OWN _ensure_cache, so the cache key
+    #    (encoder model_id, sample_rate, clip_seconds, pipeline signature,
+    #    pool_time) is byte-identical to what the training runtime derives — no
+    #    reimplementation drift. _ensure_cache only reads the datamodule + the
+    #    wandb group off the trainer, so a minimal shim is enough.
+    group = None
+    try:
+        group = cfg["trainer"]["logger"]["init_args"]["group"]
+    except (KeyError, TypeError):
+        group = None
+    task.trainer = types.SimpleNamespace(
+        datamodule=dm,
+        logger=types.SimpleNamespace(_wandb_init={"group": group} if group else {}),
+    )
+    task._cache = None
+    task._cache_init_attempted = False
+    task._ensure_cache()
+    cache = task._cache
+    if cache is None:
+        sys.exit("No cache was built — is cache_embeddings supported for this task?")
+    print(f"Cache directory: {cache.dir}  (pool_time={cache.pool_time})")
+
+    # ── Fast-path: if every clip is already cached, we're done.
     if not args.no_skip:
         print("\nChecking whether cache is already fully populated ...")
         seen_clip_ids: set[str] = set()
         all_cached = True
         for batch in loader:
             if len(batch) < 4:
-                # Datamodule doesn't emit clip_id — can't pre-warm via
-                # the cache layer in this script. Bail with a clear msg.
                 print(
-                    "  ! batch has < 4 elements (no clip_id field). The "
-                    "target datamodule isn't cache-aware. Update its "
-                    "__getitem__ to return (waveform, label, path, clip_id).",
+                    "  ! batch has < 4 elements (no clip_id field). The target "
+                    "datamodule isn't cache-aware (needs (waveform, label, path, clip_id)).",
                     file=sys.stderr,
                 )
                 sys.exit(3)
-            clip_ids = batch[3]
-            for cid in clip_ids:
+            for cid in batch[3]:
                 seen_clip_ids.add(cid)
                 if not cache.has(cid):
                     all_cached = False
@@ -280,25 +200,6 @@ def main() -> None:
             )
             return
         print(f"  proceeding: {len(seen_clip_ids)} unique clips, some missing.")
-
-    # ── Instantiate the task (needs the encoder to be loaded). We force
-    #    cache_embeddings=True here so the task's forward() writes via
-    #    the cache infrastructure we just constructed.
-    print(f"\nInstantiating task + encoder on {args.device} ...")
-    model_cfg = cfg["model"]
-    model_cfg.setdefault("init_args", {})["cache_embeddings"] = True
-    # Recursive: the model's init_args carry nested class_path configs
-    # (encoder, emb_transforms, decoders, losses, metrics) that BaseTask expects
-    # as instantiated Modules. Non-recursive instantiate_from_config passes them
-    # as raw dicts → "dict is not a Module subclass". (The datamodule above stays
-    # non-recursive on purpose — it stores split configs raw until setup().)
-    task = instantiate_recursive(model_cfg)
-    task.eval().to(args.device)
-
-    # Attach the pre-built cache and short-circuit lazy init. This bypasses
-    # the runtime _ensure_cache, which needs a trainer we don't have.
-    task._cache = cache
-    task._cache_init_attempted = True
 
     # ── Walk the loader, forward each batch through the cache-aware
     #    forward(). Misses populate the cache; hits are no-ops.
