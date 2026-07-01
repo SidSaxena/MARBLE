@@ -172,22 +172,30 @@ def derive_cache_from_config(cfg: dict) -> tuple[EmbeddingCache, dict]:
     sig_parts = [t.get("class_path", repr(t)) for t in transforms]
     pipeline_signature = "|".join(sig_parts)
 
+    # 6. pool_time from model.init_args.cache_pool_time — MUST match the runtime
+    #    (_ensure_cache) or the frame-level cache lands in a different dir (with a
+    #    'frame' key suffix) than the probe reads, silently pre-warming nothing.
+    pool_time = bool(_dig(cfg, "model", "init_args", "cache_pool_time", default=True))
+
     config_hash = compute_config_hash(
         encoder_model_id=model_id,
         sample_rate=sample_rate,
         clip_seconds=clip_seconds,
         pipeline_signature=pipeline_signature,
+        pool_time=pool_time,
     )
 
     cache = EmbeddingCache(
         encoder_slug=encoder_slug,
         task_name=task_name,
         config_hash=config_hash,
+        pool_time=pool_time,
         metadata={
             "encoder_model_id": str(model_id),
             "sample_rate": sample_rate,
             "clip_seconds": float(clip_seconds),
             "pipeline_signature": pipeline_signature,
+            "pool_time": pool_time,
             "extracted_via": "scripts/embeddings/extract.py",
         },
     )
