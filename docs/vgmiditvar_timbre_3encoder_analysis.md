@@ -140,30 +140,61 @@ with (a) same-variation-only cross-MAP per layer (the *pure* timbre-invariance c
 **linear instrument-decodability probe at L11** (is timbre still *present*, just not dominating
 cosine?).
 
-> **Cost/feasibility (VERIFIED 2026-07-01 — NOT a quick job).** As of this check the PC has **no
-> cached VGMIDITVar-timbre embeddings** (`output/.emb_cache/MuQ/` holds only MedleyDBMelody +
-> VGMLoopStructure), the **rendered audio is not staged** (`data/VGMIDITVar-timbre/` empty), and the
-> **original run outputs are gone** (no `condition_grid.csv`). Only the summary artifacts in
-> `docs/figures/vgmiditvar_timbre_4enc/` survive. So the control requires: **(1) re-stage/re-render the
-> audio** (`build_vgmiditvar_dataset.py` + `rewrite_vgmidi_programs.py --mode cross-product` + render
-> 102,960 files — the expensive part), **(2) re-extract embeddings** (frozen encoder, zero-shot, per
-> layer — run with `cache_embeddings` ON this time so they persist), then **(3)** a variation-aware
-> relevance mask (re-derive the variation `idx` from the filename `{piece}_{section}_{idx}_p{program}`
-> and require *different* idx off-diagonal). **Do (1)+(2) once and instrument the re-run** to also
-> persist per-query scores/rankings (see note below) so this and the score-distribution question are
-> answered permanently.
+> **Cost/feasibility (UPDATED 2026-07-01).** The rendered VGMIDITVar-timbre **audio still exists** —
+> it was **moved to the D: drive for space** (not deleted) and can be staged back to the ext4 working
+> dir when needed, so step (1) below is a **copy-back, not a 102,960-file re-render**. What is *not*
+> present on the working volume: **no cached embeddings** (`output/.emb_cache/MuQ/` holds only
+> MedleyDBMelody + VGMLoopStructure) and **no original run outputs** (`condition_grid.csv`); only the
+> summary artifacts in `docs/figures/vgmiditvar_timbre_4enc/` are checked in. So the control now
+> requires: **(1) stage the audio back from D:** (cheap copy), **(2) re-extract embeddings** (frozen
+> encoder, zero-shot, per layer — run with `cache_embeddings` ON this time so they persist), then
+> **(3)** the variation-aware relevance mask (re-derive the variation `idx` from the filename
+> `{piece}_{section}_{idx}_p{program}` and require *different* idx off-diagonal). Step (3) is now
+> **implemented** in `CoverRetrievalTask` (`require_different_variation` + `variation_id_regex`,
+> batched/streaming) — see note below. **Instrument the re-run** to persist per-query score
+> distributions (also now implemented: `dump_retrieval_scores`) so this and the score-distribution
+> question are answered permanently.
 
-> **On stored scores (general, VERIFIED):** no retrieval task (VGMIDITVar / Covers80 / SHS100K / …)
-> persists the raw cosine scores, per-query rankings, or score distributions — `sim = embs @ embs.T`
-> is built in-memory in `CoverRetrievalTask.on_test_epoch_end` and discarded. Only **aggregate metrics**
-> (W&B) and a per-cell **`condition_grid.csv`** (the 8×8 MAP grid) are written. To keep scores you must
-> either (a) run with `cache_embeddings` ON and recompute cosine offline from the cached `(L,H)`
-> per-file embeddings, or (b) add an optional score/ranking + histogram dump to
-> `CoverRetrievalTask` — recommended, so future runs retain the distribution instead of only MAP.
+> **On stored scores (general, VERIFIED then IMPLEMENTED 2026-07-01):** historically no retrieval task
+> (VGMIDITVar / Covers80 / SHS100K / …) persisted the raw cosine scores, per-query rankings, or score
+> distributions — `sim = embs @ embs.T` was built in-memory in `CoverRetrievalTask.on_test_epoch_end`
+> and discarded; only **aggregate metrics** (W&B) and a per-cell **`condition_grid.csv`** were written.
+> This is now addressed by an **opt-in score-distribution dump** (`dump_retrieval_scores=True`): it
+> streams sim row-chunks (no N×N materialisation) and writes `retrieval_score_distributions.json` +
+> `retrieval_score_summary.csv` with per-cell RELEVANT-vs-DISTRACTOR histograms, means, and separation.
+>
+> ⚠️ **Confound caught in audit (fixed):** the score-separation metric splits candidates into RELEVANT
+> (same `work_id`) vs DISTRACTOR — and *without variation control it re-includes the exact
+> same-composition twin the varctl grid removes*, but only in cross cells (in within cells the twin is
+> the self-excluded query). That inflates `score_sep_cross` and would make the score geometry "explain"
+> the **confounded** grid, not the `*_varctl` one. Fix: the dump now tracks twins separately and emits
+> both `score_sep_*` (confounded) and `score_sep_*_varctl` (twins removed); empty-relevant cells report
+> `separation = null` instead of a bogus `0 − distractor_mean`; the `-1` sentinel condition is excluded
+> from cells to match the MAP grid. **Read `score_sep_*_varctl`, not `score_sep_*`, as the honest
+> cross-vs-within separation.**
 
 **Defensible claim:** "MuQ's late layers are comparatively timbre-invariant (unlike MERT/CLaMP3)."
 **Not** "same theme in a different instrument is *intrinsically* easier than same theme same
 instrument" — that is confounded until the variation-controlled grid is run.
+
+**Two estimator caveats to disclose (not bugs, but they shape how the gap reads):**
+1. **Mean-of-cell-means weighting.** `condition_gap` = mean over the *n_cond* diagonal cell MAPs
+   minus mean over the *n_cond·(n_cond−1)* off-diagonal cell MAPs; each cell MAP is itself a
+   query-mean. Cells are weighted equally regardless of query count, so a sparse diagonal cell
+   (few valid queries) swings `within` more than the many-celled `cross` term — the two sides of
+   the gap have structurally asymmetric variance under any cell-size imbalance. Report per-cell
+   `map_grid/*_n` alongside the gap.
+2. **Varctl selection bias.** Twin masking drops every query whose only same-work peer at the
+   target condition was the twin (single-variation works, and works with one variation at a given
+   condition). So `*_varctl` is estimated on a **multi-variation-biased subpopulation**, not the
+   whole corpus — the run now logs `map_{same,cross}_condition_varctl_n` so this is visible. Read
+   the varctl gap as "the gap *among multi-variation works*."
+
+**Silent-no-op guard:** if `variation_id_regex` fails to parse a real within-work index (e.g. it
+captures a globally-unique clip counter), the twin mask matches only self and `*_varctl` collapses
+onto the confounded numbers. The run warns on unparsed filenames and skips the grid entirely if
+*nothing* parsed — but a regex that parses the *wrong* field will not be caught automatically, so
+sanity-check that `condition_gap_varctl != condition_gap` when you expect twins to exist.
 
 ---
 

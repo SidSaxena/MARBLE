@@ -80,6 +80,83 @@ def test_histograms_sum_to_counts_and_edges_span_range():
     assert o["relevant"]["edges"][0] == -1.0 and o["relevant"]["edges"][-1] == 1.0
 
 
+def test_empty_relevant_cell_has_null_separation():
+    # Cell (0,0): both candidates are different-work → 0 relevant. Its separation
+    # must be None (not 0.0 - distractor_mean), so callers can't average garbage in.
+    d = score_distributions(SIM, WORK, conditions=COND)
+    c00 = d["cells"][(0, 0)]
+    assert c00["relevant"]["n"] == 0
+    assert c00["separation"] is None
+    # A populated cell keeps a real separation.
+    assert d["cells"][(0, 1)]["separation"] is not None
+
+
+def test_sentinel_condition_excluded_from_cells():
+    # Condition -1 (unparsed) must not spawn cells, matching the MAP grid's c!=-1 filter.
+    work = [10, 10, 20, 20]
+    cond = [-1, 1, -1, 1]
+    d = score_distributions(SIM, work, conditions=cond)
+    assert all(-1 not in k for k in d["cells"]), "sentinel -1 leaked into cells"
+    # The one real cell (1,1) still forms.
+    assert (1, 1) in d["cells"]
+
+
+def test_variation_control_splits_twin_out_of_relevant():
+    # 4 items, one work=10 with variations [0,0] rendered at conditions [0,1]:
+    #   query i0 (work10,var0,cond0). Its cond-1 relevant is i1 (work10,var0) — a TWIN.
+    # Confounded 'relevant' includes the twin; 'relevant_diffvar' excludes it.
+    work = [10, 10, 20, 20]
+    cond = [0, 1, 0, 1]
+    var = [0, 0, 0, 0]  # every same-work pair is a same-variation twin
+    d = score_distributions(SIM, work, conditions=cond, variations=var)
+    c01 = d["cells"][(0, 1)]
+    # Cell (0,1) aggregates both cond-0 queries: i0→i1 (work10 twin) and i2→i3
+    # (work20 twin). Confounded relevant pool = {i1, i3}, both same-variation twins.
+    assert c01["relevant"]["n"] == 2
+    # variation-controlled relevant pool excludes both twins → empty → varctl sep None
+    assert c01["relevant_diffvar"]["n"] == 0
+    assert c01["separation_varctl"] is None
+
+
+def test_variation_control_keeps_different_variation_relevant():
+    # work=10 has TWO variations; the different-variation peer survives control.
+    #   idx: work var cond ; sim rows below
+    sim = torch.tensor(
+        [
+            [1.0, 0.9, 0.5, 0.2],  # i0 work10 var0 cond0 ; i1 is twin, i? diff-var
+            [0.9, 1.0, 0.3, 0.4],  # i1 work10 var0 cond1 (twin of i0)
+            [0.5, 0.3, 1.0, 0.8],  # i2 work10 var1 cond1 (different variation, cond1)
+            [0.2, 0.4, 0.8, 1.0],
+        ]
+    )
+    work = [10, 10, 10, 20]
+    cond = [0, 1, 1, 1]
+    var = [0, 0, 1, 0]
+    d = score_distributions(sim, work, conditions=cond, variations=var)
+    c01 = d["cells"][(0, 1)]
+    # cond-1 same-work candidates for q0: i1 (twin, sim .9) + i2 (diff-var, sim .5)
+    assert c01["relevant"]["n"] == 2  # confounded: both
+    assert c01["relevant_diffvar"]["n"] == 1  # controlled: only i2
+    assert abs(c01["relevant_diffvar"]["mean"] - 0.5) < 1e-6
+    assert c01["separation_varctl"] is not None
+
+
+def test_histogram_captures_out_of_range_tail():
+    # Scores above hi must land in the top bin, not vanish (sum(hist) == n always).
+    sim = torch.tensor(
+        [
+            [1.0, 1.5, 0.2, 0.1],  # 1.5 > hi=1.0
+            [1.5, 1.0, 0.3, 0.4],
+            [0.2, 0.3, 1.0, 0.8],
+            [0.1, 0.4, 0.8, 1.0],
+        ]
+    )
+    d = score_distributions(sim, WORK, n_bins=10, lo=-1.0, hi=1.0)
+    o = d["overall"]
+    assert sum(o["relevant"]["hist"]) == o["relevant"]["n"]
+    assert sum(o["distractor"]["hist"]) == o["distractor"]["n"]
+
+
 def test_streaming_accumulator_matches_full_matrix():
     # Feeding rows one batch at a time must equal the whole-matrix convenience.
     acc = RetrievalScoreAccumulator(WORK, COND, n_bins=10, lo=-1.0, hi=1.0)

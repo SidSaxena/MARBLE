@@ -328,13 +328,21 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             if has_note_counts:
                 file_note_counts.append(path2notes[path])
             if _var_re is not None:
-                stem = Path(path).stem
-                m = _var_re.search(stem)
+                # Parse a within-work variation index. Prefer a named ``idx`` group,
+                # else the first capturing group. Any miss / non-numeric capture →
+                # -1 (unparsed); NEVER raise, else a single odd filename would abort
+                # the whole test epoch after the expensive encode pass.
+                m = _var_re.search(Path(path).stem)
+                vid = -1
                 if m:
-                    gd = m.groupdict()
-                    file_variations.append(int(gd.get("idx") or m.group(m.lastindex or 1)))
-                else:
-                    file_variations.append(-1)
+                    raw = m.groupdict().get("idx")
+                    if raw is None and m.lastindex:
+                        raw = m.group(1)
+                    try:
+                        vid = int(raw)
+                    except (TypeError, ValueError):
+                        vid = -1
+                file_variations.append(vid)
 
         embs = torch.stack(file_embs)  # (N, H)
         work_ids = torch.tensor(file_work_ids)  # (N,)
@@ -735,21 +743,30 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             # Variation-controlled grid (opt-in): mask same-(work_id, variation)
             # twins so cross- vs within-condition MAP is apples-to-apples (the
             # same-composition-twin confound fix). Logs *_varctl metrics.
-            if (
-                getattr(self, "require_different_variation", False)
-                and file_variations
-                and all(v != -1 for v in file_variations)
-            ):
-                self._log_variation_controlled_grid(
-                    sim_c,
-                    embs_c,
-                    file_work_ids,
-                    file_conditions,
-                    file_variations,
-                    unique_conds,
-                    use_streaming,
-                    _md,
-                )
+            if getattr(self, "require_different_variation", False):
+                var_ids, n_bad, n_tot = self._variations_for_control(file_variations)
+                if n_bad:
+                    print(
+                        f"[CoverRetrieval] WARN: variation_id_regex parsed no index "
+                        f"for {n_bad}/{n_tot} files; those rows get unique ids and are "
+                        f"never twin-masked."
+                    )
+                if var_ids is None:
+                    print(
+                        "[CoverRetrieval] WARN: variation-controlled grid skipped "
+                        "(no parseable variation ids; it would equal the confounded grid)."
+                    )
+                else:
+                    self._log_variation_controlled_grid(
+                        sim_c,
+                        embs_c,
+                        file_work_ids,
+                        file_conditions,
+                        var_ids,
+                        unique_conds,
+                        use_streaming,
+                        _md,
+                    )
 
             # Per-cell logging of the full (query_cond × target_cond) grid.
             # For VGMIDITVar-timbre with 8 GM programs that's 64 keys —
@@ -768,12 +785,17 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # ── Retrieval score distributions (opt-in) ───────────────────────────
         # Persist RELEVANT vs DISTRACTOR cosine-score histograms + separation
         # per condition cell — the raw geometry behind the MAP, normally
-        # discarded. On centered embeddings (matches the condition grid).
+        # discarded. On centered embeddings (matches the condition grid). When
+        # variation ids are available the RELEVANT pool is split into confounded
+        # (all same-work) vs twin-controlled (different variation) so the score
+        # separation matches the *_varctl grid, not the confounded one.
         if getattr(self, "dump_retrieval_scores", False):
+            dump_vars, _, _ = self._variations_for_control(file_variations)
             self._dump_retrieval_score_artifacts(
                 embs_c,
                 file_work_ids,
                 file_conditions if has_conditions else None,
+                dump_vars,
                 _md,
             )
 
@@ -948,44 +970,94 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         except Exception as e:
             print(f"[CoverRetrieval] WARN: matplotlib heatmap failed: {e}")
 
+    @staticmethod
+    def _variations_for_control(file_variations):
+        """Prepare parsed variation ids for twin-masking.
+
+        Rows the regex failed to parse carry the -1 sentinel. Rather than the old
+        all-or-nothing gate (a single bad filename silently disabled the whole
+        control), give each unparsed row a UNIQUE negative id so it is never any
+        query's twin (conservative: we don't know its variation, so we don't mask
+        it) while parsed rows still get their twins masked.
+
+        Returns ``(ids_or_None, n_unparsed, n_total)``. ``ids`` is None when there
+        is nothing to control (empty, or every row unparsed → control would be a
+        silent no-op equal to the confounded grid).
+        """
+        if not file_variations:
+            return None, 0, 0
+        n_total = len(file_variations)
+        n_bad = sum(1 for v in file_variations if v == -1)
+        if n_bad == n_total:
+            return None, n_bad, n_total
+        out = list(file_variations)
+        nxt = -1
+        for i, v in enumerate(out):
+            if v == -1:
+                out[i] = nxt
+                nxt -= 1
+        return out, n_bad, n_total
+
     def _log_variation_controlled_grid(
         self, sim_c, embs_c, work_ids, conditions, variations, unique_conds, use_streaming, device
     ) -> None:
         """Opt-in: per-condition MAP grid with same-(work, variation) twins masked
-        so cross- vs within-condition is apples-to-apples. Non-streaming only (needs
-        the materialised sim_c); logs *_varctl metrics. Never raises."""
+        so cross- vs within-condition is apples-to-apples. Uses the same batched
+        shared-argsort path as the confounded grid (streaming on GPU, materialised
+        on CPU) so it also runs at full scale; logs *_varctl metrics. Never raises."""
         try:
-            from marble.utils.retrieval_metrics import compute_perpair_map
+            from marble.utils.retrieval_metrics import (
+                compute_perpair_map_all,
+                compute_perpair_map_all_streaming,
+            )
 
-            if use_streaming or sim_c is None:
-                print(
-                    "[CoverRetrieval] variation-controlled grid needs the CPU path "
-                    "(metric_device=cpu); skipping on the streaming path."
+            if use_streaming:
+                cell_results = compute_perpair_map_all_streaming(
+                    embs_c,
+                    work_ids,
+                    conditions,
+                    query_conds=unique_conds,
+                    target_conds=unique_conds,
+                    device=device,
+                    variation_ids=variations,
+                    require_different_variation=True,
                 )
-                return
+            else:
+                cell_results = compute_perpair_map_all(
+                    sim_c,
+                    work_ids,
+                    conditions,
+                    query_conds=unique_conds,
+                    target_conds=unique_conds,
+                    variation_ids=variations,
+                    require_different_variation=True,
+                )
             same, cross = [], []
+            same_n, cross_n = 0, 0
             for q in unique_conds:
                 for t in unique_conds:
-                    ap, n = compute_perpair_map(
-                        sim_c,
-                        work_ids,
-                        conditions,
-                        q,
-                        t,
-                        variation_ids=variations,
-                        require_different_variation=True,
-                    )
+                    ap, n = cell_results.get((q, t), (0.0, 0))
                     if n == 0:
                         continue
-                    (same if q == t else cross).append(ap)
+                    if q == t:
+                        same.append(ap)
+                        same_n += n
+                    else:
+                        cross.append(ap)
+                        cross_n += n
+            # Disclose the surviving query counts: twin masking drops single-variation
+            # works, so *_varctl is estimated on a narrower (multi-variation) sample
+            # than the confounded grid — log n so that selection is visible, not silent.
+            self.log("test/map_same_condition_varctl_n", float(same_n), rank_zero_only=True)
+            self.log("test/map_cross_condition_varctl_n", float(cross_n), rank_zero_only=True)
             if same:
                 sm = float(sum(same) / len(same))
                 self.log("test/map_same_condition_varctl", sm, rank_zero_only=True)
-                print(f"[CoverRetrieval] MAP same-condition  (varctl) = {sm:.4f}")
+                print(f"[CoverRetrieval] MAP same-condition  (varctl) = {sm:.4f} (n={same_n})")
             if cross:
                 cm = float(sum(cross) / len(cross))
                 self.log("test/map_cross_condition_varctl", cm, rank_zero_only=True)
-                print(f"[CoverRetrieval] MAP cross-condition (varctl) = {cm:.4f}")
+                print(f"[CoverRetrieval] MAP cross-condition (varctl) = {cm:.4f} (n={cross_n})")
             if same and cross:
                 self.log(
                     "test/condition_gap_varctl",
@@ -995,10 +1067,14 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         except Exception as e:
             print(f"[CoverRetrieval] WARN: variation-controlled grid failed: {type(e).__name__}")
 
-    def _dump_retrieval_score_artifacts(self, embs_c, work_ids, conditions, device) -> None:
+    def _dump_retrieval_score_artifacts(
+        self, embs_c, work_ids, conditions, variations, device
+    ) -> None:
         """Opt-in: write RELEVANT vs DISTRACTOR cosine-score distributions (histograms +
         separation) per condition cell, plus summary scalars. Streams sim row-chunks so
-        it never materialises N x N. Never raises."""
+        it never materialises N x N. When ``variations`` is given, also emits *_varctl
+        separations (same-(work, variation) twins removed) so the score geometry matches
+        the varctl MAP grid, not the confounded one. Never raises."""
         try:
             import csv
             import json
@@ -1006,7 +1082,7 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             from marble.utils.retrieval_scores import RetrievalScoreAccumulator
 
             n_bins = int(getattr(self, "dump_scores_n_bins", 50))
-            acc = RetrievalScoreAccumulator(work_ids, conditions, n_bins=n_bins)
+            acc = RetrievalScoreAccumulator(work_ids, conditions, variations, n_bins=n_bins)
             n = embs_c.shape[0]
             dev = device if isinstance(device, str) else "cpu"
             e = embs_c.to(dev)
@@ -1017,20 +1093,40 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                 acc.update(list(range(start, end)), rows)
             res = acc.result()
 
+            def _mean_over_cells(field, diag):
+                # Average a per-cell field over diagonal (within) or off-diagonal
+                # (cross) cells, skipping None (empty-relevant) cells so a bogus
+                # 0.0-distractor separation can never be folded in.
+                vals = [
+                    v[field]
+                    for k, v in res["cells"].items()
+                    if (k[0] == k[1]) == diag and v[field] is not None
+                ]
+                return (float(sum(vals) / len(vals)), len(vals)) if vals else (None, 0)
+
             ov = res["overall"]
-            self.log("test/score_sep_overall", float(ov["separation"]), rank_zero_only=True)
-            within = [v["separation"] for k, v in res["cells"].items() if k[0] == k[1]]
-            cross = [v["separation"] for k, v in res["cells"].items() if k[0] != k[1]]
-            if within:
+            if ov["separation"] is not None:
+                self.log("test/score_sep_overall", float(ov["separation"]), rank_zero_only=True)
+            if ov["separation_varctl"] is not None:
                 self.log(
-                    "test/score_sep_within", float(sum(within) / len(within)), rank_zero_only=True
+                    "test/score_sep_overall_varctl",
+                    float(ov["separation_varctl"]),
+                    rank_zero_only=True,
                 )
-            if cross:
-                self.log(
-                    "test/score_sep_cross", float(sum(cross) / len(cross)), rank_zero_only=True
-                )
+            for name, field in (
+                ("within", "separation"),
+                ("cross", "separation"),
+                ("within_varctl", "separation_varctl"),
+                ("cross_varctl", "separation_varctl"),
+            ):
+                diag = name.startswith("within")
+                val, n_cells = _mean_over_cells(field, diag)
+                if val is not None:
+                    self.log(f"test/score_sep_{name}", val, rank_zero_only=True)
+            ov_sep = ov["separation"]
+            ov_sep_str = f"{ov_sep:.4f}" if ov_sep is not None else "n/a"
             print(
-                f"[CoverRetrieval] score sep overall={ov['separation']:.4f} "
+                f"[CoverRetrieval] score sep overall={ov_sep_str} "
                 f"(rel {ov['relevant']['mean']:.4f} vs distr {ov['distractor']['mean']:.4f})"
             )
 
@@ -1050,8 +1146,15 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                 return
             out_path = Path(out_dir)
             out_path.mkdir(parents=True, exist_ok=True)
+            # ``res["cells"]`` is keyed by (query_cond, target_cond) TUPLES, which
+            # json.dump rejects (TypeError: keys must be str/int/float/bool/None).
+            # Stringify to "q_to_t" (matching the CSV cell names) before dumping.
+            json_res = {
+                "overall": res["overall"],
+                "cells": {f"{q}_to_{t}": v for (q, t), v in res["cells"].items()},
+            }
             with open(out_path / "retrieval_score_distributions.json", "w", encoding="utf-8") as f:
-                json.dump(res, f, indent=2)
+                json.dump(json_res, f, indent=2)
             with open(
                 out_path / "retrieval_score_summary.csv", "w", newline="", encoding="utf-8"
             ) as f:
@@ -1060,24 +1163,34 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                     [
                         "cell",
                         "n_relevant",
+                        "n_relevant_diffvar",
                         "n_distractor",
                         "mean_relevant",
+                        "mean_relevant_diffvar",
                         "mean_distractor",
                         "separation",
+                        "separation_varctl",
                     ]
                 )
                 rows_out = [("overall", ov)] + sorted(
                     ((f"{q}_to_{t}", v) for (q, t), v in res["cells"].items()), key=lambda x: x[0]
                 )
+
+                def _f(x):
+                    return "" if x is None else f"{x:.6f}"
+
                 for name, v in rows_out:
                     w.writerow(
                         [
                             name,
                             v["relevant"]["n"],
+                            v["relevant_diffvar"]["n"],
                             v["distractor"]["n"],
-                            f"{v['relevant']['mean']:.6f}",
-                            f"{v['distractor']['mean']:.6f}",
-                            f"{v['separation']:.6f}",
+                            _f(v["relevant"]["mean"]),
+                            _f(v["relevant_diffvar"]["mean"]),
+                            _f(v["distractor"]["mean"]),
+                            _f(v["separation"]),
+                            _f(v["separation_varctl"]),
                         ]
                     )
             print(f"[CoverRetrieval] wrote retrieval score distributions -> {out_path}")

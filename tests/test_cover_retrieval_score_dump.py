@@ -6,6 +6,9 @@ Uses the same __new__-fixture pattern as test_cover_retrieval_integration.py.
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import torch
 
 from marble.tasks.Covers80.probe import CoverRetrievalTask
@@ -57,12 +60,40 @@ def test_score_dump_and_variation_controlled_metrics_logged():
     assert "test/score_sep_overall" in log
     assert "test/score_sep_within" in log
     assert "test/score_sep_cross" in log
+    # Twin-controlled score separation (fix: the score dump must NOT silently
+    # re-include the same-(work, variation) twin the varctl grid removes).
+    assert "test/score_sep_cross_varctl" in log
     # Variation-controlled condition grid.
     assert "test/map_cross_condition_varctl" in log
     assert "test/condition_gap_varctl" in log
+    # Surviving-query disclosure for the varctl grid (selection-bias visibility).
+    assert "test/map_cross_condition_varctl_n" in log
     # The normal (confounded) condition grid is still logged for comparison.
     assert "test/map_cross_condition" in log
     assert "test/condition_gap" in log
+
+
+def test_score_dump_json_and_csv_written_and_parseable(tmp_path):
+    # Regression for the tuple-key json.dump TypeError: with conditions present,
+    # res["cells"] is keyed by (q, t) tuples. json.dump must not choke, and BOTH
+    # artifacts must land on disk. Needs a trainer.logger.save_dir so the method
+    # reaches the write block (the __new__ fixture otherwise returns early).
+    task, _ = _build_task(FILES)
+    # ``trainer`` is a read-only LightningModule property backed by ``_trainer``;
+    # set the backing field (the __new__ fixture skips nn.Module.__init__).
+    task._trainer = SimpleNamespace(logger=SimpleNamespace(save_dir=str(tmp_path)))
+    task._fabric = None
+    task._jit_is_scripting = False
+    task.on_test_epoch_end()
+    jpath = tmp_path / "retrieval_score_distributions.json"
+    cpath = tmp_path / "retrieval_score_summary.csv"
+    assert jpath.exists(), "score-distribution JSON was not written (tuple-key TypeError?)"
+    assert cpath.exists(), "score summary CSV was not written"
+    obj = json.loads(jpath.read_text())  # must be valid JSON
+    assert "overall" in obj and "cells" in obj
+    # Cells present (conditions given) and keyed by strings, not tuples.
+    assert obj["cells"], "expected per-condition cells"
+    assert all(isinstance(k, str) and "_to_" in k for k in obj["cells"])
 
 
 def test_features_off_by_default_no_new_keys():

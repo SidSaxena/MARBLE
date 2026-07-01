@@ -1236,6 +1236,22 @@ def compute_perpair_map(
     return (float(torch.tensor(aps).mean().item()) if aps else 0.0, len(aps))
 
 
+def _resolve_variation_tensor(
+    variation_ids: list[int] | torch.Tensor | None,
+    require_different_variation: bool,
+) -> torch.Tensor | None:
+    """Return a variation-id tensor iff variation control is active, else ``None``.
+
+    Mirrors the gate in :func:`compute_perpair_map`: control only kicks in when the
+    caller both opts in (``require_different_variation``) AND supplies ids. Either
+    missing → ``None`` → the ``_all`` aggregators run their normal (uncontrolled)
+    path, so the feature is a strict no-op by default.
+    """
+    if not require_different_variation or variation_ids is None:
+        return None
+    return variation_ids if isinstance(variation_ids, torch.Tensor) else torch.tensor(variation_ids)
+
+
 def compute_perpair_map_all(
     sim: torch.Tensor,
     work_ids: list[int] | torch.Tensor,
@@ -1244,6 +1260,8 @@ def compute_perpair_map_all(
     query_conds: list[int] | None = None,
     target_conds: list[int] | None = None,
     batch: int = 2048,
+    variation_ids: list[int] | torch.Tensor | None = None,
+    require_different_variation: bool = False,
 ) -> dict[tuple[int, int], tuple[float, int]]:
     """Compute all (query_condition × target_condition) MAP cells in one pass.
 
@@ -1289,6 +1307,7 @@ def compute_perpair_map_all(
     if n == 0:
         return {k: (0.0, 0) for k in aps_per_cell}
 
+    vars_t = _resolve_variation_tensor(variation_ids, require_different_variation)
     return _perpair_map_all_from_chunk_iter(
         _iter_row_order_chunks(sim, batch=batch),
         wids=wids,
@@ -1296,6 +1315,7 @@ def compute_perpair_map_all(
         query_set=query_set,
         target_list=target_list,
         aps_per_cell=aps_per_cell,
+        vars=vars_t,
     )
 
 
@@ -1307,6 +1327,7 @@ def _perpair_map_all_from_chunk_iter(
     query_set: set[int],
     target_list: list[int],
     aps_per_cell: dict[tuple[int, int], list[float]],
+    vars: torch.Tensor | None = None,
 ) -> dict[tuple[int, int], tuple[float, int]]:
     """Vectorised per-(query_cond, target_cond) AP aggregator.
 
@@ -1363,8 +1384,20 @@ def _perpair_map_all_from_chunk_iter(
         wids_at_query = wids[query_ids].unsqueeze(-1)  # (B, 1)
         is_rel_chunk = wids_at_order == wids_at_query  # (B, N-1) bool
 
+        # Variation control (VGMIDITVar twin confound): drop same-(work, variation)
+        # candidates from BOTH the gallery and relevance. Masking into ``mask_qt``
+        # removes them from the rank denominator (cumsum) and from ``rel_mask`` in
+        # one shot — exactly the ``allowed &= ~twin`` of the per-cell path.
+        keep_chunk = None
+        if vars is not None:
+            vars_at_order = vars[order_chunk]  # (B, N-1)
+            vars_at_query = vars[query_ids].unsqueeze(-1)  # (B, 1)
+            keep_chunk = ~(is_rel_chunk & (vars_at_order == vars_at_query))  # (B, N-1) bool
+
         for t_cond in target_list:
             mask_qt = cond_in_order == t_cond  # (B, N-1) bool
+            if keep_chunk is not None:
+                mask_qt = mask_qt & keep_chunk
             rel_mask = is_rel_chunk & mask_qt  # (B, N-1) bool
             # sub_ranks: 1-indexed rank within the t_cond subset at
             # each position. clamp(min=1) avoids div-by-zero at
@@ -1396,6 +1429,7 @@ def _perpair_map_all_from_iter(
     query_set: set[int],
     target_list: list[int],
     aps_per_cell: dict[tuple[int, int], list[float]],
+    vars: torch.Tensor | None = None,
 ) -> dict[tuple[int, int], tuple[float, int]]:
     """Per-row reference body for the per-cell perpair MAP grid.
 
@@ -1411,8 +1445,14 @@ def _perpair_map_all_from_iter(
             continue
         cond_in_order = conds[order_i]  # (N-1,)
         rel_in_order = wids[order_i] == wids[i]  # (N-1,)
+        # Variation control: drop same-(work, variation) twins from gallery + relevance.
+        keep_i = None
+        if vars is not None:
+            keep_i = ~(rel_in_order & (vars[order_i] == vars[i]))  # (N-1,)
         for t_cond in target_list:
             mask = cond_in_order == t_cond
+            if keep_i is not None:
+                mask = mask & keep_i
             if not bool(mask.any().item()):
                 continue
             sub_rel = rel_in_order[mask]
@@ -1443,6 +1483,8 @@ def compute_perpair_map_all_streaming(
     target_conds: list[int] | None = None,
     device: str = "cuda",
     batch: int = 1024,
+    variation_ids: list[int] | torch.Tensor | None = None,
+    require_different_variation: bool = False,
 ) -> dict[tuple[int, int], tuple[float, int]]:
     """GPU-chunked variant of :func:`compute_perpair_map_all`.
 
@@ -1491,6 +1533,7 @@ def compute_perpair_map_all_streaming(
     if n == 0:
         return {k: (0.0, 0) for k in aps_per_cell}
 
+    vars_t = _resolve_variation_tensor(variation_ids, require_different_variation)
     return _perpair_map_all_from_chunk_iter(
         _iter_row_order_chunks_streaming(embs, batch=batch, device=device),
         wids=wids,
@@ -1498,6 +1541,7 @@ def compute_perpair_map_all_streaming(
         query_set=query_set,
         target_list=target_list,
         aps_per_cell=aps_per_cell,
+        vars=vars_t,
     )
 
 
