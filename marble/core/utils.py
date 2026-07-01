@@ -11,6 +11,11 @@ def get_obj_from_str(string, reload=False):
 
 
 def instantiate_from_config(config):
+    # Idempotent: an already-instantiated object (not a config dict) is returned
+    # as-is. Lets classes that self-instantiate a nested config (e.g. a decoder's
+    # activation_fn) also accept one pre-resolved by ``instantiate_recursive``.
+    if not isinstance(config, dict):
+        return config
     if "class_path" not in config:
         raise KeyError("Expected key `class_path` to instantiate.")
     return get_obj_from_str(config["class_path"])(**config.get("init_args", dict()))

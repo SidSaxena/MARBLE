@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import torch
 
-from marble.core.utils import instantiate_recursive
+from marble.core.utils import instantiate_from_config, instantiate_recursive
 
 
 class _Holder(torch.nn.Module):
@@ -71,3 +71,12 @@ def test_scalars_and_plain_values_passthrough():
     assert instantiate_recursive("hello") == "hello"
     assert instantiate_recursive([1, 2, 3]) == [1, 2, 3]
     assert instantiate_recursive({"x": 1, "y": 2}) == {"x": 1, "y": 2}
+
+
+def test_instantiate_from_config_is_idempotent_on_instances():
+    # Some classes (e.g. MLPDecoderKeepTime) self-instantiate a nested config
+    # (activation_fn) via instantiate_from_config. When instantiate_recursive has
+    # already resolved it to a real object, instantiate_from_config must pass it
+    # through rather than treating the instance as a config dict.
+    relu = torch.nn.ReLU()
+    assert instantiate_from_config(relu) is relu
