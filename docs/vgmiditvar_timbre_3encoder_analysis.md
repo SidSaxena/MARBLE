@@ -108,6 +108,63 @@ is not a measurement artefact. Sanity checks:
   (off-diag has 8 relevants per query, diag has 7 — a 14% difference
   that cannot explain a 65% MAP increase).
 
+### ⚠️ Confound — the same-composition twin (correction, 2026-07-01)
+
+**The −0.19 gap OVERSTATES MuQ's timbre invariance, and the two sanity checks above do not rule out
+why.** Relevance is defined by `work_id` **only** — the variation index is never used. The design is
+fully crossed (every variation × every GM program, program-byte rewrite only), so each query's
+**off-diagonal (cross-instrument) relevant set always contains the query's OWN variation re-rendered
+in the target timbre** — identical notes/timing, only the instrument byte changed, an audio
+near-duplicate and the *easiest possible* positive. The **diagonal (within-instrument) relevant set
+cannot contain it** — that item *is* the query, removed by self-exclusion. With only **~2.55
+variations/work**, that twin often *dominates* the off-diagonal relevant set (and single-variation
+works feed a trivial twin to cross while contributing **nothing** to within, `n_rel=0`). So the cross
+cell measures an *easier* problem (same composition, new timbre) than the within cell (genuinely
+*different* ornamented variation) — biasing toward a negative gap **independent of true invariance**.
+The "7 vs 8 relevants, 14%" check above rebuts only the *denominator*; it never addresses this
+*content* asymmetry. (Also: the diag/off grid is computed on **centered** cosine, not the "raw" this
+doc's header implies — see `Covers80/probe.py` per-condition block.)
+
+**Real vs artifact — the direction is still real.** The twin is handed to *every* encoder, but only
+one that ranks a different-timbre rendering highly (comparatively timbre-invariant at cosine level)
+can cash it in: MERT (gap ≈ 0) and CLaMP3 (positive) can't, MuQ can. So the negative gap genuinely
+certifies MuQ is *more* timbre-invariant than the others (and the monotonic-with-depth + flat
+per-instrument signatures support an encoder-property story) — but the **−0.19 magnitude does not**;
+it conflates "timbre invariance" with "same-composition cross-timbre near-duplicate retrieval."
+
+**Confound-free control (NOT YET RUN):** recompute the 8×8 grid with relevance restricted to a
+**different variation index** (drop the same-composition twin from the off-diagonal) → both cells then
+measure "retrieve a *different* variation," with timbre the only off-diagonal difference. Gap persists
+→ clean invariance result (stronger); gap shrinks/flips → the number was mostly the twin. Complement
+with (a) same-variation-only cross-MAP per layer (the *pure* timbre-invariance ceiling) and (b) a
+**linear instrument-decodability probe at L11** (is timbre still *present*, just not dominating
+cosine?).
+
+> **Cost/feasibility (VERIFIED 2026-07-01 — NOT a quick job).** As of this check the PC has **no
+> cached VGMIDITVar-timbre embeddings** (`output/.emb_cache/MuQ/` holds only MedleyDBMelody +
+> VGMLoopStructure), the **rendered audio is not staged** (`data/VGMIDITVar-timbre/` empty), and the
+> **original run outputs are gone** (no `condition_grid.csv`). Only the summary artifacts in
+> `docs/figures/vgmiditvar_timbre_4enc/` survive. So the control requires: **(1) re-stage/re-render the
+> audio** (`build_vgmiditvar_dataset.py` + `rewrite_vgmidi_programs.py --mode cross-product` + render
+> 102,960 files — the expensive part), **(2) re-extract embeddings** (frozen encoder, zero-shot, per
+> layer — run with `cache_embeddings` ON this time so they persist), then **(3)** a variation-aware
+> relevance mask (re-derive the variation `idx` from the filename `{piece}_{section}_{idx}_p{program}`
+> and require *different* idx off-diagonal). **Do (1)+(2) once and instrument the re-run** to also
+> persist per-query scores/rankings (see note below) so this and the score-distribution question are
+> answered permanently.
+
+> **On stored scores (general, VERIFIED):** no retrieval task (VGMIDITVar / Covers80 / SHS100K / …)
+> persists the raw cosine scores, per-query rankings, or score distributions — `sim = embs @ embs.T`
+> is built in-memory in `CoverRetrievalTask.on_test_epoch_end` and discarded. Only **aggregate metrics**
+> (W&B) and a per-cell **`condition_grid.csv`** (the 8×8 MAP grid) are written. To keep scores you must
+> either (a) run with `cache_embeddings` ON and recompute cosine offline from the cached `(L,H)`
+> per-file embeddings, or (b) add an optional score/ranking + histogram dump to
+> `CoverRetrievalTask` — recommended, so future runs retain the distribution instead of only MAP.
+
+**Defensible claim:** "MuQ's late layers are comparatively timbre-invariant (unlike MERT/CLaMP3)."
+**Not** "same theme in a different instrument is *intrinsically* easier than same theme same
+instrument" — that is confounded until the variation-controlled grid is run.
+
 ---
 
 ## Layer-depth trajectories tell four different stories

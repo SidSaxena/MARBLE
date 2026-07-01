@@ -1140,6 +1140,8 @@ def compute_perpair_map(
     conditions: list[int] | torch.Tensor,
     query_condition: int | None,
     target_condition: int | None,
+    variation_ids: list[int] | torch.Tensor | None = None,
+    require_different_variation: bool = False,
 ) -> tuple[float, int]:
     """Per-(query_condition, target_condition) MAP for cross-condition retrieval.
 
@@ -1177,6 +1179,17 @@ def compute_perpair_map(
     n = sim.size(0)
     wids = work_ids if isinstance(work_ids, torch.Tensor) else torch.tensor(work_ids)
     prog_t = conditions if isinstance(conditions, torch.Tensor) else torch.tensor(conditions)
+    # Variation-controlled relevance: when enabled, mask out same-(work_id, variation)
+    # candidates (the query's own composition re-rendered in another condition — an
+    # audio near-duplicate) so cross- vs within-condition MAP is apples-to-apples
+    # ("retrieve a *different* variation"). No-op if variation_ids is None.
+    vars_t = None
+    if require_different_variation and variation_ids is not None:
+        vars_t = (
+            variation_ids
+            if isinstance(variation_ids, torch.Tensor)
+            else torch.tensor(variation_ids)
+        )
 
     query_mask = (
         torch.ones(n, dtype=torch.bool) if query_condition is None else (prog_t == query_condition)
@@ -1194,6 +1207,9 @@ def compute_perpair_map(
         # Allowed candidates: target_mask, excluding self
         allowed = target_mask.clone()
         allowed[i] = False
+        if vars_t is not None:
+            # Drop the same-(work, variation) twin(s) from BOTH gallery and relevance.
+            allowed &= ~((wids == wids[i]) & (vars_t == vars_t[i]))
         if allowed.sum() == 0:
             continue
         sims_i = sim[i].clone()

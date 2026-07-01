@@ -24,6 +24,9 @@ python cli.py fit  -c configs/probe.OMARRQ-multifeature-25hz.Covers80.yaml
 python cli.py test -c configs/probe.OMARRQ-multifeature-25hz.Covers80.yaml
 """
 
+import re
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -87,6 +90,10 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         metric_device: str = "auto",
         whiten_alpha: float | None = None,
         whiten_eps_rel: float | None = None,
+        dump_retrieval_scores: bool = False,
+        dump_scores_n_bins: int = 50,
+        variation_id_regex: str | None = None,
+        require_different_variation: bool = False,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -132,6 +139,20 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # else ``"cpu"``. Force ``"cpu"`` to reproduce pre-streaming
         # numbers bit-for-bit (no argsort tie-break delta).
         self.metric_device = str(metric_device)
+
+        # Opt-in analysis knobs (read via getattr elsewhere so __new__-built
+        # test fixtures don't AttributeError):
+        #  - dump_retrieval_scores: write per-cell RELEVANT vs DISTRACTOR cosine
+        #    score distributions (histograms + separation) to condition_grid dir.
+        #  - variation_id_regex: regex with an 'idx' (or first) group parsed from
+        #    each file's stem to recover a within-work variation index.
+        #  - require_different_variation: for the per-condition grid, mask
+        #    same-(work_id, variation) twins so cross vs within is apples-to-apples
+        #    (the VGMIDITVar same-composition-twin confound fix).
+        self.dump_retrieval_scores = bool(dump_retrieval_scores)
+        self.dump_scores_n_bins = int(dump_scores_n_bins)
+        self.variation_id_regex = variation_id_regex
+        self.require_different_variation = bool(require_different_variation)
 
     def setup(self, stage: str | None = None) -> None:
         """Hook into Lightning's per-stage setup to wire the cache check
@@ -282,11 +303,18 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             if has_note_counts:
                 path2notes.setdefault(path, all_note_counts[idx])
 
+        # Optional per-file variation index parsed from the filename stem (opt-in
+        # via variation_id_regex) — used for the variation-controlled condition
+        # grid. getattr-guarded for __new__-built test fixtures.
+        var_regex = getattr(self, "variation_id_regex", None)
+        _var_re = re.compile(var_regex) if var_regex else None
+
         file_embs: list[torch.Tensor] = []
         file_work_ids: list[int] = []
         file_conditions: list[int] = []
         file_families: list[int] = []
         file_note_counts: list[int] = []
+        file_variations: list[int] = []
         for path, embs_list in path2embs.items():
             stacked = torch.stack(embs_list)  # (n_clips, H)
             mean_emb = stacked.mean(0)
@@ -299,6 +327,14 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                 file_families.append(path2family[path])
             if has_note_counts:
                 file_note_counts.append(path2notes[path])
+            if _var_re is not None:
+                stem = Path(path).stem
+                m = _var_re.search(stem)
+                if m:
+                    gd = m.groupdict()
+                    file_variations.append(int(gd.get("idx") or m.group(m.lastindex or 1)))
+                else:
+                    file_variations.append(-1)
 
         embs = torch.stack(file_embs)  # (N, H)
         work_ids = torch.tensor(file_work_ids)  # (N,)
@@ -696,6 +732,25 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                 gap = float(sum(same_aps) / len(same_aps) - sum(cross_aps) / len(cross_aps))
                 self.log("test/condition_gap", gap, rank_zero_only=True)
 
+            # Variation-controlled grid (opt-in): mask same-(work_id, variation)
+            # twins so cross- vs within-condition MAP is apples-to-apples (the
+            # same-composition-twin confound fix). Logs *_varctl metrics.
+            if (
+                getattr(self, "require_different_variation", False)
+                and file_variations
+                and all(v != -1 for v in file_variations)
+            ):
+                self._log_variation_controlled_grid(
+                    sim_c,
+                    embs_c,
+                    file_work_ids,
+                    file_conditions,
+                    file_variations,
+                    unique_conds,
+                    use_streaming,
+                    _md,
+                )
+
             # Per-cell logging of the full (query_cond × target_cond) grid.
             # For VGMIDITVar-timbre with 8 GM programs that's 64 keys —
             # tractable in wandb. Use ``map_grid/q_to_t`` keys (slashes
@@ -709,6 +764,18 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                     self.log(f"test/map_grid/{q}_to_{t}", ap, rank_zero_only=True)
                     self.log(f"test/map_grid/{q}_to_{t}_n", float(n), rank_zero_only=True)
             self._dump_condition_grid_artifacts(unique_conds, cell_results)
+
+        # ── Retrieval score distributions (opt-in) ───────────────────────────
+        # Persist RELEVANT vs DISTRACTOR cosine-score histograms + separation
+        # per condition cell — the raw geometry behind the MAP, normally
+        # discarded. On centered embeddings (matches the condition grid).
+        if getattr(self, "dump_retrieval_scores", False):
+            self._dump_retrieval_score_artifacts(
+                embs_c,
+                file_work_ids,
+                file_conditions if has_conditions else None,
+                _md,
+            )
 
         # ── Anisotropy diagnostics ───────────────────────────────────────────
         # Cone-effect / rank-collapse measurements on the per-file embedding
@@ -880,6 +947,142 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
             pass  # matplotlib not installed -- CSV only.
         except Exception as e:
             print(f"[CoverRetrieval] WARN: matplotlib heatmap failed: {e}")
+
+    def _log_variation_controlled_grid(
+        self, sim_c, embs_c, work_ids, conditions, variations, unique_conds, use_streaming, device
+    ) -> None:
+        """Opt-in: per-condition MAP grid with same-(work, variation) twins masked
+        so cross- vs within-condition is apples-to-apples. Non-streaming only (needs
+        the materialised sim_c); logs *_varctl metrics. Never raises."""
+        try:
+            from marble.utils.retrieval_metrics import compute_perpair_map
+
+            if use_streaming or sim_c is None:
+                print(
+                    "[CoverRetrieval] variation-controlled grid needs the CPU path "
+                    "(metric_device=cpu); skipping on the streaming path."
+                )
+                return
+            same, cross = [], []
+            for q in unique_conds:
+                for t in unique_conds:
+                    ap, n = compute_perpair_map(
+                        sim_c,
+                        work_ids,
+                        conditions,
+                        q,
+                        t,
+                        variation_ids=variations,
+                        require_different_variation=True,
+                    )
+                    if n == 0:
+                        continue
+                    (same if q == t else cross).append(ap)
+            if same:
+                sm = float(sum(same) / len(same))
+                self.log("test/map_same_condition_varctl", sm, rank_zero_only=True)
+                print(f"[CoverRetrieval] MAP same-condition  (varctl) = {sm:.4f}")
+            if cross:
+                cm = float(sum(cross) / len(cross))
+                self.log("test/map_cross_condition_varctl", cm, rank_zero_only=True)
+                print(f"[CoverRetrieval] MAP cross-condition (varctl) = {cm:.4f}")
+            if same and cross:
+                self.log(
+                    "test/condition_gap_varctl",
+                    float(sum(same) / len(same) - sum(cross) / len(cross)),
+                    rank_zero_only=True,
+                )
+        except Exception as e:
+            print(f"[CoverRetrieval] WARN: variation-controlled grid failed: {type(e).__name__}")
+
+    def _dump_retrieval_score_artifacts(self, embs_c, work_ids, conditions, device) -> None:
+        """Opt-in: write RELEVANT vs DISTRACTOR cosine-score distributions (histograms +
+        separation) per condition cell, plus summary scalars. Streams sim row-chunks so
+        it never materialises N x N. Never raises."""
+        try:
+            import csv
+            import json
+
+            from marble.utils.retrieval_scores import RetrievalScoreAccumulator
+
+            n_bins = int(getattr(self, "dump_scores_n_bins", 50))
+            acc = RetrievalScoreAccumulator(work_ids, conditions, n_bins=n_bins)
+            n = embs_c.shape[0]
+            dev = device if isinstance(device, str) else "cpu"
+            e = embs_c.to(dev)
+            chunk = 1024
+            for start in range(0, n, chunk):
+                end = min(start + chunk, n)
+                rows = (e[start:end] @ e.T).detach().cpu()
+                acc.update(list(range(start, end)), rows)
+            res = acc.result()
+
+            ov = res["overall"]
+            self.log("test/score_sep_overall", float(ov["separation"]), rank_zero_only=True)
+            within = [v["separation"] for k, v in res["cells"].items() if k[0] == k[1]]
+            cross = [v["separation"] for k, v in res["cells"].items() if k[0] != k[1]]
+            if within:
+                self.log(
+                    "test/score_sep_within", float(sum(within) / len(within)), rank_zero_only=True
+                )
+            if cross:
+                self.log(
+                    "test/score_sep_cross", float(sum(cross) / len(cross)), rank_zero_only=True
+                )
+            print(
+                f"[CoverRetrieval] score sep overall={ov['separation']:.4f} "
+                f"(rel {ov['relevant']['mean']:.4f} vs distr {ov['distractor']['mean']:.4f})"
+            )
+
+            out_dir = None
+            try:
+                logger = self.trainer.logger
+                save_dir = getattr(logger, "save_dir", None) or getattr(logger, "_save_dir", None)
+                run_dir = (
+                    getattr(logger.experiment, "dir", None)
+                    if hasattr(logger, "experiment")
+                    else None
+                )
+                out_dir = run_dir or save_dir
+            except Exception:
+                out_dir = None
+            if out_dir is None:
+                return
+            out_path = Path(out_dir)
+            out_path.mkdir(parents=True, exist_ok=True)
+            with open(out_path / "retrieval_score_distributions.json", "w", encoding="utf-8") as f:
+                json.dump(res, f, indent=2)
+            with open(
+                out_path / "retrieval_score_summary.csv", "w", newline="", encoding="utf-8"
+            ) as f:
+                w = csv.writer(f)
+                w.writerow(
+                    [
+                        "cell",
+                        "n_relevant",
+                        "n_distractor",
+                        "mean_relevant",
+                        "mean_distractor",
+                        "separation",
+                    ]
+                )
+                rows_out = [("overall", ov)] + sorted(
+                    ((f"{q}_to_{t}", v) for (q, t), v in res["cells"].items()), key=lambda x: x[0]
+                )
+                for name, v in rows_out:
+                    w.writerow(
+                        [
+                            name,
+                            v["relevant"]["n"],
+                            v["distractor"]["n"],
+                            f"{v['relevant']['mean']:.6f}",
+                            f"{v['distractor']['mean']:.6f}",
+                            f"{v['separation']:.6f}",
+                        ]
+                    )
+            print(f"[CoverRetrieval] wrote retrieval score distributions -> {out_path}")
+        except Exception as e:
+            print(f"[CoverRetrieval] WARN: score dump failed: {type(e).__name__}")
 
     # ── back-compat shims (delegate to compute_retrieval_metrics) ─────────────
     # These three static methods used to contain their own per-row argsort
