@@ -29,10 +29,19 @@ Sentinel conditions: condition ``-1`` (the "unparsed" sentinel used across the
 probe) is excluded from cell enumeration, matching the MAP grid's ``c != -1``
 filter, so the two diagnostics score the same cell universe.
 
-Streaming: :meth:`RetrievalScoreAccumulator.update` takes a batch of query rows
-and processes them with vectorised tensor masks (no per-query Python loop), so it
-works at N≈100k without materialising the full N×N similarity matrix. Only
-fixed-size histograms + running moments are kept.
+Streaming + device residency: :meth:`RetrievalScoreAccumulator.update` takes a
+batch of query rows and accumulates with vectorised scatter/bincount ops **on
+the device the rows live on** — feed it CUDA sim chunks and the whole
+accumulation runs on GPU with only fixed-size count/moment tensors held; feed
+it CPU rows and it runs on CPU. Works at N≈100k without materialising the full
+N×N similarity matrix. Self positions may carry ``-inf`` (the shared streaming
+iterator poisons the diagonal before argsort) — they are excluded by the
+self-mask before any pool statistics, so the poisoning is harmless.
+
+Histogram semantics match ``np.histogram`` on values clipped into ``[lo, hi]``
+(so ``sum(hist) == n`` always): bin = ``searchsorted(edges, clamp(x), right) - 1``
+clamped to the last bin, computed in float64 exactly like the previous
+numpy-based implementation.
 """
 
 from __future__ import annotations
@@ -64,6 +73,63 @@ def _merge_pools(a: dict, b: dict) -> dict:
     }
 
 
+# Pool codes used by the bulk accumulation. SKIP covers self positions and
+# (for the cell scope) sentinel-condition elements.
+_POOL_REL_DIFF = 0
+_POOL_TWIN = 1
+_POOL_DISTR = 2
+_POOL_SKIP = 3
+
+
+class _ScopeAccumulators:
+    """Fixed-size tensor accumulators for one scope (overall, or all cells).
+
+    ``groups`` = 3 pools for the overall scope, ``n_cells * 3`` for the cell
+    scope. One extra trailing slot absorbs SKIP elements so the hot loop never
+    needs boolean compaction — scatter everything, slice the junk slot off.
+    """
+
+    def __init__(self, groups: int, n_bins: int, device: torch.device):
+        self.groups = groups
+        self.n_bins = n_bins
+        self.hist = torch.zeros(groups * n_bins + 1, dtype=torch.long, device=device)
+        self.n = torch.zeros(groups + 1, dtype=torch.long, device=device)
+        self.sum = torch.zeros(groups + 1, dtype=torch.float64, device=device)
+        self.sumsq = torch.zeros(groups + 1, dtype=torch.float64, device=device)
+        self.min = torch.full((groups + 1,), float("inf"), dtype=torch.float64, device=device)
+        self.max = torch.full((groups + 1,), float("-inf"), dtype=torch.float64, device=device)
+
+    def add(self, group_idx: torch.Tensor, bins: torch.Tensor, values: torch.Tensor) -> None:
+        """Scatter one flattened batch. ``group_idx`` == ``self.groups`` → junk slot."""
+        g = group_idx.reshape(-1)
+        v = values.reshape(-1)
+        flat_hist = g * self.n_bins + bins.reshape(-1)
+        # Junk-slot elements land past groups*n_bins; clamp into the single
+        # trailing slot (their bin offset would overrun it otherwise).
+        flat_hist = flat_hist.clamp(max=self.groups * self.n_bins)
+        self.hist += torch.bincount(flat_hist, minlength=self.groups * self.n_bins + 1)
+        self.n += torch.bincount(g, minlength=self.groups + 1)
+        self.sum += torch.bincount(g, weights=v, minlength=self.groups + 1)
+        self.sumsq += torch.bincount(g, weights=v * v, minlength=self.groups + 1)
+        self.min.scatter_reduce_(0, g, v, reduce="amin")
+        self.max.scatter_reduce_(0, g, v, reduce="amax")
+
+    def pool_dict(self, group: int) -> dict:
+        """Materialise one group's accumulators as a host-side pool dict."""
+        n = int(self.n[group].item())
+        return {
+            "n": n,
+            "sum": float(self.sum[group].item()),
+            "sumsq": float(self.sumsq[group].item()),
+            "max": float(self.max[group].item()),
+            "min": float(self.min[group].item()),
+            "hist": self.hist[group * self.n_bins : (group + 1) * self.n_bins]
+            .cpu()
+            .numpy()
+            .astype(np.int64),
+        }
+
+
 class RetrievalScoreAccumulator:
     """Accumulate relevant/distractor cosine-score histograms + moments per cell.
 
@@ -88,6 +154,8 @@ class RetrievalScoreAccumulator:
         self.cond = None if conditions is None else torch.as_tensor(conditions)
         self.var = None if variations is None else torch.as_tensor(variations)
         self.n_bins = int(n_bins)
+        self.lo = float(lo)
+        self.hi = float(hi)
         self.edges = np.linspace(lo, hi, self.n_bins + 1)
         # Cell enumeration excludes the ``exclude_condition`` sentinel (default -1)
         # so cells match the MAP grid, which filters ``c != -1``.
@@ -98,79 +166,121 @@ class RetrievalScoreAccumulator:
             ]
         else:
             self._unique_conds = []
-        # key -> {"rel_diff": pool, "rel_twin": pool, "distr": pool}; key "overall" or (qc, tc).
-        self._cells: dict = {}
+        self.n_c = len(self._unique_conds)
+        # Lazy device state (built on first update, on the rows' device).
+        self._dev: torch.device | None = None
+        self._overall: _ScopeAccumulators | None = None
+        self._cells_acc: _ScopeAccumulators | None = None
 
-    def _cell(self, key) -> dict:
-        if key not in self._cells:
-            self._cells[key] = {
-                "rel_diff": _new_pool(self.n_bins),
-                "rel_twin": _new_pool(self.n_bins),
-                "distr": _new_pool(self.n_bins),
-            }
-        return self._cells[key]
-
-    def _add(self, pool: dict, scores: torch.Tensor) -> None:
-        if scores.numel() == 0:
+    # ── device state ────────────────────────────────────────────────────
+    def _ensure_state(self, dev: torch.device) -> None:
+        if self._dev == dev:
             return
-        s = scores.detach().to(torch.float64).cpu().numpy()
-        pool["n"] += int(s.size)
-        pool["sum"] += float(s.sum())
-        pool["sumsq"] += float((s * s).sum())
-        pool["max"] = max(pool["max"], float(s.max()))
-        pool["min"] = min(pool["min"], float(s.min()))
-        # Clip into [lo, hi] so out-of-range scores land in the edge bins instead of
-        # being dropped by np.histogram — keeps sum(hist) == n. Moments above use the
-        # true (unclipped) values.
-        clipped = np.clip(s, self.edges[0], self.edges[-1])
-        pool["hist"] += np.histogram(clipped, bins=self.edges)[0]
+        if self._dev is not None and self._overall is not None:
+            # Mid-stream device switch: carry accumulated state over.
+            for acc in (self._overall, self._cells_acc):
+                if acc is None:
+                    continue
+                for name in ("hist", "n", "sum", "sumsq", "min", "max"):
+                    setattr(acc, name, getattr(acc, name).to(dev))
+            self._work_d = self._work_d.to(dev)
+            self._cond_pos = None if self._cond_pos is None else self._cond_pos.to(dev)
+            self._var_d = None if self._var_d is None else self._var_d.to(dev)
+            self._edges_d = self._edges_d.to(dev)
+            self._dev = dev
+            return
+        self._dev = dev
+        self._work_d = self.work.to(dev)
+        self._var_d = None if self.var is None else self.var.to(dev)
+        self._edges_d = torch.tensor(self.edges, dtype=torch.float64, device=dev)
+        # Per-item cell position of each candidate's condition (-1 = not a cell
+        # condition, e.g. the sentinel). Precomputed once for the target axis.
+        if self.cond is not None and self.n_c:
+            uc_t = torch.tensor(self._unique_conds, dtype=self.cond.dtype, device=dev)
+            cond_d = self.cond.to(dev)
+            pos = torch.searchsorted(uc_t, cond_d.clamp(min=int(uc_t.min()), max=int(uc_t.max())))
+            pos = pos.clamp(max=self.n_c - 1)
+            match = uc_t[pos] == cond_d
+            self._cond_pos = torch.where(match, pos, torch.full_like(pos, -1))
+        else:
+            self._cond_pos = None
+        self._overall = _ScopeAccumulators(3, self.n_bins, dev)
+        self._cells_acc = (
+            _ScopeAccumulators(self.n_c * self.n_c * 3, self.n_bins, dev)
+            if self._cond_pos is not None
+            else None
+        )
 
+    # ── accumulation ────────────────────────────────────────────────────
     def update(self, query_idx, sim_rows) -> None:
-        """Process a batch of query rows with vectorised masks.
+        """Process a batch of query rows with vectorised scatter ops on the
+        rows' device.
 
-        ``query_idx`` = the global row indices (length B); ``sim_rows`` = ``(B, N)``
-        similarities for those queries. No per-query Python loop, so this scales to
-        N≈100k when fed in row-chunks.
+        ``query_idx`` = the global row indices (length B); ``sim_rows`` =
+        ``(B, N)`` similarities for those queries. Self positions may be
+        ``-inf``-poisoned — they are excluded before any statistic.
         """
         sim = torch.as_tensor(sim_rows)
         if sim.ndim == 1:
             sim = sim.unsqueeze(0)
-        qidx = torch.as_tensor([int(x) for x in query_idx])
+        dev = sim.device
+        self._ensure_state(dev)
+        qidx = torch.as_tensor(
+            [int(x) for x in query_idx] if not isinstance(query_idx, torch.Tensor) else query_idx,
+            dtype=torch.long,
+            device=dev,
+        )
         b, n = sim.shape
-        rows = torch.arange(b)
+        rows = torch.arange(b, device=dev)
 
-        wq = self.work[qidx].unsqueeze(1)  # (B, 1)
-        same_work = self.work.unsqueeze(0) == wq  # (B, N)
-        not_self = torch.ones(b, n, dtype=torch.bool)
+        wq = self._work_d[qidx].unsqueeze(1)  # (B, 1)
+        same_work = self._work_d.unsqueeze(0) == wq  # (B, N)
+        not_self = torch.ones(b, n, dtype=torch.bool, device=dev)
         not_self[rows, qidx] = False
-        same_work = same_work & not_self
-        if self.var is not None:
-            vq = self.var[qidx].unsqueeze(1)  # (B, 1)
-            twin = same_work & (self.var.unsqueeze(0) == vq)  # (B, N)
+        if self._var_d is not None:
+            vq = self._var_d[qidx].unsqueeze(1)
+            twin = same_work & (self._var_d.unsqueeze(0) == vq)
         else:
-            twin = torch.zeros(b, n, dtype=torch.bool)
-        rel_diff = same_work & ~twin
-        distr = (~same_work) & not_self
+            twin = torch.zeros(b, n, dtype=torch.bool, device=dev)
 
-        ov = self._cell("overall")
-        self._add(ov["rel_diff"], sim[rel_diff])
-        self._add(ov["rel_twin"], sim[twin])
-        self._add(ov["distr"], sim[distr])
+        # Pool code per element: rel_diff / twin / distr / skip(self).
+        pool = torch.full((b, n), _POOL_SKIP, dtype=torch.long, device=dev)
+        pool = torch.where((~same_work) & not_self, torch.tensor(_POOL_DISTR, device=dev), pool)
+        pool = torch.where(
+            same_work & not_self & ~twin, torch.tensor(_POOL_REL_DIFF, device=dev), pool
+        )
+        pool = torch.where(twin & not_self, torch.tensor(_POOL_TWIN, device=dev), pool)
 
-        if self.cond is not None and self._unique_conds:
-            qc = self.cond[qidx]  # (B,)
-            for tc in self._unique_conds:
-                col = (self.cond == tc).unsqueeze(0)  # (1, N)
-                for qcv in self._unique_conds:
-                    rowm = (qc == qcv).unsqueeze(1)  # (B, 1)
-                    if not bool(rowm.any()):
-                        continue
-                    cell = self._cell((qcv, tc))
-                    sel = rowm & col
-                    self._add(cell["rel_diff"], sim[rel_diff & sel])
-                    self._add(cell["rel_twin"], sim[twin & sel])
-                    self._add(cell["distr"], sim[distr & sel])
+        # float64 values + np.histogram-equivalent binning on clipped values.
+        s64 = sim.to(torch.float64)
+        # Neutralise skip elements' values so -inf can't leak into moments via
+        # the junk slot arithmetic (they only ever land in the junk slot, but
+        # -inf * 0 style traps are avoided entirely by overwriting).
+        s64 = torch.where(pool == _POOL_SKIP, torch.zeros_like(s64), s64)
+        bins = (
+            torch.searchsorted(self._edges_d, s64.clamp(self.lo, self.hi).contiguous(), right=True)
+            - 1
+        )
+        bins = bins.clamp(min=0, max=self.n_bins - 1)
 
+        # Overall scope: group = pool (skip → junk slot 3).
+        self._overall.add(pool, bins, s64)
+
+        # Cell scope: group = (qc_pos * n_c + tc_pos) * 3 + pool; anything with
+        # an invalid condition or skip pool → junk slot.
+        if self._cells_acc is not None:
+            qpos = self._cond_pos[qidx]  # (B,)
+            tpos = self._cond_pos.unsqueeze(0)  # (1, N)
+            cell = qpos.unsqueeze(1) * self.n_c + tpos  # (B, N)
+            valid = (qpos.unsqueeze(1) >= 0) & (tpos >= 0) & (pool < _POOL_SKIP)
+            group = torch.where(
+                valid,
+                cell * 3 + pool,
+                torch.full_like(cell, self._cells_acc.groups),
+            )
+            self._cells_acc.add(group, bins, s64)
+
+    # ── finalisation ────────────────────────────────────────────────────
     def _finalize(self, pool: dict) -> dict:
         n = pool["n"]
         mean = pool["sum"] / n if n else 0.0
@@ -185,35 +295,48 @@ class RetrievalScoreAccumulator:
             "edges": self.edges.tolist(),
         }
 
-    def _finalize_cell(self, cell: dict) -> dict:
-        rel_all = self._finalize(_merge_pools(cell["rel_diff"], cell["rel_twin"]))
-        rel_diff = self._finalize(cell["rel_diff"])
-        distr = self._finalize(cell["distr"])
+    def _finalize_cell(self, rel_diff: dict, rel_twin: dict, distr: dict) -> dict:
+        rel_all = self._finalize(_merge_pools(rel_diff, rel_twin))
+        rel_diff_f = self._finalize(rel_diff)
+        distr_f = self._finalize(distr)
         # separation is None for an empty RELEVANT (or DISTRACTOR) pool so callers
         # can't average a bogus ``0.0 - distractor_mean`` in.
-        sep = rel_all["mean"] - distr["mean"] if rel_all["n"] > 0 and distr["n"] > 0 else None
-        sep_ctl = rel_diff["mean"] - distr["mean"] if rel_diff["n"] > 0 and distr["n"] > 0 else None
+        sep = rel_all["mean"] - distr_f["mean"] if rel_all["n"] > 0 and distr_f["n"] > 0 else None
+        sep_ctl = (
+            rel_diff_f["mean"] - distr_f["mean"]
+            if rel_diff_f["n"] > 0 and distr_f["n"] > 0
+            else None
+        )
         return {
             "relevant": rel_all,
-            "distractor": distr,
+            "distractor": distr_f,
             "separation": sep,
-            "relevant_diffvar": rel_diff,
+            "relevant_diffvar": rel_diff_f,
             "separation_varctl": sep_ctl,
         }
 
     def result(self) -> dict:
-        finalized = {key: self._finalize_cell(cell) for key, cell in self._cells.items()}
-        empty = self._finalize_cell(
-            {
-                "rel_diff": _new_pool(self.n_bins),
-                "rel_twin": _new_pool(self.n_bins),
-                "distr": _new_pool(self.n_bins),
-            }
+        empty_cell = self._finalize_cell(
+            _new_pool(self.n_bins), _new_pool(self.n_bins), _new_pool(self.n_bins)
         )
-        return {
-            "overall": finalized.get("overall", empty),
-            "cells": {k: v for k, v in finalized.items() if k != "overall"},
-        }
+        if self._overall is None:  # no update() ever ran
+            return {"overall": empty_cell, "cells": {}}
+        overall = self._finalize_cell(
+            self._overall.pool_dict(_POOL_REL_DIFF),
+            self._overall.pool_dict(_POOL_TWIN),
+            self._overall.pool_dict(_POOL_DISTR),
+        )
+        cells: dict = {}
+        if self._cells_acc is not None:
+            for qi, qc in enumerate(self._unique_conds):
+                for ti, tc in enumerate(self._unique_conds):
+                    base = (qi * self.n_c + ti) * 3
+                    cells[(qc, tc)] = self._finalize_cell(
+                        self._cells_acc.pool_dict(base + _POOL_REL_DIFF),
+                        self._cells_acc.pool_dict(base + _POOL_TWIN),
+                        self._cells_acc.pool_dict(base + _POOL_DISTR),
+                    )
+        return {"overall": overall, "cells": cells}
 
 
 def score_distributions(
