@@ -1,5 +1,14 @@
 # VGMIDITVar-timbre — four-encoder analysis (CLaMP3 / MERT-v1-95M / MuQ / OMARRQ-25hz)
 
+> **⚠️ RESOLVED 2026-07-03 — the negative-gap finding below is a CONFIRMED benchmark artifact.**
+> The full 13-layer variation-controlled sweep (MuQ) shows the condition gap flips POSITIVE at
+> every layer once same-(work, variation) twins are masked (L11: confounded −0.187 → controlled
+> **+0.072**; no layer keeps a negative controlled gap). Every gap number in this document is the
+> *confounded* value — do not cite without that caveat. Authoritative results, figures, and the
+> thesis-ready summary: **`docs/handoff_muq_findings.md`** +
+> `docs/figures/vgmiditvar_timbre_muq_varctl/`. MERT/CLaMP3 re-runs under control pending; the
+> cross-encoder invariance ordering claimed below is retracted until then.
+
 Layer-sweep results for four frozen self-supervised music encoders on
 the VGMIDITVar-timbre zero-shot retrieval benchmark. Covers headline
 numbers, layer-depth trajectories, the negative-gap finding for MuQ,
