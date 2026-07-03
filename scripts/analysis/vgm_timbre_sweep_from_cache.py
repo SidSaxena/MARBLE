@@ -93,11 +93,13 @@ ORACLE_TOL: dict[str, float] = {
 ORACLE_DEFAULT_TOL = 2.5e-3
 
 
-def _parse_layers(spec: str) -> list[int]:
-    out: list[int] = []
+def _parse_layers(spec: str) -> list[int | str]:
+    out: list[int | str] = []
     for part in spec.split(","):
         part = part.strip()
-        if "-" in part:
+        if part == "meanall":
+            out.append("meanall")
+        elif "-" in part:
             a, b = part.split("-")
             out.extend(range(int(a), int(b) + 1))
         elif part:
@@ -498,8 +500,12 @@ def main() -> None:
     for li, layer in enumerate(layers):
         t0 = time.time()
         print(f"\n===== layer {layer} ({li + 1}/{len(layers)}) =====")
+        # "meanall" = LayerSelector mode=mean over the full stack. Mean over
+        # layers commutes with the clip-mean, so layer-mean of the cached
+        # per-clip stack == the live meanall pipeline.
+        emb_slice = embs_all.mean(dim=1) if layer == "meanall" else embs_all[:, int(layer), :]
         metrics, grid, varctl, scores = evaluate_layer(
-            embs_all[:, layer, :],
+            emb_slice,
             work_ids,
             conditions,
             variations,
