@@ -81,9 +81,11 @@ composition). It reveals a clean **timbre → composition representational shift
 | 12 | 0.66 | **0.63** | 0.39 | −0.02 |
 
 Early layers are **timbre-dominated** (same-instrument similarity 0.81, same-notes-across-instrument
-only 0.35). With depth, same-timbre similarity *falls* while same-notes-across-timbre *rises* — they
-**cross around layer ~12**, i.e. deep MuQ judges two clips more by their notes than their
-instrument. This is exactly why the twin confound intensifies with depth, and it is an independent,
+only 0.35). With depth, same-timbre similarity *falls* while same-notes-across-timbre *rises* — the
+gap between them **closes from +0.45 (L0) to +0.03 (L12): they converge at the deepest layers**
+(they do NOT strictly cross within 13 layers — say "converge", not "cross"), i.e. deep MuQ judges
+two clips almost as much by their notes as their instrument. This is exactly why the twin confound
+intensifies with depth, and it is an independent,
 unsupervised characterization of *where and how* timbre invariance emerges — a result the MAP curve
 alone cannot show. (The distractor floor also drifts up with depth, −0.05→−0.02: the mild
 cone-anisotropy that motivates the centered/whitened variants.)
@@ -225,3 +227,99 @@ caveat**).
 4. MedleyDB fold variance is large (RPA fold spread ~0.09); single-fold comparisons within
    ~0.05 are noise — always report the 5-fold mean±sd.
 5. meanall claims are regime-scoped (Finding 5).
+
+---
+
+# APPENDIX A — Instructions for the thesis-drafting & slides agent
+
+**You (the drafting agent) should treat this document as the single source of truth for the
+MuQ results.** Do not recompute or re-derive any number — cite what is written here. Every claim
+below ships with a caveat; the caveats are load-bearing and must travel with the claim into both
+the thesis text and the slides. Figures live in `docs/figures/vgmiditvar_timbre_muq_varctl/`
+(PNG for slides, PDF vector for LaTeX `\includegraphics`). MERT-v1-95M and OMAR-RQ are pending and
+will be appended as parallel sections; write the MuQ sections so an encoder-comparison row/panel
+can be slotted in later without restructuring.
+
+## A.1 Finding → thesis-section → claim → figure → caveat (the map)
+
+| # | Thesis home | One-sentence claim to make | Figure(s) | Non-negotiable caveat |
+|---|---|---|---|---|
+| 1 | Evaluation/Methodology (confound) | A fully-crossed timbre-rendering benchmark silently rewards retrieving the *same* composition re-orchestrated; correcting it flips the apparent "cross-timbre is easier" result. | fig1, fig2, fig5 | Numbers are *confounded* unless labelled `_varctl`. |
+| 1b | Interpretability / representation analysis | With depth, MuQ's embedding shifts from timbre-dominated to composition-dominated — same-instrument similarity falls while same-notes-across-instruments rises, converging at the deepest layers. | figS3 (star), figS1, figS2 | Single encoder so far; synthetic renders. |
+| 2 | Results (leitmotif proxy) | Honest cross-orchestration retrieval improves ~3.5× with depth and plateaus at layers 7–11 (best L8, MAP 0.226); depth never makes cross *easier* than within. | fig3 | varctl (twin-masked) numbers only. |
+| 3 | Results (melody proxy) | Predominant-melody probing peaks at **layer 1** and declines with depth — pitch is an early, low-level feature. | (MedleyDB curve — regenerate if needed) | 5-fold mean±sd; fold variance ~0.09. |
+| 4 | Discussion (the through-line) | Pitch peaks early, orchestration-invariant theme identity peaks deep — two probes, opposite layer curves, one representational hierarchy. | fig3 + figS3 + MedleyDB curve | Both above caveats. |
+| 5 | Discussion (aggregation) | Mean-of-all-layers helps a *trained* probe but hurts *zero-shot* retrieval; scope any meanall claim by regime. | (table) | Regime-scoped. |
+| 6 | Method / appendix | Transductive ZCA whitening lifts retrieval MAP 2–4× at every layer. | fig4 | **Transductive** (fit on test corpus) — state every time. |
+| 7 | Method / appendix | `effective_rank` (unsupervised) predicts the best retrieval layer (r=0.947 on MuQ). | (scatter — optional) | MuQ-only until replicated. |
+
+## A.2 Plain-word explanations to reuse verbatim (jury-level, no ML jargon)
+
+**Retrieval + MAP.** "We test the frozen model as a *search engine*: hand it a short clip of a
+game-music theme and it ranks every other clip by how similar its internal fingerprint is.
+Success means other renditions of the *same theme* rise to the top, even across instruments and
+variations. MAP is the single grade for how well the right answers cluster near the top."
+
+**The confound (Finding 1).** "In this benchmark every theme is rendered in eight instruments.
+When we ask 'find this piano theme among the guitar clips,' the correct-answer set includes the
+*exact same piece*, just played on guitar — the same notes. The model matches that easily. But
+the *same-instrument* version of that test can't contain such a freebie (there, the identical clip
+*is* the query, which we exclude). So the cross-instrument test was quietly easier by
+construction, which made the model look like it found themes *more* easily across instruments than
+within one. Once we require the retrieved clip to be a genuinely *different* variation, that
+illusion disappears and the expected order returns."
+
+**The depth shift (Finding 1b — the memorable one).** "We looked inside the network layer by
+layer. Early on, it mostly hears the *instrument*: two different melodies on the same instrument
+look more alike to it than the same melody on two instruments. As you go deeper, this reverses —
+it increasingly hears the *tune* regardless of instrument. By the deepest layers the two are
+nearly equal. In short: shallow layers hear the instrument, deep layers hear the melody. That is
+exactly why deep layers are the right place to look for a recurring theme that gets re-orchestrated
+— which is what a leitmotif is."
+
+## A.3 The numbers (final, cite directly)
+
+- **Confounded vs controlled timbre gap (within-MAP − cross-MAP), by layer:** see the big table in
+  Finding 1. Headline: L11 confounded **−0.187** → controlled **+0.072**; *every* layer's
+  controlled gap is positive (min +0.072 at L11, max +0.206 at L0). meanall: −0.025 → +0.151.
+- **Honest cross-timbre retrieval (varctl):** rises 0.064 (L0) → plateau ~0.22 at L7–11, **best
+  L8 = 0.226**; within-timbre flat ~0.27–0.32.
+- **Score-geometry means (cross-timbre cells), the figS3 data:** same-timbre-diff-variation
+  0.81→0.66; same-composition-cross-timbre (twin) 0.35→0.63; different-variation-cross-timbre
+  (honest) 0.24→0.40; distractor −0.05→−0.02. Same-work gap (within − twin) closes from **+0.45
+  (L0) to +0.03 (L12)** — converge, **do not strictly cross**.
+- **Whitening:** map_whitened up to 0.384 (L12), 2–4× the centered MAP at every layer.
+- **Reproducibility anchors:** fast pipeline reproduces the audited live L11 run to ≤4e-4; all 13
+  confounded gaps match the independent May-28 live sweep to ≤0.0014.
+
+## A.4 Slide-deck guidance
+
+- **Slide "the benchmark had a trap":** fig1 (gap flips) as the hook + fig5 (8×8 grids: the
+  diagonal goes from lightest to darkest under control) as the visual proof. One line: *"cross-
+  instrument only looked easier because the correct answers included the same piece re-orchestrated."*
+- **Slide "what the model actually encodes" (the money slide):** figS3. One line: *"shallow layers
+  hear the instrument; deep layers hear the tune."* This is the most memorable, least-technical
+  slide of the whole MuQ story — lead the interpretability section with it.
+- **Optional backup slide:** figS1/figS2 for anyone who asks "how do you know it's real timbre
+  invariance, not duplicate-matching?" — the score distributions answer it directly (graded
+  same-notes-across-timbre at 0.6–0.8, genuinely-different variations at ~0.4, distractors ~0).
+- **Slide "pitch vs identity live at different depths":** fig3 (deep peak) beside the MedleyDB
+  melody curve (layer-1 peak). One line: *"opposite layer preferences → one hierarchy."*
+
+## A.5 Precision rules — DO NOT overclaim (these will be probed at a defense)
+
+1. Say **"converge,"** never "cross" — the same-timbre and same-composition lines do not strictly
+   cross within MuQ's 13 layers (0.66 vs 0.63 at L12).
+2. The twin is a **same-composition re-orchestration** (mean cos ~0.35→0.63, up to ~0.79 for
+   harmonically-similar instrument pairs) — **not** a "cos≈1 audio duplicate." Never call it a
+   duplicate.
+3. The controlled gap is **positive at every layer** — do not say "meanall/MuQ retrieves cross-
+   timbre better than within." It does not, once the twin is masked.
+4. **meanall** is good for the *supervised* MedleyDB probe, bad for *zero-shot* retrieval — always
+   name the regime.
+5. **Whitening and centering are transductive** (fit on the test set) — state it every single time
+   a whitened/centered number appears.
+6. The `effective_rank` predictor and the whole depth-shift story are **MuQ-only** until MERT/
+   OMAR-RQ confirm — write "for MuQ" and leave a slot for the cross-encoder result.
+7. VGMIDITVar-timbre is **synthetic** (one SoundFont family, program-byte rewrite); the timbre-
+   invariance claim is about this controlled setting — the BotW downstream is the real ecological test.
