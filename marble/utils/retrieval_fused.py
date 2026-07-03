@@ -106,10 +106,26 @@ def fused_retrieval_pass(
     if with_scores:
         score_acc = RetrievalScoreAccumulator(work_t, cond_t, var_t, n_bins=score_n_bins)
 
+    # The order-consuming aggregators (base/grid/varctl) run GPU-resident — that
+    # is the win. The SCORE accumulator instead runs on the HOST: its per-chunk
+    # working set is several (B, N) fp64/int64 transients (~6 GB/chunk at
+    # N~103k, B=1024) that would blow a 16 GB GPU AFTER the encode pass at large
+    # N. Copying the (B, N) sim chunk to CPU caps GPU memory at the order-tensor
+    # transient (matching the pre-fusion behaviour, which accumulated scores on
+    # CPU) and also makes the score CSV bit-reproducible (CPU bincount is
+    # deterministic; CUDA atomicAdd is not). Only paid when dump_retrieval_scores
+    # is on. If NO order-consumer is active (scores-only), skip the argsort too.
     want_sim = score_acc is not None
+    want_order = base_agg is not None or grid_agg is not None or varctl_agg is not None
     for start, sim_chunk, order_chunk in _iter_sim_order_chunks(
-        embs, batch=batch, device=device, keep_on_device=True, want_sim=want_sim
+        embs,
+        batch=batch,
+        device=device,
+        keep_on_device=True,
+        want_sim=want_sim,
+        want_order=want_order,
     ):
+        b = sim_chunk.size(0) if order_chunk is None else order_chunk.size(0)
         if base_agg is not None:
             base_agg.update(start, order_chunk)
         if grid_agg is not None:
@@ -117,8 +133,7 @@ def fused_retrieval_pass(
         if varctl_agg is not None:
             varctl_agg.update(start, order_chunk)
         if score_acc is not None:
-            b = order_chunk.size(0)
-            score_acc.update(torch.arange(start, start + b), sim_chunk)
+            score_acc.update(torch.arange(start, start + b), sim_chunk.cpu())
 
     return {
         "base": base_agg.result() if base_agg is not None else None,

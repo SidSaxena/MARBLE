@@ -695,9 +695,13 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         #    passes over the centered geometry (base already logged above; grid,
         #    varctl grid, and score dump each used to recompute sim+argsort and
         #    copy every (B, N-1) order chunk to CPU). At N~103k this is the ~50 min
-        #    -> a few minutes win. All metric keys + artifacts are byte-for-byte
-        #    the same as before (unit-pinned in tests/test_retrieval_fused.py;
-        #    full-scale validated against the audited MuQ-L11 run).
+        #    -> a few minutes win. All metric KEYS + artifact files are identical;
+        #    values are exact on the CPU metric path and differ only by GPU
+        #    reduction/argsort-tie order on CUDA (grid MAP ~1e-6, score moments
+        #    ~1e-13; histograms + counts are exact integers). Unit-pinned in
+        #    tests/test_retrieval_fused.py; full-scale validated against the
+        #    audited MuQ-L11 run (<=4e-4). The score accumulation runs on CPU
+        #    inside fused_retrieval_pass so it can't OOM the GPU at large N.
         has_cond_cells = has_conditions and any(c != -1 for c in file_conditions)
         want_scores = getattr(self, "dump_retrieval_scores", False)
         if has_cond_cells or want_scores:

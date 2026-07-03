@@ -438,17 +438,21 @@ def _iter_sim_order_chunks(
     device: str = "cuda",
     keep_on_device: bool = False,
     want_sim: bool = False,
-) -> Iterator[tuple[int, torch.Tensor | None, torch.Tensor]]:
+    want_order: bool = True,
+) -> Iterator[tuple[int, torch.Tensor | None, torch.Tensor | None]]:
     """Chunked streaming similarity/ordering iterator.
 
-    Yields ``(start, sim_chunk_or_None, order_chunk)`` per batch of query
-    rows. ``sim_chunk`` (``(B, N)``, self set to ``-inf``) is only yielded
-    when ``want_sim=True`` (e.g. for score-distribution accumulation —
-    self positions are excluded by the consumer's masks, so the ``-inf``
-    poisoning is harmless there). With ``keep_on_device=True`` both
-    tensors stay on ``device`` so downstream aggregation runs there too —
-    this avoids the ~843 MB/chunk order-matrix PCIe copy that made the
-    CPU-aggregation path memory-bandwidth-bound.
+    Yields ``(start, sim_chunk_or_None, order_chunk_or_None)`` per batch of
+    query rows. ``sim_chunk`` (``(B, N)``, self set to ``-inf``) is only
+    yielded when ``want_sim=True`` (e.g. for score-distribution accumulation
+    — self positions are excluded by the consumer's masks, so the ``-inf``
+    poisoning is harmless there). ``order_chunk`` (the argsort) is only
+    computed when ``want_order=True`` — a scores-only consumer sets it False
+    to skip the argsort + ``(B, N-1)`` order allocation entirely. With
+    ``keep_on_device=True`` the yielded tensors stay on ``device`` so
+    downstream aggregation runs there too — this avoids the ~843 MB/chunk
+    order-matrix PCIe copy that made the CPU-aggregation path
+    memory-bandwidth-bound.
     """
     N = embs.size(0)
     if N == 0:
@@ -464,9 +468,11 @@ def _iter_sim_order_chunks(
             row_idx = torch.arange(end - start, device=chunk.device)
             col_idx = torch.arange(start, end, device=chunk.device)
             chunk[row_idx, col_idx] = float("-inf")
-            order_chunk = chunk.argsort(descending=True, dim=-1)[:, : N - 1]
-            if not keep_on_device:
-                order_chunk = order_chunk.cpu()
+            order_chunk = None
+            if want_order:
+                order_chunk = chunk.argsort(descending=True, dim=-1)[:, : N - 1]
+                if not keep_on_device:
+                    order_chunk = order_chunk.cpu()
             sim_out = chunk if want_sim else None
             if want_sim and not keep_on_device:
                 sim_out = chunk.cpu()
