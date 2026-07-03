@@ -549,7 +549,14 @@ def main() -> None:
                 group=args.wandb_group,
                 name=f"layer-{layer}-test",
                 job_type="test",
-                tags=["MuQ", "VGMIDITVar-timbre", "layer-sweep", "probe", "varctl", "from-cache"],
+                tags=[
+                    cache_dir.parent.name,
+                    "VGMIDITVar-timbre",
+                    "layer-sweep",
+                    "probe",
+                    "varctl",
+                    "from-cache",
+                ],
                 config={
                     "layer": layer,
                     "from_cache": True,
