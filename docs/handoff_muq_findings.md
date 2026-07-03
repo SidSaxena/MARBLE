@@ -216,10 +216,13 @@ caveat**).
 
 ## Caveats the thesis MUST carry
 
-1. **Single encoder so far** for the full controlled curve (MuQ). The earlier cross-encoder
-   "invariance ordering" (MERT ≈ 0, CLaMP3 positive, MuQ negative) is **retracted** until
-   MERT/CLaMP3 are re-run under variation control — the twin was handed to every encoder.
-   (MERT is running now; will be a row-append here.)
+1. **The earlier cross-encoder "invariance ordering" (MERT ≈ 0, CLaMP3 positive, MuQ negative) is
+   retracted.** It was a twin artifact: the confounded gap was handed to every encoder. Under
+   variation control **both encoders now show a positive gap at every layer** — within-timbre
+   always beats cross-timbre. MERT-v1-95M has been run end-to-end (see **Appendix B**); the honest
+   verdict is the *opposite* of the retracted one — **MuQ is the more timbre-invariant encoder**
+   (honest cross-orchestration MAP peaks 0.226 vs MERT 0.113; MuQ's within-vs-twin cosine gap
+   converges to +0.03 while MERT's stays wide at +0.18). CLaMP3 still pending under control.
 2. **Whitening/centering are transductive** (fit on the test corpus). State it everywhere.
 3. VGMIDITVar-timbre is **synthetic-render** (program-byte rewrite, one SoundFont family);
    ecological validity for real orchestration is an inference, not a measurement — the BotW
@@ -323,3 +326,135 @@ exactly why deep layers are the right place to look for a recurring theme that g
    OMAR-RQ confirm — write "for MuQ" and leave a slot for the cross-encoder result.
 7. VGMIDITVar-timbre is **synthetic** (one SoundFont family, program-byte rewrite); the timbre-
    invariance claim is about this controlled setting — the BotW downstream is the real ecological test.
+
+---
+
+# APPENDIX B — MERT-v1-95M results (parallel to the MuQ findings above)
+
+**Status:** full 13-layer + meanall variation-controlled sweep complete (2026-07-03), same offline
+`vgm_timbre_sweep_from_cache.py` pipeline, same hardened fused single-pass metric code, same
+VGMIDITVar-timbre corpus (N=102,960 = 5,040 works × ~2.55 variations × 8 GM instruments). Numbers
+below are the source of truth for MERT — do not recompute; cite directly. Figures live in
+`docs/figures/vgmiditvar_timbre_mert_varctl/` (same file names as the MuQ set: `fig1..fig7`,
+`figS1..figS3`, `summary_table.csv`, `pool_means_by_layer.csv`).
+
+## B.1 The one-line verdict
+
+**MERT-v1-95M shows the *same qualitative story* as MuQ but *much weaker in magnitude*, and it never
+produces the negative-gap artifact.** The timbre→composition depth shift is **general in direction**
+(both encoders: same-timbre similarity falls, same-notes-across-timbre rises with depth) but
+**MuQ-specific in magnitude** (MuQ's within-vs-twin gap converges 0.45→0.03; MERT's only narrows
+0.34→0.18 and stays wide). This directly explains why **MuQ is ~2× better than MERT at honest
+cross-orchestration retrieval** (best varctl cross MAP: MuQ L8 = 0.226 vs MERT L11 = 0.113).
+→ **MuQ is the more timbre-invariant encoder**, the reverse of the retracted pre-control ordering.
+
+## B.2 Finding 1 (MERT): the confounded gap is positive at *every* layer — the twin never flips it
+
+Unlike MuQ (whose confounded gap goes negative from L2 on, reaching −0.187 at L11), **MERT's
+confounded gap stays positive at every layer** (min **+0.006** at L11, max **+0.133** at L1). The
+twin still inflates cross-timbre MAP and *narrows* the gap with depth, but never enough to flip it
+negative — because MERT is not timbre-invariant enough for the same-notes-different-instrument twin
+to become a top match. So for MERT the artifact is **milder and never produced a wrong-signed
+result**; the confound correction still matters (it removes real inflation) but there was no
+"cross is easier" illusion to overturn.
+
+| layer | map_centered | map_whitened | within | cross (conf) | **gap (conf)** | cross (ctl) | **gap (ctl)** | twin inflation | eff_rank |
+|---|---|---|---|---|---|---|---|---|---|
+| 0 | .024 | .072 | .204 | .075 | **+.130** | .030 | **+.174** | .044 | 23 |
+| 1 | .026 | .083 | .223 | .090 | +.133 | .037 | +.186 | .052 | 31 |
+| 2 | .030 | .092 | .249 | .126 | +.123 | .055 | +.195 | .071 | 39 |
+| 3 | .035 | .097 | .270 | .182 | +.088 | .081 | +.188 | .100 | 53 |
+| 4 | .037 | .109 | .271 | .210 | +.061 | .091 | +.179 | .119 | 56 |
+| 5 | .042 | .123 | .270 | .235 | +.035 | .098 | +.172 | .137 | 63 |
+| 6 | .042 | .129 | .269 | .231 | +.038 | .093 | +.176 | .138 | 64 |
+| 7 | .044 | .127 | .266 | .218 | +.048 | .088 | +.178 | .130 | 64 |
+| 8 | .043 | .128 | .265 | .216 | +.049 | .087 | +.178 | .129 | 62 |
+| 9 | .046 | .133 | .266 | .225 | +.041 | .091 | +.175 | .134 | 62 |
+| 10 | .050 | .132 | .267 | .237 | +.030 | .098 | +.169 | .139 | 63 |
+| **11** | .060 | .130 | .273 | .267 | **+.006** | **.113** | +.160 | .154 | 77 |
+| 12 | .067 | .130 | .267 | .246 | +.021 | .103 | +.165 | .143 | 76 |
+| meanall | .040 | .139 | .260 | .211 | +.049 | .087 | +.174 | .125 | 47 |
+
+(Same column semantics as the MuQ table. `within` is again confounded≡controlled — the diagonal
+has no twins. Twin inflation grows with depth here too, 0.044→0.154, for the same reason: deeper
+layers make the same-notes twin a somewhat stronger match — just far less so than in MuQ.)
+
+Figures: `fig1_gap_confound_vs_controlled` (gap stays above zero — visually the opposite of MuQ's
+fig1), `fig2_within_vs_cross_panels`, `fig5_grids_best_layer` (L11 8×8 grids; off-diagonal
+dominance *shrinks* under control but was never dominant to begin with).
+
+## B.3 Finding 1b (MERT): the timbre→composition shift is present but much weaker (no convergence)
+
+Same score-distribution dump, same four pools. MERT shows the **same direction** as MuQ but a
+**much shallower** shift — same-timbre similarity barely falls, same-notes-across-timbre rises only
+modestly, and the two **never converge** (gap stays ~+0.18):
+
+| MERT layer | same-timbre, diff-variation (within +) | same-composition, cross-timbre (twin) | diff-variation, cross-timbre (honest) | distractor |
+|---|---|---|---|---|
+| 0 | **0.73** | 0.39 | 0.26 | −0.04 |
+| 6 | 0.70 | 0.43 | 0.29 | −0.03 |
+| 11 | 0.68 | 0.47 | 0.31 | −0.02 |
+| 12 | 0.67 | **0.49** | 0.33 | −0.02 |
+
+Within-vs-twin gap: **L0 +0.34 → L12 +0.18** — it narrows but stays wide (contrast MuQ: +0.45 →
++0.03). MERT stays **timbre-biased even at its deepest layer**: same-instrument-different-melody
+(0.67) is still clearly closer than same-melody-different-instrument (0.49). Figures:
+`figS3_timbre_composition_shift` (annotated "gap stays wide — does NOT converge, cf. MuQ +0.03"),
+`figS1`, `figS2` (illustration layer L11).
+
+## B.4 Finding 2 (MERT): honest cross-orchestration capability — ~half of MuQ, peaks deepest
+
+Variation-controlled cross-timbre MAP (the leitmotif-operational metric) rises 0.030 (L0) → **best
+0.113 at L11**, then dips at L12 (0.103); meanall 0.087. The peak is **deepest** (L11 vs MuQ's L8)
+and roughly **half MuQ's height** (0.113 vs 0.226). Within-timbre MAP is flat ~0.27 across depth
+(same shape as MuQ, slightly lower). **Depth buys cross-timbre generalization for MERT too, just
+less of it, and later.** Figure: `fig3_cross_timbre_varctl_by_layer`.
+
+## B.5 Finding 6 & 7 (MERT): whitening and the effective_rank predictor both replicate
+
+- **Transductive whitening lifts MAP at every layer** (map_whitened ≈ 2–3× map_centered; peak
+  ~0.139 at meanall / ~0.133 at L9). Same direction as MuQ, smaller absolute values. Figure:
+  `fig4_geometry_treatments`. Same transductive caveat.
+- **`effective_rank` predicts the best retrieval layer without labels — and *more strongly* than for
+  MuQ**: corr(effective_rank, cross-varctl-MAP) = **0.976** (MuQ was 0.947). Both encoders' honest
+  cross-timbre capability tracks unsupervised anisotropy. This upgrades Finding 7 from "MuQ-only" to
+  "replicated on a second encoder" (n=2 encoders — still not a law, but no longer a single point).
+
+## B.6 The cross-encoder comparison figure
+
+`fig7_muq_vs_mert` (two panels, VIOLET=MuQ, ORANGE=MERT):
+- **Left (capability):** honest cross-orchestration MAP by layer — MuQ's curve sits ~2× above
+  MERT's at every depth; MuQ peaks L8=0.226, MERT peaks L11=0.113.
+- **Right (mechanism):** within-timbre − same-composition-twin cosine gap by layer — MuQ descends
+  to +0.03 (converges), MERT plateaus at +0.18 (stays timbre-biased). This one figure carries the
+  whole comparison: *the depth shift is general in direction, MuQ-specific in magnitude.*
+
+## B.7 Where MERT slots into Appendix A
+
+- **A.1 map:** add an encoder column / comparison row. Findings 1, 1b, 2, 6, 7 all have a MERT
+  counterpart above; the claims are the same *shape* with weaker numbers, plus the new
+  cross-encoder claim (`fig7`): "MuQ is the more timbre-invariant encoder; the timbre→composition
+  shift is general in direction but MuQ-specific in magnitude."
+- **A.3 numbers:** MERT headline — confounded gap **positive at every layer** (min +0.006 L11),
+  controlled gap **+0.160 to +0.195**; honest cross-timbre **best L11 = 0.113**; within-vs-twin
+  score gap **+0.34 → +0.18 (does not converge)**; whitening 2–3×; eff_rank corr **0.976**.
+- **A.4 slides:** `fig7` is the encoder-comparison slide ("MuQ hears the tune deep; MERT keeps
+  hearing the instrument"). Use MuQ's `figS3` and MERT's `figS3` side by side for the mechanism.
+- **A.5 precision rules (add these for MERT):**
+  1. MERT's confounded gap is **positive at every layer** — do **not** say "MERT retrieves
+     cross-timbre more easily" in any view. It never does.
+  2. MERT's within-vs-twin gap **does not converge** (stays ~+0.18) — say "narrows," never
+     "converges" for MERT (that word is MuQ-only).
+  3. The MuQ>MERT ordering is on **honest, variation-controlled** cross-timbre MAP — always cite the
+     controlled number (0.226 vs 0.113), never a confounded one.
+  4. Everything is still **synthetic-render, transductive, single-SoundFont** — all MuQ caveats
+     carry over verbatim.
+
+## B.8 Assets (MERT)
+
+Same layout as the MuQ asset table (§Assets). All in `docs/figures/vgmiditvar_timbre_mert_varctl/`:
+`fig1`–`fig6` (MERT analogues of the MuQ figures), **`fig7_muq_vs_mert`** (the cross-encoder
+comparison, MERT-only asset), `figS1`–`figS3` (score-geometry), `summary_table.csv` (all numbers in
+B.2 + score seps), `pool_means_by_layer.csv` (the figS3 four-pool data, machine-readable). wandb:
+group `MERT-v1-95M / VGMIDITVar-timbre`, runs `layer-{0..12}-test` + `layer-meanall-test`, tags
+`from-cache, varctl` (2026-07-03).
