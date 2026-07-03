@@ -22,9 +22,13 @@ reported as evidence of exceptional timbre invariance.
 
 **The confound.** Relevance was defined by `work_id` only. Because the corpus is fully crossed,
 every cross-instrument relevant set contains the query's **own variation re-rendered in the
-target timbre** — an audio near-duplicate ("same-composition twin", cosine ≈ 1) that trivially
-tops the ranking. The within-instrument set *cannot* contain it (that item is the query itself,
-self-excluded). So cross cells measured an easier task by construction.
+target timbre** (a "same-composition twin"): the *same notes* in a different instrument. This is
+**not** an audio duplicate — a piano→guitar twin scores cos≈0.79, and the twin's mean cosine
+across all instrument pairs is ~0.35 (early layers) → ~0.63 (deep), rising with depth. But it is
+still a systematically *easier* positive than a genuinely-different variation of the theme (which
+scores ~0.24→0.40), and — crucially — the within-instrument set *cannot* contain it (there the
+same-notes-same-timbre item is the query itself, self-excluded). So cross cells got an extra,
+easier class of positive that within cells structurally cannot, biasing the comparison.
 
 **The control.** Variation-controlled relevance: a candidate counts as relevant (and stays in
 the gallery) only if it is the same work **and a different variation index** — "retrieve a
@@ -58,8 +62,31 @@ consistency check.)
 
 **The subtle second-order point (great for defense):** twin inflation grows monotonically with
 depth (0.079 → 0.259). The artifact got *worse* with depth precisely because deeper layers ARE
-more timbre-invariant — but on near-duplicates, which is not the capability of interest. The
-confounded trend was interpretable, just about the wrong thing.
+more timbre-invariant — the twin (same notes, different instrument) becomes a stronger match as
+depth abstracts away timbre — but that is a different, easier capability than the intended one
+(retrieve a *different* arrangement across timbre). The confounded trend was interpretable, just
+about the wrong thing.
+
+**Finding 1b (from the score-distribution dump — the raw geometry behind the ranking, novel-feeling
+and defense-worthy).** The opt-in score dump records, per (query,target)-instrument cell, the full
+cosine distribution split into distractor / honest-relevant (different variation) / twin (same
+composition). It reveals a clean **timbre → composition representational shift with depth**
+(fig `figS3_timbre_composition_shift`):
+
+| MuQ layer | same-timbre, diff-variation (within +) | same-composition, cross-timbre (twin) | diff-variation, cross-timbre (honest) | distractor |
+|---|---|---|---|---|
+| 0 | **0.81** | 0.35 | 0.24 | −0.05 |
+| 6 | 0.75 | 0.44 | 0.29 | −0.04 |
+| 11 | 0.69 | 0.62 | 0.40 | −0.02 |
+| 12 | 0.66 | **0.63** | 0.39 | −0.02 |
+
+Early layers are **timbre-dominated** (same-instrument similarity 0.81, same-notes-across-instrument
+only 0.35). With depth, same-timbre similarity *falls* while same-notes-across-timbre *rises* — they
+**cross around layer ~12**, i.e. deep MuQ judges two clips more by their notes than their
+instrument. This is exactly why the twin confound intensifies with depth, and it is an independent,
+unsupervised characterization of *where and how* timbre invariance emerges — a result the MAP curve
+alone cannot show. (The distractor floor also drifts up with depth, −0.05→−0.02: the mild
+cone-anisotropy that motivates the centered/whitened variants.)
 
 **Independent corroboration in the score geometry** (no ranking involved): off-diagonal cells
 lose exactly 12,870 twin relevants each (n_rel 36,906→24,036); the cross relevant-mean drops
@@ -161,6 +188,9 @@ Figures (PNG for slides, PDF vector for the paper), all in
 | `fig4_geometry_treatments` | raw/centered/whitened MAP by layer | whitening finding |
 | `fig5_grids_best_layer` | 8×8 instrument grids at L8, conf vs ctl, shared scale | defense visual (diagonal flips) |
 | `fig6_score_separation` | cross score-separation with/without twin | score-geometry corroboration |
+| `figS1_score_distributions_crosstimbre` | cosine distributions (distractor/honest/twin), L11 | **the confound at the score level** (Finding 1b) |
+| `figS2_within_vs_cross_distributions` | relevant-score distributions, within vs cross | twin is cross-only |
+| `figS3_timbre_composition_shift` | the four pool means by layer, timbre⇄composition crossover | **the depth-shift finding** (Finding 1b) |
 | `summary_table.csv` | all numbers in Finding 1's table + score seps | source of truth for tables |
 
 Also relevant: `docs/figures/vgmiditvar_crossinstrument_treatments.png` (earlier 3-encoder
