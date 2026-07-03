@@ -367,9 +367,8 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # order tensor); the previous "one call per metric" pattern still
         # paid the row-sort cost for each call (MAP family was up to
         # 6 redundant passes over ``sim``).
+        from marble.utils.retrieval_fused import fused_retrieval_pass
         from marble.utils.retrieval_metrics import (
-            compute_perpair_map_all,
-            compute_perpair_map_all_streaming,
             compute_retrieval_metrics,
             compute_retrieval_metrics_streaming,
             zca_whiten,
@@ -690,114 +689,87 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         # peer is in a different timbre/instrument than the query, which
         # is the actual operational scenario for cross-orchestration
         # leitmotif retrieval.
-        if has_conditions and any(c != -1 for c in file_conditions):
+        # ── Fused centered pass: condition grid + variation-controlled grid +
+        #    score distributions in ONE chunked sim+argsort over embs_c, with the
+        #    aggregation GPU-resident. Replaces the previous FOUR separate full-N
+        #    passes over the centered geometry (base already logged above; grid,
+        #    varctl grid, and score dump each used to recompute sim+argsort and
+        #    copy every (B, N-1) order chunk to CPU). At N~103k this is the ~50 min
+        #    -> a few minutes win. All metric keys + artifacts are byte-for-byte
+        #    the same as before (unit-pinned in tests/test_retrieval_fused.py;
+        #    full-scale validated against the audited MuQ-L11 run).
+        has_cond_cells = has_conditions and any(c != -1 for c in file_conditions)
+        want_scores = getattr(self, "dump_retrieval_scores", False)
+        if has_cond_cells or want_scores:
             unique_conds = sorted({c for c in file_conditions if c != -1})
-            # Use the centered similarity matrix for cross-condition MAP —
-            # consistent with offline analysis in
-            # scripts/analysis/vgmiditvar_leitmotif_breakdown.py, which
-            # subtracts the corpus mean before per-pair MAP to remove
-            # cone-effect anisotropy (relevant for OMARRQ esp.).
-            #
-            # ``compute_perpair_map_all`` does a single batched argsort
-            # pass and slices per (q, t) cell — for VGMIDITVar-timbre
-            # (8 GM programs → 64 cells, N=102 960) this drops the grid
-            # from ~4 h of unbatched per-cell sorts to ~3 min.
-            if use_streaming:
-                # Streaming path: chunk sim_c on GPU on-the-fly via embs_c.
-                cell_results = compute_perpair_map_all_streaming(
-                    embs_c,
-                    file_work_ids,
-                    file_conditions,
-                    query_conds=unique_conds,
-                    target_conds=unique_conds,
-                    device=_md,
+            want_varctl_flag = (
+                getattr(self, "require_different_variation", False) and has_cond_cells
+            )
+            dump_vars, n_bad, n_tot = self._variations_for_control(file_variations)
+            if want_varctl_flag and n_bad:
+                print(
+                    f"[CoverRetrieval] WARN: variation_id_regex parsed no index "
+                    f"for {n_bad}/{n_tot} files; those rows get unique ids and are "
+                    f"never twin-masked."
                 )
-            else:
-                cell_results = compute_perpair_map_all(
-                    sim_c,
-                    file_work_ids,
-                    file_conditions,
-                    query_conds=unique_conds,
-                    target_conds=unique_conds,
+            if want_varctl_flag and dump_vars is None:
+                print(
+                    "[CoverRetrieval] WARN: variation-controlled grid skipped "
+                    "(no parseable variation ids; it would equal the confounded grid)."
                 )
-            same_aps: list[float] = []
-            cross_aps: list[float] = []
-            for q in unique_conds:
-                for t in unique_conds:
-                    ap, n = cell_results.get((q, t), (0.0, 0))
+            fused = fused_retrieval_pass(
+                embs_c,
+                file_work_ids,
+                conditions=(file_conditions if has_cond_cells else None),
+                variations=dump_vars,
+                base_kwargs=None,
+                with_grid=has_cond_cells,
+                with_varctl=(want_varctl_flag and dump_vars is not None),
+                with_scores=want_scores,
+                score_n_bins=int(getattr(self, "dump_scores_n_bins", 50)),
+                device=_md,
+            )
+
+            if has_cond_cells and fused["grid"] is not None:
+                cell_results = fused["grid"]
+                same_aps: list[float] = []
+                cross_aps: list[float] = []
+                for (q, t), (ap, n) in cell_results.items():
                     if n == 0:
                         continue
                     (same_aps if q == t else cross_aps).append(ap)
-            if same_aps:
-                same_mean = float(sum(same_aps) / len(same_aps))
-                self.log("test/map_same_condition", same_mean, rank_zero_only=True)
-                print(f"[CoverRetrieval] MAP same-condition  = {same_mean:.4f}")
-            if cross_aps:
-                cross_mean = float(sum(cross_aps) / len(cross_aps))
-                self.log("test/map_cross_condition", cross_mean, rank_zero_only=True)
-                print(f"[CoverRetrieval] MAP cross-condition = {cross_mean:.4f}")
-            if same_aps and cross_aps:
-                gap = float(sum(same_aps) / len(same_aps) - sum(cross_aps) / len(cross_aps))
-                self.log("test/condition_gap", gap, rank_zero_only=True)
+                if same_aps:
+                    same_mean = float(sum(same_aps) / len(same_aps))
+                    self.log("test/map_same_condition", same_mean, rank_zero_only=True)
+                    print(f"[CoverRetrieval] MAP same-condition  = {same_mean:.4f}")
+                if cross_aps:
+                    cross_mean = float(sum(cross_aps) / len(cross_aps))
+                    self.log("test/map_cross_condition", cross_mean, rank_zero_only=True)
+                    print(f"[CoverRetrieval] MAP cross-condition = {cross_mean:.4f}")
+                if same_aps and cross_aps:
+                    gap = float(sum(same_aps) / len(same_aps) - sum(cross_aps) / len(cross_aps))
+                    self.log("test/condition_gap", gap, rank_zero_only=True)
 
-            # Variation-controlled grid (opt-in): mask same-(work_id, variation)
-            # twins so cross- vs within-condition MAP is apples-to-apples (the
-            # same-composition-twin confound fix). Logs *_varctl metrics.
-            if getattr(self, "require_different_variation", False):
-                var_ids, n_bad, n_tot = self._variations_for_control(file_variations)
-                if n_bad:
-                    print(
-                        f"[CoverRetrieval] WARN: variation_id_regex parsed no index "
-                        f"for {n_bad}/{n_tot} files; those rows get unique ids and are "
-                        f"never twin-masked."
-                    )
-                if var_ids is None:
-                    print(
-                        "[CoverRetrieval] WARN: variation-controlled grid skipped "
-                        "(no parseable variation ids; it would equal the confounded grid)."
-                    )
-                else:
-                    self._log_variation_controlled_grid(
-                        sim_c,
-                        embs_c,
-                        file_work_ids,
-                        file_conditions,
-                        var_ids,
-                        unique_conds,
-                        use_streaming,
-                        _md,
-                    )
+                # Variation-controlled summary (twins already masked in the fused grid).
+                if fused["grid_varctl"] is not None:
+                    self._log_varctl_grid_summary(fused["grid_varctl"])
 
-            # Per-cell logging of the full (query_cond × target_cond) grid.
-            # For VGMIDITVar-timbre with 8 GM programs that's 64 keys —
-            # tractable in wandb. Use ``map_grid/q_to_t`` keys (slashes
-            # group them under one dashboard section). Also dump CSV +
-            # PNG heatmap next to the wandb run for paper figures.
-            for q in unique_conds:
-                for t in unique_conds:
-                    ap, n = cell_results.get((q, t), (0.0, 0))
-                    if n == 0:
-                        continue
-                    self.log(f"test/map_grid/{q}_to_{t}", ap, rank_zero_only=True)
-                    self.log(f"test/map_grid/{q}_to_{t}_n", float(n), rank_zero_only=True)
-            self._dump_condition_grid_artifacts(unique_conds, cell_results)
+                # Per-cell logging of the full (query_cond × target_cond) grid +
+                # CSV/PNG artifacts for paper figures.
+                for q in unique_conds:
+                    for t in unique_conds:
+                        ap, n = cell_results.get((q, t), (0.0, 0))
+                        if n == 0:
+                            continue
+                        self.log(f"test/map_grid/{q}_to_{t}", ap, rank_zero_only=True)
+                        self.log(f"test/map_grid/{q}_to_{t}_n", float(n), rank_zero_only=True)
+                self._dump_condition_grid_artifacts(unique_conds, cell_results)
 
-        # ── Retrieval score distributions (opt-in) ───────────────────────────
-        # Persist RELEVANT vs DISTRACTOR cosine-score histograms + separation
-        # per condition cell — the raw geometry behind the MAP, normally
-        # discarded. On centered embeddings (matches the condition grid). When
-        # variation ids are available the RELEVANT pool is split into confounded
-        # (all same-work) vs twin-controlled (different variation) so the score
-        # separation matches the *_varctl grid, not the confounded one.
-        if getattr(self, "dump_retrieval_scores", False):
-            dump_vars, _, _ = self._variations_for_control(file_variations)
-            self._dump_retrieval_score_artifacts(
-                embs_c,
-                file_work_ids,
-                file_conditions if has_conditions else None,
-                dump_vars,
-                _md,
-            )
+            # Retrieval score distributions (opt-in): RELEVANT vs DISTRACTOR cosine
+            # histograms + separation, confounded and twin-controlled, from the same
+            # fused pass. The raw geometry behind the MAP, normally discarded.
+            if want_scores and fused["scores"] is not None:
+                self._dump_retrieval_score_artifacts(fused["scores"])
 
         # ── Anisotropy diagnostics ───────────────────────────────────────────
         # Cone-effect / rank-collapse measurements on the per-file embedding
@@ -998,53 +970,23 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
                 nxt -= 1
         return out, n_bad, n_total
 
-    def _log_variation_controlled_grid(
-        self, sim_c, embs_c, work_ids, conditions, variations, unique_conds, use_streaming, device
-    ) -> None:
-        """Opt-in: per-condition MAP grid with same-(work, variation) twins masked
-        so cross- vs within-condition is apples-to-apples. Uses the same batched
-        shared-argsort path as the confounded grid (streaming on GPU, materialised
-        on CPU) so it also runs at full scale; logs *_varctl metrics. Never raises."""
+    def _log_varctl_grid_summary(self, cell_results) -> None:
+        """Log the variation-controlled per-condition MAP summary (*_varctl) from a
+        PRE-COMPUTED ``{(q, t): (map, n)}`` grid — the same-(work, variation) twins
+        were already masked when ``cell_results`` was computed (fused centered pass
+        in ``on_test_epoch_end``). Log-only; never raises."""
         try:
-            from marble.utils.retrieval_metrics import (
-                compute_perpair_map_all,
-                compute_perpair_map_all_streaming,
-            )
-
-            if use_streaming:
-                cell_results = compute_perpair_map_all_streaming(
-                    embs_c,
-                    work_ids,
-                    conditions,
-                    query_conds=unique_conds,
-                    target_conds=unique_conds,
-                    device=device,
-                    variation_ids=variations,
-                    require_different_variation=True,
-                )
-            else:
-                cell_results = compute_perpair_map_all(
-                    sim_c,
-                    work_ids,
-                    conditions,
-                    query_conds=unique_conds,
-                    target_conds=unique_conds,
-                    variation_ids=variations,
-                    require_different_variation=True,
-                )
             same, cross = [], []
             same_n, cross_n = 0, 0
-            for q in unique_conds:
-                for t in unique_conds:
-                    ap, n = cell_results.get((q, t), (0.0, 0))
-                    if n == 0:
-                        continue
-                    if q == t:
-                        same.append(ap)
-                        same_n += n
-                    else:
-                        cross.append(ap)
-                        cross_n += n
+            for (q, t), (ap, n) in cell_results.items():
+                if n == 0:
+                    continue
+                if q == t:
+                    same.append(ap)
+                    same_n += n
+                else:
+                    cross.append(ap)
+                    cross_n += n
             # Disclose the surviving query counts: twin masking drops single-variation
             # works, so *_varctl is estimated on a narrower (multi-variation) sample
             # than the confounded grid — log n so that selection is visible, not silent.
@@ -1067,31 +1009,16 @@ class CoverRetrievalTask(LightningModule, EmbeddingCacheMixin):
         except Exception as e:
             print(f"[CoverRetrieval] WARN: variation-controlled grid failed: {type(e).__name__}")
 
-    def _dump_retrieval_score_artifacts(
-        self, embs_c, work_ids, conditions, variations, device
-    ) -> None:
+    def _dump_retrieval_score_artifacts(self, res) -> None:
         """Opt-in: write RELEVANT vs DISTRACTOR cosine-score distributions (histograms +
-        separation) per condition cell, plus summary scalars. Streams sim row-chunks so
-        it never materialises N x N. When ``variations`` is given, also emits *_varctl
-        separations (same-(work, variation) twins removed) so the score geometry matches
-        the varctl MAP grid, not the confounded one. Never raises."""
+        separation) per condition cell, plus summary scalars, from a PRE-COMPUTED
+        ``RetrievalScoreAccumulator.result()`` dict ``res`` (produced in the fused
+        centered pass). When variation ids were supplied, ``res`` already carries the
+        *_varctl (twin-removed) split so the score geometry matches the varctl MAP
+        grid, not the confounded one. Log + write only; never raises."""
         try:
             import csv
             import json
-
-            from marble.utils.retrieval_scores import RetrievalScoreAccumulator
-
-            n_bins = int(getattr(self, "dump_scores_n_bins", 50))
-            acc = RetrievalScoreAccumulator(work_ids, conditions, variations, n_bins=n_bins)
-            n = embs_c.shape[0]
-            dev = device if isinstance(device, str) else "cpu"
-            e = embs_c.to(dev)
-            chunk = 1024
-            for start in range(0, n, chunk):
-                end = min(start + chunk, n)
-                rows = (e[start:end] @ e.T).detach().cpu()
-                acc.update(list(range(start, end)), rows)
-            res = acc.result()
 
             def _mean_over_cells(field, diag):
                 # Average a per-cell field over diagonal (within) or off-diagonal
