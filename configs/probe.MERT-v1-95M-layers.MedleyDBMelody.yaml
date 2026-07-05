@@ -59,7 +59,7 @@ model:
     # (L,T,H) caching is feasible for MedleyDB (small corpus) but not wired
     # yet; see docs/medleydb_melody_sweep_plan.md §6 (Track B).
     # cache_pool_time MUST be false here (frame-level decoder needs T axis).
-    cache_embeddings: false
+    cache_embeddings: true
     cache_pool_time: false
 
     encoder:

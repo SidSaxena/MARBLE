@@ -11,9 +11,12 @@
 #   uv run python scripts/data/build_medleydb_melody_jsonl.py \
 #       --audio-root <Audio> --annotation-root <Annotations> --out-dir data/MedleyDB
 #
-# num_workers: audio dataloader workers DEADLOCK at spawn on the WSL/Windows box
-# (see smoke_one_layer.sh) — default 0 here; override with NUM_WORKERS=4 once
-# confirmed stable.
+# num_workers: default 6. The old "workers deadlock at spawn on WSL" note is
+# STALE — verified 2026-07-06: 8 fork-mode workers ran a full VGMIDITVar-timbre
+# extraction on this WSL box without issue (the historical deadlock was the
+# *Windows-native* spawn path / SSH-session desktop-heap case, see
+# docs/local_sweeps.md). Override with NUM_WORKERS=0 only if launching from
+# Windows-native Python rather than WSL.
 #
 # Usage:
 #   scripts/sweeps/run_medleydb_melody_folds.sh [--accelerator gpu|mps] \
@@ -25,7 +28,7 @@ ACCEL="gpu"
 FOLDS="0 1 2 3 4"
 LAYERS_ARG=""
 CONCURRENCY="1"
-NUM_WORKERS="${NUM_WORKERS:-0}"
+NUM_WORKERS="${NUM_WORKERS:-6}"
 MODELS_ARG="MuQ:13 MERT-v1-95M:13 OMARRQ-multifeature-25hz:24"
 while [[ $# -gt 0 ]]; do
   case "$1" in

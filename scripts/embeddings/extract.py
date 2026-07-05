@@ -55,6 +55,7 @@ import argparse
 import sys
 import time
 import types
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -102,6 +103,17 @@ def parse_args() -> argparse.Namespace:
         "--no-skip",
         action="store_true",
         help="Re-extract even when every clip is already cached.",
+    )
+    ap.add_argument(
+        "--precision",
+        default="bf16",
+        choices=["fp32", "tf32", "bf16"],
+        help="Encoder forward precision. bf16 (default) = TF32 matmuls + "
+        "bf16 autocast — ~2-4x on tensor-core GPUs; matches the bf16-mixed "
+        "precision the live Lightning runs already use, so cached embeddings "
+        "are no further from the live path than fp32 extraction was. "
+        "tf32 = TF32 matmuls only (~1.5-2x, smaller numeric delta). "
+        "fp32 = the historical exact-fp32 behaviour.",
     )
     ap.add_argument(
         "--log-every",
@@ -203,10 +215,24 @@ def main() -> None:
 
     # ── Walk the loader, forward each batch through the cache-aware
     #    forward(). Misses populate the cache; hits are no-ops.
-    print(f"\nExtracting embeddings → {cache.dir}")
+    #
+    # Precision: extraction historically ran plain fp32 with matmul precision
+    # "highest" — measured 98-100% SM at the power cap with the tensor cores
+    # idle. TF32 ("high") + bf16 autocast engages them (~2-4x). Reductions
+    # under autocast stay fp32-accumulated; the fp16 store cast in
+    # EmbeddingCache.put() is the final precision floor either way.
+    use_cuda = str(args.device).startswith("cuda") and torch.cuda.is_available()
+    if args.precision != "fp32" and use_cuda:
+        torch.set_float32_matmul_precision("high")
+    autocast_ctx = (
+        torch.autocast("cuda", dtype=torch.bfloat16)
+        if args.precision == "bf16" and use_cuda
+        else nullcontext()
+    )
+    print(f"\nExtracting embeddings → {cache.dir}  (precision={args.precision})")
     t_start = time.time()
     n_clips = 0
-    with torch.no_grad():
+    with torch.inference_mode(), autocast_ctx:
         for i, batch in enumerate(loader):
             x = batch[0].to(args.device)
             clip_ids = batch[3]

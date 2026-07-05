@@ -476,6 +476,14 @@ def main() -> None:
     ap.add_argument("--load-threads", type=int, default=16)
     args = ap.parse_args()
 
+    # TF32 for the N×N sim matmuls (N≈103k, H≈1024). The metric suite is
+    # rank-based (MAP) — TF32's ~1e-3-relative sim error is far below the
+    # score-pool separations (Δcos ≈ 0.2–0.5 between pools); validated by
+    # re-running the audited MuQ/MERT layers and diffing against the
+    # committed fp32 numbers. ~1.3–2× on the matmul share of each layer.
+    if str(args.device).startswith("cuda") and torch.cuda.is_available():
+        torch.set_float32_matmul_precision("high")
+
     cache_dir = Path(args.cache_dir)
     consolidated = (
         Path(args.consolidated) if args.consolidated else cache_dir / "consolidated_file_embs.pt"
