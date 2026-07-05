@@ -31,7 +31,8 @@ from marble.utils.emb_cache import (  # noqa: E402
 
 
 def test_pool_time_true_round_trip_unchanged():
-    """Sanity check: the historical (L, H) path still works as before."""
+    """The (L, H) path stores fp16 on disk (default) and upcasts to fp32 on
+    load: shape unchanged, values preserved within fp16 rounding."""
     with tempfile.TemporaryDirectory() as td:
         cache = EmbeddingCache(
             encoder_slug="TestEnc",
@@ -48,10 +49,14 @@ def test_pool_time_true_round_trip_unchanged():
         assert pooled.shape == (3, 4, 8)
         cache.put_batch(clip_ids, pooled)
         assert cache.has_all(clip_ids)
+        # Storage contract: fp16 on disk, fp32 on load.
+        raw = torch.load(cache.path_for("c0"), weights_only=True)["embedding"]
+        assert raw.dtype == torch.float16
         loaded = cache.get_batch(clip_ids)  # (3, 4, 8)
         assert loaded.shape == (3, 4, 8)
-        # Value preserved
-        torch.testing.assert_close(loaded, pooled.to(torch.float32))
+        assert loaded.dtype == torch.float32
+        # Value preserved within fp16 rounding.
+        torch.testing.assert_close(loaded, pooled, atol=5e-3, rtol=1e-2)
         # round-trip via the layer-tuple helper
         tup = stacked_to_layer_tuple(loaded)
         assert len(tup) == 4
@@ -78,13 +83,14 @@ def test_pool_time_false_round_trip_preserves_time():
         assert cache.has_all(clip_ids)
         loaded = cache.get_batch(clip_ids)
         assert loaded.shape == (2, 4, 7, 8), f"got {tuple(loaded.shape)}"
-        torch.testing.assert_close(loaded, stacked.to(torch.float32))
+        assert loaded.dtype == torch.float32  # upcast on load
+        torch.testing.assert_close(loaded, stacked, atol=5e-3, rtol=1e-2)
         # Layer-tuple unpack: each layer (B, T, H)
         tup = stacked_frames_to_layer_tuple(loaded)
         assert len(tup) == 4
         for i, layer_tensor in enumerate(tup):
             assert layer_tensor.shape == (2, 7, 8), f"layer {i}: {tuple(layer_tensor.shape)}"
-            torch.testing.assert_close(layer_tensor, layer_outputs[i].to(torch.float32))
+            torch.testing.assert_close(layer_tensor, layer_outputs[i], atol=5e-3, rtol=1e-2)
 
 
 def test_pool_time_false_rejects_2d_put():
