@@ -85,6 +85,182 @@ class LoadLatestCheckpointCallback(Callback):
         print(f"[LoadLatestCheckpoint] loaded {chosen}  ({why})")
 
 
+class PerHeadBestCheckpoint(Callback):
+    """Per-head best-weight tracking for multi-head parallel layer probes.
+
+    Why ``ModelCheckpoint`` alone is not enough: in a multi-head run,
+    ``best.ckpt`` (monitored on ``val/<primary>_best``) freezes ALL heads at
+    the single epoch where the best-performing head peaked — but head k's own
+    best epoch is generally a different one (early layers tend to peak
+    earlier than late layers). The single-head protocol tests each layer at
+    its own validated-best checkpoint; to reproduce that per layer within one
+    run, this callback snapshots any head whose monitored val metric improved
+    (heads are ~1 MB — 14 snapshots cost less than one full ckpt) and
+    restores every head to its own best weights at test start.
+
+    Files: ``<dirpath>/head_<name>_best.pt`` with payload
+    ``{"state_dict": ..., "epoch": int, "metric": float, "monitor": str}``,
+    written atomically (tmp + os.replace, same dance as the embedding cache).
+    ``<name>`` comes from the decoder's ``head_names`` ("l0".."l12",
+    "meanall").
+
+    Wiring expectations:
+      * ``pl_module.decoders[0]`` exposes ``.heads`` (ModuleList) and
+        ``.head_names`` — i.e. a ``PerLayerHeads`` decoder driven by
+        ``ProbeAudioTaskMultiHead``, which logs ``val/<monitor_base>_<name>``
+        per head.
+      * Config placement: list this AFTER ``LoadLatestCheckpointCallback`` —
+        callbacks fire in list order at test start, so the per-head restore
+        must run after (and overwrite) the whole-model best.ckpt load.
+      * ``dirpath=None`` reuses the ModelCheckpoint dirpath, keeping all
+        checkpoint artifacts of a run in one directory.
+
+    Resume-safety: the incumbent best value per head is (re-)seeded from the
+    on-disk payloads on first use, so a killed-and-resumed fit keeps
+    improving on the earlier epochs' snapshots instead of overwriting them
+    with a worse post-resume value. Test runs in a fresh process need no
+    callback state at all — they just read the files.
+    """
+
+    def __init__(
+        self,
+        dirpath: str | None = None,
+        monitor_base: str = "acc_rpa",
+        mode: str = "max",
+    ):
+        if mode not in ("max", "min"):
+            raise ValueError(f"PerHeadBestCheckpoint mode must be 'max' or 'min', got {mode!r}")
+        self.dirpath = dirpath
+        self.monitor_base = monitor_base
+        self.mode = mode
+        # name → best metric value so far. None until first use — seeded
+        # lazily from disk so resumed fits inherit pre-kill bests.
+        self._best: dict[str, float] | None = None
+        self._warned_missing: set[str] = set()
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    def _resolve_dir(self, trainer) -> str:
+        if self.dirpath:
+            return self.dirpath
+        ckpt_cb: ModelCheckpoint | None = next(
+            (cb for cb in trainer.callbacks if isinstance(cb, ModelCheckpoint)),
+            None,
+        )
+        if ckpt_cb is None or not ckpt_cb.dirpath:
+            raise RuntimeError(
+                "PerHeadBestCheckpoint: no dirpath given and no ModelCheckpoint "
+                "callback to borrow one from."
+            )
+        return ckpt_cb.dirpath
+
+    @staticmethod
+    def _decoder(pl_module):
+        decoders = getattr(pl_module, "decoders", None)
+        dec = decoders[0] if decoders is not None and len(decoders) else None
+        if dec is None or not (hasattr(dec, "heads") and hasattr(dec, "head_names")):
+            raise RuntimeError(
+                "PerHeadBestCheckpoint needs pl_module.decoders[0] to expose "
+                ".heads/.head_names (a PerLayerHeads decoder); got "
+                f"{type(dec).__name__}."
+            )
+        return dec
+
+    @staticmethod
+    def _path_for(dirpath: str, name: str) -> str:
+        return os.path.join(dirpath, f"head_{name}_best.pt")
+
+    def _seed_best_from_disk(self, dirpath: str, head_names) -> None:
+        if self._best is not None:
+            return
+        self._best = {}
+        for name in head_names:
+            path = self._path_for(dirpath, name)
+            if os.path.exists(path):
+                payload = torch.load(path, map_location="cpu", weights_only=True)
+                metric = payload.get("metric")
+                if metric is not None:
+                    self._best[name] = float(metric)
+
+    # ── fit: snapshot improved heads each val epoch ──────────────────────
+
+    def on_validation_end(self, trainer, pl_module):
+        # on_validation_end (NOT on_validation_epoch_end): by this hook the
+        # logger connector has computed the epoch's object-logged metrics
+        # into trainer.callback_metrics — the same timing ModelCheckpoint
+        # relies on for its monitor.
+        if getattr(trainer, "sanity_checking", False):
+            return
+        dirpath = self._resolve_dir(trainer)
+        os.makedirs(dirpath, exist_ok=True)
+        dec = self._decoder(pl_module)
+        self._seed_best_from_disk(dirpath, dec.head_names)
+        for k, name in enumerate(dec.head_names):
+            key = f"val/{self.monitor_base}_{name}"
+            value = trainer.callback_metrics.get(key)
+            if value is None:
+                # Warn once per key — a missing per-head metric means the
+                # task's per-head logging and this callback's monitor_base
+                # disagree; every head silently never snapshotting would be
+                # a nasty way to discover that at test time.
+                if key not in self._warned_missing:
+                    self._warned_missing.add(key)
+                    print(
+                        f"[PerHeadBestCheckpoint] WARNING: {key!r} not in "
+                        f"callback_metrics — head {name!r} will never snapshot. "
+                        f"Check monitor_base vs the task's primary_metric."
+                    )
+                continue
+            value = float(value)
+            incumbent = self._best.get(name)
+            improved = incumbent is None or (
+                value > incumbent if self.mode == "max" else value < incumbent
+            )
+            if not improved:
+                continue
+            self._best[name] = value
+            payload = {
+                # detach+cpu+clone: snapshot must not alias live (possibly
+                # GPU) training weights that keep changing after this hook.
+                "state_dict": {
+                    sk: sv.detach().cpu().clone() for sk, sv in dec.heads[k].state_dict().items()
+                },
+                "epoch": int(getattr(trainer, "current_epoch", -1)),
+                "metric": value,
+                "monitor": key,
+            }
+            target = self._path_for(dirpath, name)
+            tmp = f"{target}.{os.getpid()}.tmp"
+            torch.save(payload, tmp)
+            os.replace(tmp, target)
+
+    # ── test: restore every head to its own best weights ────────────────
+
+    def on_test_start(self, trainer, pl_module):
+        dirpath = self._resolve_dir(trainer)
+        dec = self._decoder(pl_module)
+        restored, missing = [], []
+        for k, name in enumerate(dec.head_names):
+            path = self._path_for(dirpath, name)
+            if not os.path.exists(path):
+                missing.append(name)
+                continue
+            payload = torch.load(path, map_location="cpu", weights_only=True)
+            # load_state_dict copies INTO the existing parameters, so device
+            # placement (set by the Trainer) is preserved.
+            dec.heads[k].load_state_dict(payload["state_dict"])
+            restored.append((name, payload.get("epoch"), payload.get("metric")))
+        if restored:
+            summary = ", ".join(f"{n}(ep{e}, {m:.4f})" for n, e, m in restored)
+            print(f"[PerHeadBestCheckpoint] restored {len(restored)} head(s): {summary}")
+        if missing:
+            print(
+                f"[PerHeadBestCheckpoint] WARNING: no best snapshot for head(s) "
+                f"{missing} in {dirpath} — keeping the weights already loaded "
+                f"(e.g. from best.ckpt)."
+            )
+
+
 def _find_wandb_run(trainer):
     """Return the active wandb Run object if a WandbLogger is attached, else None.
 

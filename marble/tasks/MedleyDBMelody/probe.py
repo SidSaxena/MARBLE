@@ -13,12 +13,14 @@ the probe necessarily applies to both. Configs reference
 from marble.tasks.HookTheoryMelody.probe import (  # noqa: F401
     MelodyCrossEntropyLoss,
     ProbeAudioTask,
+    ProbeAudioTaskMultiHead,
     RawChromaAccuracy,
     RawPitchAccuracy,
 )
 
 __all__ = [
     "ProbeAudioTask",
+    "ProbeAudioTaskMultiHead",
     "MelodyCrossEntropyLoss",
     "RawPitchAccuracy",
     "RawChromaAccuracy",
