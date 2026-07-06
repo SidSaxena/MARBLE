@@ -146,6 +146,23 @@ def pool_means(dumps, layers):
     return within, twin, honest, distr
 
 
+def pool_auc(dump, pool_a, pool_b, diag=False):
+    """Rank-free separability P(score_a > score_b) from the stored 50-bin
+    histograms (bin-midpoint tie handling; equivalent to the Mann-Whitney U
+    statistic up to bin resolution)."""
+    edges = np.array(dump["overall"][pool_a]["edges"])
+    ha = np.zeros(len(edges) - 1)
+    hb = np.zeros(len(edges) - 1)
+    for k, v in dump["cells"].items():
+        q, t = k.split("_to_")
+        if (q == t) == diag:
+            ha += np.array(v[pool_a]["hist"], dtype=float)
+            hb += np.array(v[pool_b]["hist"], dtype=float)
+    pa, pb = ha / ha.sum(), hb / hb.sum()
+    cb = np.cumsum(pb)
+    return float(np.sum(pa * (np.concatenate([[0], cb[:-1]]) + 0.5 * pb)))
+
+
 def endlabel(ax, x, y, text, color, dy=0):
     ax.annotate(
         text,
@@ -572,9 +589,12 @@ def cmd_report(args):
     if gN < 0.05:
         verdict = f"converge (gap {gN:+.2f})"
         sub = "same-timbre falls · same-notes-across-timbre rises · they converge deep"
-    elif g_min < gN - 0.03:
+    elif g_min < gN - 0.03 and g_min_i > 0:
         verdict = f"gap narrows to {g_min:+.2f} at L{layers[g_min_i]}\nthen RE-WIDENS to {gN:+.2f}"
         sub = "composition similarity peaks mid-network, then late layers re-specialize"
+    elif g_min_i == 0 and gN > g0 + 0.03:
+        verdict = f"gap WIDENS monotonically\n{g0:+.2f} -> {gN:+.2f}"
+        sub = "composition similarity decays with depth — deep layers drift from note identity"
     else:
         verdict = f"gap stays wide {gN:+.2f}\n(does NOT converge)"
         sub = "same-timbre barely falls · same-notes-across-timbre rises modestly · gap stays wide"
@@ -717,6 +737,11 @@ def main():
         help="'<results_dir>:<display name>' specs; the FIRST is the lead encoder",
     )
     t.add_argument("--thesis-dir", required=True, help="thesis repo root (contains figures/)")
+    t.add_argument(
+        "--comparison-stem",
+        default="vgm_encoder_comparison",
+        help="output stem for the comparison figure (e.g. vgm_encoder_comparison_4enc)",
+    )
     args = ap.parse_args()
     if args.cmd == "report":
         cmd_report(args)
@@ -901,7 +926,7 @@ def cmd_thesis(args):
         else:
             g_min_i = int(np.argmin(within_m - twin_m))
             g_min = float((within_m - twin_m)[g_min_i])
-            if g_min < gN - 0.03:
+            if g_min < gN - 0.03 and g_min_i > 0:
                 head = f"{name}: composition similarity peaks mid-network, then late layers re-specialize"
                 sub = (
                     f"the instrument-vs-notes gap narrows to {g_min:+.2f} (layer {EX[g_min_i]}) "
@@ -909,6 +934,14 @@ def cmd_thesis(args):
                 )
                 verdict = f"re-widens\n(gap {gN:+.2f})"
                 red_label = "composition peaks mid-network"
+            elif g_min_i == 0 and gN > g0 + 0.03:
+                head = f"{name}: composition similarity decays with depth — the semantic outlier"
+                sub = (
+                    f"the instrument-vs-notes gap only widens with depth, "
+                    f"{g0:+.2f} \u2192 {gN:+.2f} — semantic drift away from note identity"
+                )
+                verdict = f"widens\n(gap {gN:+.2f})"
+                red_label = "composition decays with depth"
             else:
                 head = f"{name} stays instrument-biased at depth"
                 sub = f"the instrument-vs-notes gap only narrows to {gN:+.2f} — no convergence"
@@ -1088,11 +1121,14 @@ def cmd_thesis(args):
         g = C["within_m"] - C["twin_m"]
         ax.plot(X, g, "-o", color=c, lw=2.4, ms=5.5, label=name)
         gN = float(g[-1])
-        word = (
-            "converges to"
-            if gN < 0.05
-            else ("re-widens to" if float(g.min()) < gN - 0.03 else "narrows to")
-        )
+        if gN < 0.05:
+            word = "converges to"
+        elif float(g.min()) < gN - 0.03 and int(np.argmin(g)) > 0:
+            word = "re-widens to"
+        elif int(np.argmin(g)) == 0 and gN > float(g[0]) + 0.03:
+            word = "widens to"
+        else:
+            word = "narrows to"
         ends.append((gN, name, c, float(X[-1]), word))
     for rank, (gN, name, c, xend, word) in enumerate(sorted(ends)):
         ax.annotate(
@@ -1138,7 +1174,61 @@ def cmd_thesis(args):
         fontsize=11,
         color="#555555",
     )
-    _th_save(fig, thesis_dir, "vgm_encoder_comparison")
+    _th_save(fig, thesis_dir, args.comparison_stem)
+
+    # ── 4b. vgm_auc_separability (ALL encoders): rank-free Mann-Whitney AUC ──
+    fig, axes = plt.subplots(1, 2, figsize=(11.4, 5.0))
+    fig.subplots_adjust(top=0.78, bottom=0.13, left=0.075, right=0.975, wspace=0.26)
+    aucs = {}
+    for i, (name, X, _C, resx) in enumerate(encs):
+        c = TH_COMPARE[i % len(TH_COMPARE)]
+        dl = load_dumps(resx, len(X))
+        a_h = [pool_auc(dl[L], "relevant_diffvar", "distractor", diag=False) for L in X]
+        a_t = [pool_auc(dl[L], "relevant", "relevant_diffvar", diag=False) for L in X]
+        aucs[name] = (a_h, a_t)
+        axes[0].plot(X, a_h, "-o", color=c, lw=2.4, ms=5.5, label=name)
+        axes[1].plot(X, a_t, "-o", color=c, lw=2.4, ms=5.5, label=name)
+    ax = axes[0]
+    ax.axhline(0.5, color="#444444", lw=1.0)
+    ax.set_title(
+        "controlled positive vs distractor\n(bulk separability of the honest task)", fontsize=12
+    )
+    ax.set_ylabel("AUC  ·  P(positive > distractor)", fontsize=11.5)
+    ax.set_ylim(0.48, 1.0)
+    ax.legend(loc="lower right", fontsize=10.5, **TH_LEG)
+    ax.text(
+        0.98,
+        0.965,
+        "0.5 = chance",
+        transform=ax.transAxes,
+        ha="right",
+        fontsize=9.5,
+        color="#666666",
+        style="italic",
+    )
+    _th_axes(ax, list(range(max_nl)), "encoder layer")
+    ax = axes[1]
+    ax.axhline(0.5, color="#444444", lw=1.0)
+    ax.set_title(
+        "twin vs controlled positive\n(how distinctive the re-render is, in distribution)",
+        fontsize=12,
+    )
+    ax.set_ylabel("AUC  ·  P(twin > controlled positive)", fontsize=11.5)
+    ax.set_ylim(0.48, 0.75)
+    ax.legend(loc="upper left", fontsize=10.5, **TH_LEG)
+    _th_axes(ax, list(range(max_nl)), "encoder layer")
+    fig.text(
+        0.525, 0.955, "Rank-free separability on the rendered benchmark", ha="center", fontsize=13
+    )
+    fig.text(
+        0.525,
+        0.905,
+        "bulk overlap is close across encoders — MAP differences live in the top of the ranking",
+        ha="center",
+        fontsize=11,
+        color="#555555",
+    )
+    _th_save(fig, thesis_dir, "vgm_auc_separability")
 
     # ── 5. vgm_instrument_grids_<enc> (per encoder, best layer, lens framing) ──
     for name, _X, C, results in encs:
