@@ -222,14 +222,23 @@ class ProbeAudioTaskMultiHead(BaseTask):
         # Update-equivalence invariant: the K heads are PARAMETER-DISJOINT
         # (the encoder is frozen; no module is shared across heads), so
         # ∂(Σ_k loss_k)/∂θ_k = ∂loss_k/∂θ_k, and because Adam's state
-        # (m, v, step) is per-parameter, the summed loss yields EXACTLY the
-        # parameter updates K independent single-head runs would produce at
-        # the same LR — proven bitwise in
-        # tests/test_multihead_probe.py::test_update_equivalence. The
-        # invariant holds for any per-parameter optimizer with no
-        # cross-parameter coupling; it would break under global gradient
-        # clipping (norm over ALL heads' grads) or a loss-magnitude-dependent
-        # LR schedule — neither is used by the probe configs.
+        # (m, v, step) is per-parameter, the summed loss yields exactly the
+        # parameter updates K independent single-head runs would produce
+        # UNDER A COMMON, HEAD-INDEPENDENT LR SEQUENCE — proven bitwise
+        # (constant LR, dropout=0) in
+        # tests/test_multihead_probe.py::test_update_equivalence.
+        # SCOPE (adversarial-review finding, 2026-07-06): the invariant
+        # breaks under any cross-head coupling — global gradient clipping
+        # (norm over ALL heads' grads; no probe config sets
+        # gradient_clip_val) or an LR schedule driven by a shared quantity.
+        # The shipped multihead config DOES use ReduceLROnPlateau on
+        # val/acc_rpa_best (the best head's metric), so every head follows
+        # ONE common LR schedule instead of its own adaptive one: an
+        # identical-protocol-across-layers deviation from per-run schedules.
+        # Multi-head results are therefore a VALIDATED APPROXIMATION of
+        # independent runs (fold-0 anchor comparison in
+        # docs/multihead_probe_validation.md), not a bitwise reproduction —
+        # phrase them as such anywhere thesis-facing.
         # (No 1/K averaging: scaling the sum would scale every head's
         # gradient and change the effective LR vs the single-head runs.)
         head_losses = [loss_fn(logits[:, k], y) for k in range(logits.size(1))]

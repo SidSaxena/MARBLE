@@ -9,9 +9,12 @@
 #     substitution; the (B, 13, T, H) embedding feeds PerLayerHeads.
 #   * decoder = PerLayerHeads: 13 heads structurally identical to the
 #     single-layer MLPDecoderKeepTime config (+ meanall head, index 13).
-#   * task = ProbeAudioTaskMultiHead: per-head summed loss (update-equivalent
-#     to independent runs — see the invariant in the class), per-head metrics
-#     val/acc_rpa_l{k} + aggregate val/acc_rpa_best (the monitor).
+#   * task = ProbeAudioTaskMultiHead: per-head summed loss. Update-equivalent
+#     to independent runs UNDER CONSTANT LR (proven bitwise in tests); with
+#     the shared ReduceLROnPlateau below this is a VALIDATED APPROXIMATION,
+#     not a bitwise reproduction — see the scoped invariant in the class and
+#     docs/multihead_probe_validation.md. Per-head metrics val/acc_rpa_l{k}
+#     + aggregate val/acc_rpa_best (the monitor).
 #   * PerHeadBestCheckpoint snapshots each head at ITS OWN best val epoch and
 #     restores all heads at test start (per-layer best.ckpt protocol in one
 #     run). It MUST be listed after LoadLatestCheckpointCallback.

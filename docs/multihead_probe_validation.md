@@ -149,3 +149,33 @@ copy its `-layers` config, switch the task class, set `LayerSelector
 layers: ["0..L-1"]`, swap the decoder for `PerLayerHeads(num_layers=L,
 include_meanall=true)`, add `PerHeadBestCheckpoint`, monitor
 `val/acc_rpa_best`, drop EarlyStopping.
+
+## Claims wording for the thesis (adversarial-review outcome, 2026-07-06)
+
+Review verdict: SHIP-WITH-FIXES; no result-corrupting code bug found. Binding
+rules on how multi-head numbers may be claimed:
+
+1. **Never write "identical/bitwise-equivalent to independent single-layer
+   runs."** The bitwise proof covers constant LR + dropout 0. The shipped
+   config's shared `ReduceLROnPlateau` (on `val/acc_rpa_best`) gives every
+   head ONE common LR schedule — a *systematic* deviation from per-run
+   adaptive schedules, active precisely because heads plateau at different
+   epochs. Correct phrasing: *"multi-head approximation, empirically
+   validated against independent single-layer runs within run noise
+   (±0.01 RPA, argmax layer preserved)."*
+2. Bitwise equivalence **to the committed single-head anchors is impossible
+   by construction** (they used per-run ReduceLROnPlateau + per-run
+   EarlyStopping, which a joint run cannot replicate per head).
+3. The fold-0 anchor comparison is a **sanity check, not an equivalence
+   proof**: the acceptance band also absorbs a disclosed aggregation-method
+   difference (single-head test logs batch-weighted per-batch RPA; multi-head
+   object-logs the exact global ratio; ~1e-3, larger for unequal
+   voiced-frame counts).
+4. No per-layer number is published before the fold-0 GPU validation in this
+   doc has actually been run and passed.
+
+**Smoke-test footgun:** running the multihead config with the WandbLogger
+disabled changes the cache-slug fallback (`type(self).__name__` →
+`ProbeAudioTaskMultiHead`), silently splitting the cache dir and
+re-extracting 26 GB. Always keep the wandb group `"MuQ / MedleyDBMelody"`
+(mode=offline is fine; logger *removal* is not).
