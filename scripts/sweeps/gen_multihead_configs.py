@@ -91,13 +91,13 @@ def main():
             },
         }
     ]
+
+    # callbacks + scheduler from the validated template
+    cfg["trainer"]["callbacks"] = copy.deepcopy(tpl["trainer"]["callbacks"])
     if args.weighted:
         cfg["trainer"]["callbacks"] = cfg["trainer"]["callbacks"] + [
             {"class_path": "marble.modules.callbacks.LogLayerWeightsCallback"}
         ]
-
-    # callbacks + scheduler from the validated template
-    cfg["trainer"]["callbacks"] = copy.deepcopy(tpl["trainer"]["callbacks"])
     if "lr_scheduler" in tpl:
         cfg["lr_scheduler"] = copy.deepcopy(tpl["lr_scheduler"])
     if "optimizer" in tpl and "optimizer" not in cfg:
