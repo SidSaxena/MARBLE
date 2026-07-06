@@ -704,11 +704,459 @@ def main():
         help="one or more '<results_dir>:<display name>' specs",
     )
     c.add_argument("--out", required=True)
+    t = sub.add_parser(
+        "thesis",
+        help="thesis-styled figure set: two_lenses, timbre_composition_shift, "
+        "depth_whitening (lead encoder = FIRST spec), encoder_comparison (all), "
+        "instrument_grids (per encoder). Writes figures/chapters/*.pdf + defense/*.png",
+    )
+    t.add_argument(
+        "--results",
+        nargs="+",
+        required=True,
+        help="'<results_dir>:<display name>' specs; the FIRST is the lead encoder",
+    )
+    t.add_argument("--thesis-dir", required=True, help="thesis repo root (contains figures/)")
     args = ap.parse_args()
     if args.cmd == "report":
         cmd_report(args)
-    else:
+    elif args.cmd == "compare":
         cmd_compare(args)
+    else:
+        cmd_thesis(args)
+
+
+# ── thesis-figure mode ─────────────────────────────────────────────────────
+# Reproduces (and supersedes) the thesis repo's figures/src/vgm_*.py one-off
+# scripts: exact thesis styling — "instrument" terminology, framed legends,
+# fig.text title + gray subtitle, white-boxed annotations, italic
+# direction hints — generated straight from sweep outputs / committed CSVs.
+# Adding an encoder (e.g. CLaMP3) = one more --results spec, zero edits.
+
+TH_GREEN, TH_RED, TH_BLUE, TH_GRAY = "#1BAF7A", "#E34948", "#2A78D6", "#52514E"
+TH_VIOLET, TH_ORANGE = "#5B4FC4", "#E8752E"
+TH_CRIMSON, TH_FOREST, TH_GOLD = "#B02637", "#2B8A57", "#D9A521"
+TH_COMPARE = [TH_VIOLET, TH_ORANGE, TH_GREEN, TH_CRIMSON, TH_GOLD]
+TH_BOX = dict(boxstyle="round,pad=0.18", fc="white", ec="none", alpha=0.85)
+TH_LEG = dict(frameon=True, framealpha=0.95, edgecolor="#CCCCCC")
+
+
+def _th_axes(ax, layers, xlabel):
+    ax.set_xlabel(xlabel, fontsize=11.5)
+    ax.set_xticks(layers[:: 2 if len(layers) > 15 else 1])
+    ax.tick_params(labelsize=10.5)
+    ax.grid(alpha=0.28, lw=0.7)
+    for s in ("top", "right"):
+        ax.spines[s].set_visible(False)
+
+
+def _th_save(fig, thesis_dir: Path, stem: str):
+    chapters = thesis_dir / "figures" / "chapters"
+    defense = thesis_dir / "defense"
+    chapters.mkdir(parents=True, exist_ok=True)
+    fig.savefig(chapters / f"{stem}.pdf")
+    if defense.is_dir():
+        fig.savefig(defense / f"{stem}.png", dpi=160)
+    plt.close(fig)
+    print(f"[thesis] wrote {chapters / (stem + '.pdf')}")
+
+
+def _slug(name: str) -> str:
+    return name.lower().replace("-", "").replace("_", "").replace(" ", "")
+
+
+def cmd_thesis(args):
+    thesis_dir = Path(args.thesis_dir)
+    encs = []  # (display, layers, summary-cols dict, results Path)
+    for spec in args.results:
+        path, name = spec.rsplit(":", 1)
+        results = Path(path)
+        nl = 0
+        while (results / f"layer{nl}" / "metrics.json").exists():
+            nl += 1
+        layers, M, _ = load_metrics(results, nl)
+        cols = {
+            "within": np.array([M[L]["test/map_same_condition"] for L in layers]),
+            "cross_conf": np.array([M[L]["test/map_cross_condition"] for L in layers]),
+            "cross_ctl": np.array([M[L]["test/map_cross_condition_varctl"] for L in layers]),
+            "map_cen": np.array([M[L]["test/map_centered"] for L in layers]),
+            "map_wht": np.array([M[L]["test/map_whitened"] for L in layers]),
+        }
+        dumps = load_dumps(results, nl)
+        within_m, twin_m, _, distr_m = pool_means(dumps, layers)
+        honest_m = np.array([wmean(dumps[L], "relevant_diffvar", False) for L in layers])
+        cols.update(within_m=within_m, twin_m=twin_m, honest_m=honest_m, distr_m=distr_m)
+        encs.append((name, np.array(layers), cols, results))
+        print(f"[thesis] loaded {name}: {nl} layers")
+
+    lead_name, LX, LC, lead_res = encs[0]
+
+    # ── 1. vgm_two_lenses (lead encoder) ──
+    fig, ax = plt.subplots(figsize=(9.75, 5.25))
+    fig.subplots_adjust(top=0.90, bottom=0.12, left=0.09, right=0.97)
+    ax.plot(
+        LX,
+        LC["within"],
+        "-o",
+        color="#7F7F7F",
+        lw=2.2,
+        ms=6,
+        label="within-instrument (same under both lenses)",
+    )
+    ax.plot(
+        LX,
+        LC["cross_conf"],
+        "-s",
+        color=TH_BLUE,
+        lw=2.2,
+        ms=6,
+        label="cross-instrument, work-level lens\n(includes the same variation re-rendered)",
+    )
+    ax.plot(
+        LX,
+        LC["cross_ctl"],
+        "-^",
+        color=TH_CRIMSON,
+        lw=2.2,
+        ms=6,
+        label="cross-instrument, variation-controlled lens\n(a different variation, different instrument)",
+    )
+    ax.set_ylabel("MAP", fontsize=12.5)
+    _th_axes(ax, list(LX), f"{lead_name} layer")
+    ax.set_title(
+        f"Two relevance lenses on the rendered benchmark ({lead_name}, centered)",
+        fontsize=13.5,
+        pad=12,
+    )
+    ax.legend(loc="upper left", fontsize=10.3, labelspacing=0.6, **TH_LEG)
+    _th_save(fig, thesis_dir, "vgm_two_lenses")
+
+    # ── 2. vgm_timbre_composition_shift (lead encoder) ──
+    within_m, twin_m = LC["within_m"], LC["twin_m"]
+    g0, gN = within_m[0] - twin_m[0], within_m[-1] - twin_m[-1]
+    fig, ax = plt.subplots(figsize=(9.75, 5.875))
+    fig.subplots_adjust(top=0.86, bottom=0.11, left=0.09, right=0.97)
+    ax.plot(
+        LX,
+        within_m,
+        "-o",
+        color=TH_GREEN,
+        lw=2.4,
+        ms=6,
+        zorder=3,
+        label="same instrument, different variation",
+    )
+    ax.plot(
+        LX,
+        twin_m,
+        "-o",
+        color=TH_RED,
+        lw=2.4,
+        ms=6,
+        zorder=3,
+        label="same composition, different instrument (the twin)",
+    )
+    ax.plot(
+        LX,
+        LC["honest_m"],
+        "-o",
+        color=TH_BLUE,
+        lw=2.4,
+        ms=6,
+        zorder=3,
+        label="different variation, different instrument (controlled positive)",
+    )
+    ax.plot(
+        LX,
+        LC["distr_m"],
+        "-o",
+        color=TH_GRAY,
+        lw=2.0,
+        ms=5,
+        zorder=3,
+        label="different work (distractor)",
+    )
+    ax.set_ylabel("mean cosine similarity", fontsize=12.5)
+    _th_axes(ax, list(LX), f"{lead_name} layer")
+    ax.set_ylim(-0.12, 0.90)
+    if gN < 0.05:
+        head = f"{lead_name} shifts from timbre-dominated to composition-dominated with depth"
+        sub = (
+            "same-instrument similarity falls · same-notes-across-instruments rises · "
+            "they converge at depth"
+        )
+        verdict = f"converge\n(gap {gN:+.2f})"
+    else:
+        g_min_i = int(np.argmin(within_m - twin_m))
+        g_min = float((within_m - twin_m)[g_min_i])
+        if g_min < gN - 0.03:
+            head = f"{lead_name}: composition similarity peaks mid-network, then late layers re-specialize"
+            sub = (
+                f"the instrument-vs-notes gap narrows to {g_min:+.2f} (layer {LX[g_min_i]}) "
+                f"then re-widens to {gN:+.2f}"
+            )
+            verdict = f"re-widens\n(gap {gN:+.2f})"
+        else:
+            head = f"{lead_name} stays instrument-biased at depth"
+            sub = f"the instrument-vs-notes gap only narrows to {gN:+.2f} — no convergence"
+            verdict = f"stays wide\n(gap {gN:+.2f})"
+    fig.text(0.53, 0.955, head, ha="center", fontsize=13.5)
+    fig.text(0.53, 0.905, sub, ha="center", fontsize=11, color="#555555")
+    ax.text(
+        float(LX[0]) + 0.1 * len(LX),
+        0.845,
+        "timbre-dominated",
+        color=TH_GREEN,
+        fontsize=11.5,
+        fontweight="bold",
+    )
+    ax.text(
+        float(LX[0]) + 0.55 * len(LX),
+        0.585,
+        "composition rising",
+        color=TH_RED,
+        fontsize=11.5,
+        fontweight="bold",
+    )
+    ax.annotate(
+        "",
+        xy=(0.14, within_m[0] - 0.012),
+        xytext=(0.14, twin_m[0] + 0.015),
+        arrowprops=dict(arrowstyle="<->", color="#777777", lw=1.2),
+    )
+    ax.text(0.34, (within_m[0] + twin_m[0]) / 2, f"gap {g0:+.2f}", color="#666666", fontsize=10.5)
+    end_mid = (within_m[-1] + twin_m[-1]) / 2
+    ax.annotate(
+        verdict,
+        xy=(float(LX[-1]) - 0.03 * len(LX), twin_m[-1] - 0.015),
+        xytext=(float(LX[-1]) - 0.09 * len(LX), end_mid - 0.14),
+        ha="center",
+        fontsize=10.5,
+        color="#333333",
+        arrowprops=dict(arrowstyle="->", color="#333333", lw=1.1),
+    )
+    leg = ax.legend(
+        loc="center",
+        bbox_to_anchor=(0.505, 0.205),
+        fontsize=10.3,
+        borderpad=0.7,
+        labelspacing=0.45,
+        **TH_LEG,
+    )
+    leg.set_zorder(5)
+    _th_save(fig, thesis_dir, "vgm_timbre_composition_shift")
+
+    # ── 3. vgm_depth_whitening (lead encoder) ──
+    fig, ax = plt.subplots(figsize=(9.75, 5.25))
+    fig.subplots_adjust(top=0.90, bottom=0.12, left=0.09, right=0.97)
+    cc = LC["cross_ctl"]
+    plateau = np.where(cc >= 0.97 * cc.max())[0]
+    if len(plateau) > 1:
+        ax.axvspan(float(plateau[0]) - 0.5, float(plateau[-1]) + 0.5, color=TH_RED, alpha=0.06)
+    ax.plot(
+        LX,
+        cc,
+        "-^",
+        color=TH_CRIMSON,
+        lw=2.4,
+        ms=6,
+        label="variation-controlled cross-instrument MAP",
+    )
+    ax.plot(
+        LX,
+        LC["map_cen"],
+        "-o",
+        color=TH_FOREST,
+        lw=2.4,
+        ms=6,
+        label="overall retrieval MAP (centered)",
+    )
+    ax.plot(
+        LX,
+        LC["map_wht"],
+        "--o",
+        color=TH_GOLD,
+        lw=2.4,
+        ms=6,
+        label="overall retrieval MAP (whitened, transductive)",
+    )
+    ax.set_ylabel("MAP", fontsize=12.5)
+    _th_axes(ax, list(LX), f"{lead_name} layer")
+    ax.set_title(
+        "Depth buys cross-timbre generalization; whitening lifts retrieval at every layer",
+        fontsize=13.5,
+        pad=12,
+    )
+    ax.legend(loc="upper left", fontsize=10.5, **TH_LEG)
+    _th_save(fig, thesis_dir, "vgm_depth_whitening")
+
+    # ── 4. vgm_encoder_comparison (ALL encoders) ──
+    max_nl = max(len(X) for _, X, _, _ in encs)
+    fig, axes = plt.subplots(1, 2, figsize=(11.4, 5.0))
+    fig.subplots_adjust(top=0.78, bottom=0.13, left=0.075, right=0.975, wspace=0.26)
+    ax = axes[0]
+    ymax = 0.0
+    for i, (name, X, C, _r) in enumerate(encs):
+        c = TH_COMPARE[i % len(TH_COMPARE)]
+        cc = C["cross_ctl"]
+        ymax = max(ymax, float(cc.max()))
+        ax.plot(X, cc, "-o", color=c, lw=2.4, ms=5.5, label=name)
+        b = int(np.argmax(cc))
+        dy = 0.017 if i % 2 == 0 else -0.022
+        # Label right of the peak (clears the upper-left legend); flip to the
+        # left when the peak sits in the right quarter of the axis.
+        if b < 0.72 * max_nl:
+            xt, ha = b + 0.03 * max_nl, "left"
+        else:
+            xt, ha = b - 0.03 * max_nl, "right"
+        ax.annotate(
+            f"{name} best L{b} = {cc[b]:.3f}",
+            xy=(b, cc[b]),
+            xytext=(xt, cc[b] + dy),
+            ha=ha,
+            fontsize=10.0,
+            color=c,
+            fontweight="bold",
+            bbox=TH_BOX,
+        )
+    ax.set_title(
+        "variation-controlled cross-instrument MAP\n(a different variation, a different instrument)",
+        fontsize=12,
+    )
+    ax.set_ylabel("MAP", fontsize=11.5)
+    ax.set_ylim(0, ymax * 1.18)
+    ax.legend(loc="upper left", fontsize=10.5, **TH_LEG)
+    ax.text(
+        0.98,
+        0.03,
+        "higher is better",
+        transform=ax.transAxes,
+        ha="right",
+        fontsize=9.5,
+        color="#666666",
+        style="italic",
+    )
+    _th_axes(ax, list(range(max_nl)), "encoder layer")
+
+    ax = axes[1]
+    ax.axhline(0, color="#444444", lw=1.0)
+    # Stack the verdict annotations in a fixed bottom-right column (an area
+    # no curve occupies for any encoder measured so far) with arrows to each
+    # curve's endpoint. Slots are assigned by endpoint rank (highest gap →
+    # highest slot) so arrows never cross — deterministic for any encoder count.
+    slots = [0.035, 0.095, 0.155, 0.215, 0.275]
+    ends = []
+    for i, (name, X, C, _r) in enumerate(encs):
+        c = TH_COMPARE[i % len(TH_COMPARE)]
+        g = C["within_m"] - C["twin_m"]
+        ax.plot(X, g, "-o", color=c, lw=2.4, ms=5.5, label=name)
+        gN = float(g[-1])
+        word = (
+            "converges to"
+            if gN < 0.05
+            else ("re-widens to" if float(g.min()) < gN - 0.03 else "narrows to")
+        )
+        ends.append((gN, name, c, float(X[-1]), word))
+    for rank, (gN, name, c, xend, word) in enumerate(sorted(ends)):
+        ax.annotate(
+            f"{name}: {word} {gN:+.2f}",
+            xy=(xend, gN),
+            xytext=(0.985 * max_nl, slots[rank % len(slots)]),
+            ha="right",
+            fontsize=10.0,
+            color=c,
+            bbox=TH_BOX,
+            arrowprops=dict(arrowstyle="->", color=c, lw=1.1, connectionstyle="arc3,rad=0.15"),
+        )
+    ax.set_title(
+        "within-instrument minus twin, mean cosine\n(how much the instrument still dominates the notes)",
+        fontsize=12,
+    )
+    ax.set_ylabel("cosine gap", fontsize=11.5)
+    ax.set_ylim(-0.02, 0.50)
+    ax.legend(loc="lower left", fontsize=10.5, **TH_LEG)
+    ax.text(
+        0.98,
+        0.945,
+        "lower is better (0 = instrument-invariant)",
+        transform=ax.transAxes,
+        ha="right",
+        fontsize=9.5,
+        color="#666666",
+        style="italic",
+    )
+    _th_axes(ax, list(range(max_nl)), "encoder layer")
+    names = [n for n, _x, _c, _r in encs]
+    head = (
+        " against ".join(names[:2])
+        if len(names) == 2
+        else ", ".join(names[:-1]) + f" and {names[-1]}"
+    )
+    fig.text(0.525, 0.955, f"{head} on the rendered benchmark", ha="center", fontsize=13)
+    fig.text(
+        0.525,
+        0.905,
+        "the depth shift is general in direction, encoder-specific in magnitude",
+        ha="center",
+        fontsize=11,
+        color="#555555",
+    )
+    _th_save(fig, thesis_dir, "vgm_encoder_comparison")
+
+    # ── 5. vgm_instrument_grids_<enc> (per encoder, best layer, lens framing) ──
+    for name, _X, C, results in encs:
+        best = int(np.argmax(C["cross_ctl"]))
+        grids = {}
+        for kind, fn in (("work", "condition_grid.csv"), ("ctl", "condition_grid_varctl.csv")):
+            grid, conds = {}, []
+            with open(results / f"layer{best}" / fn) as f:
+                for r in csv.DictReader(f):
+                    q, t = int(r["query_program"]), int(r["target_program"])
+                    grid[(q, t)] = float(r["map"])
+                    if q not in conds:
+                        conds.append(q)
+            conds = sorted(conds)
+            grids[kind] = np.array([[grid[(q, t)] for t in conds] for q in conds])
+        inst = [GM.get(c, str(c)) for c in conds]
+        A, B = grids["work"], grids["ctl"]
+        vmax = max(A.max(), B.max())
+        n = len(inst)
+        fig, axes = plt.subplots(1, 2, figsize=(11.4, 5.2))
+        fig.subplots_adjust(top=0.86, bottom=0.17, left=0.08, right=0.90, wspace=0.28)
+        for ax, Mx, title in (
+            (axes[0], A, "work-level lens (twin in relevance)"),
+            (axes[1], B, "variation-controlled lens (twin masked)"),
+        ):
+            im = ax.imshow(Mx, cmap="Blues", vmin=0, vmax=vmax)
+            ax.set_xticks(range(n))
+            ax.set_yticks(range(n))
+            ax.set_xticklabels(inst, rotation=40, ha="right", fontsize=10.5)
+            ax.set_yticklabels(inst, fontsize=10.5)
+            ax.set_title(title, fontsize=12)
+            ax.set_xlabel("target instrument", fontsize=11)
+            for i in range(n):
+                for j in range(n):
+                    v = Mx[i, j]
+                    ax.text(
+                        j,
+                        i,
+                        f"{v:.2f}"[1:] if v < 1 else f"{v:.2f}",
+                        ha="center",
+                        va="center",
+                        fontsize=8.0,
+                        color="white" if v > 0.55 * vmax else "#222222",
+                    )
+        axes[0].set_ylabel("query instrument", fontsize=11)
+        cax = fig.add_axes([0.92, 0.17, 0.018, 0.69])
+        fig.colorbar(im, cax=cax, label="MAP")
+        fig.text(
+            0.5, 0.945, f"Per-instrument MAP grid, {name} layer {best}", ha="center", fontsize=13
+        )
+        _th_save(
+            fig,
+            thesis_dir,
+            f"vgm_instrument_grids_{_slug(name).replace('large', '').replace('v195m', '') or _slug(name)}",
+        )
 
 
 if __name__ == "__main__":
