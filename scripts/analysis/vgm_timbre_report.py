@@ -765,6 +765,15 @@ def _slug(name: str) -> str:
     return name.lower().replace("-", "").replace("_", "").replace(" ", "")
 
 
+def _enc_slug(name: str) -> str:
+    """Filename slug for an encoder display name: 'MERT-v1-95M' -> 'mert',
+    'MuQ' -> 'muq', 'OMAR-RQ' -> 'omarrq', 'CLaMP3' -> 'clamp3'."""
+    s = _slug(name)
+    for junk in ("large", "v195m"):
+        s = s.replace(junk, "")
+    return s or _slug(name)
+
+
 def cmd_thesis(args):
     thesis_dir = Path(args.thesis_dir)
     encs = []  # (display, layers, summary-cols dict, results Path)
@@ -831,120 +840,148 @@ def cmd_thesis(args):
     ax.legend(loc="upper left", fontsize=10.3, labelspacing=0.6, **TH_LEG)
     _th_save(fig, thesis_dir, "vgm_two_lenses")
 
-    # ── 2. vgm_timbre_composition_shift (lead encoder) ──
-    within_m, twin_m = LC["within_m"], LC["twin_m"]
-    g0, gN = within_m[0] - twin_m[0], within_m[-1] - twin_m[-1]
-    fig, ax = plt.subplots(figsize=(9.75, 5.875))
-    fig.subplots_adjust(top=0.86, bottom=0.11, left=0.09, right=0.97)
-    ax.plot(
-        LX,
-        within_m,
-        "-o",
-        color=TH_GREEN,
-        lw=2.4,
-        ms=6,
-        zorder=3,
-        label="same instrument, different variation",
-    )
-    ax.plot(
-        LX,
-        twin_m,
-        "-o",
-        color=TH_RED,
-        lw=2.4,
-        ms=6,
-        zorder=3,
-        label="same composition, different instrument (the twin)",
-    )
-    ax.plot(
-        LX,
-        LC["honest_m"],
-        "-o",
-        color=TH_BLUE,
-        lw=2.4,
-        ms=6,
-        zorder=3,
-        label="different variation, different instrument (controlled positive)",
-    )
-    ax.plot(
-        LX,
-        LC["distr_m"],
-        "-o",
-        color=TH_GRAY,
-        lw=2.0,
-        ms=5,
-        zorder=3,
-        label="different work (distractor)",
-    )
-    ax.set_ylabel("mean cosine similarity", fontsize=12.5)
-    _th_axes(ax, list(LX), f"{lead_name} layer")
-    ax.set_ylim(-0.12, 0.90)
-    if gN < 0.05:
-        head = f"{lead_name} shifts from timbre-dominated to composition-dominated with depth"
-        sub = (
-            "same-instrument similarity falls · same-notes-across-instruments rises · "
-            "they converge at depth"
+    # ── 2. vgm_timbre_composition_shift (ALL encoders; lead gets the
+    #      canonical unsuffixed name the .tex includes) ──
+    for name, EX, EC, _res in encs:
+        within_m, twin_m = EC["within_m"], EC["twin_m"]
+        g0, gN = within_m[0] - twin_m[0], within_m[-1] - twin_m[-1]
+        fig, ax = plt.subplots(figsize=(9.75, 5.875))
+        fig.subplots_adjust(top=0.86, bottom=0.11, left=0.09, right=0.97)
+        ax.plot(
+            EX,
+            within_m,
+            "-o",
+            color=TH_GREEN,
+            lw=2.4,
+            ms=6,
+            zorder=3,
+            label="same instrument, different variation",
         )
-        verdict = f"converge\n(gap {gN:+.2f})"
-    else:
-        g_min_i = int(np.argmin(within_m - twin_m))
-        g_min = float((within_m - twin_m)[g_min_i])
-        if g_min < gN - 0.03:
-            head = f"{lead_name}: composition similarity peaks mid-network, then late layers re-specialize"
+        ax.plot(
+            EX,
+            twin_m,
+            "-o",
+            color=TH_RED,
+            lw=2.4,
+            ms=6,
+            zorder=3,
+            label="same composition, different instrument (the twin)",
+        )
+        ax.plot(
+            EX,
+            EC["honest_m"],
+            "-o",
+            color=TH_BLUE,
+            lw=2.4,
+            ms=6,
+            zorder=3,
+            label="different variation, different instrument (controlled positive)",
+        )
+        ax.plot(
+            EX,
+            EC["distr_m"],
+            "-o",
+            color=TH_GRAY,
+            lw=2.0,
+            ms=5,
+            zorder=3,
+            label="different work (distractor)",
+        )
+        ax.set_ylabel("mean cosine similarity", fontsize=12.5)
+        _th_axes(ax, list(EX), f"{name} layer")
+        ax.set_ylim(-0.12, 0.90)
+        if gN < 0.05:
+            head = f"{name} shifts from timbre-dominated to composition-dominated with depth"
             sub = (
-                f"the instrument-vs-notes gap narrows to {g_min:+.2f} (layer {LX[g_min_i]}) "
-                f"then re-widens to {gN:+.2f}"
+                "same-instrument similarity falls · same-notes-across-instruments rises · "
+                "they converge at depth"
             )
-            verdict = f"re-widens\n(gap {gN:+.2f})"
+            verdict = f"converge\n(gap {gN:+.2f})"
+            red_label = "composition rising"
         else:
-            head = f"{lead_name} stays instrument-biased at depth"
-            sub = f"the instrument-vs-notes gap only narrows to {gN:+.2f} — no convergence"
-            verdict = f"stays wide\n(gap {gN:+.2f})"
-    fig.text(0.53, 0.955, head, ha="center", fontsize=13.5)
-    fig.text(0.53, 0.905, sub, ha="center", fontsize=11, color="#555555")
-    ax.text(
-        float(LX[0]) + 0.1 * len(LX),
-        0.845,
-        "timbre-dominated",
-        color=TH_GREEN,
-        fontsize=11.5,
-        fontweight="bold",
-    )
-    ax.text(
-        float(LX[0]) + 0.55 * len(LX),
-        0.585,
-        "composition rising",
-        color=TH_RED,
-        fontsize=11.5,
-        fontweight="bold",
-    )
-    ax.annotate(
-        "",
-        xy=(0.14, within_m[0] - 0.012),
-        xytext=(0.14, twin_m[0] + 0.015),
-        arrowprops=dict(arrowstyle="<->", color="#777777", lw=1.2),
-    )
-    ax.text(0.34, (within_m[0] + twin_m[0]) / 2, f"gap {g0:+.2f}", color="#666666", fontsize=10.5)
-    end_mid = (within_m[-1] + twin_m[-1]) / 2
-    ax.annotate(
-        verdict,
-        xy=(float(LX[-1]) - 0.03 * len(LX), twin_m[-1] - 0.015),
-        xytext=(float(LX[-1]) - 0.09 * len(LX), end_mid - 0.14),
-        ha="center",
-        fontsize=10.5,
-        color="#333333",
-        arrowprops=dict(arrowstyle="->", color="#333333", lw=1.1),
-    )
-    leg = ax.legend(
-        loc="center",
-        bbox_to_anchor=(0.505, 0.205),
-        fontsize=10.3,
-        borderpad=0.7,
-        labelspacing=0.45,
-        **TH_LEG,
-    )
-    leg.set_zorder(5)
-    _th_save(fig, thesis_dir, "vgm_timbre_composition_shift")
+            g_min_i = int(np.argmin(within_m - twin_m))
+            g_min = float((within_m - twin_m)[g_min_i])
+            if g_min < gN - 0.03:
+                head = f"{name}: composition similarity peaks mid-network, then late layers re-specialize"
+                sub = (
+                    f"the instrument-vs-notes gap narrows to {g_min:+.2f} (layer {EX[g_min_i]}) "
+                    f"then re-widens to {gN:+.2f}"
+                )
+                verdict = f"re-widens\n(gap {gN:+.2f})"
+                red_label = "composition peaks mid-network"
+            else:
+                head = f"{name} stays instrument-biased at depth"
+                sub = f"the instrument-vs-notes gap only narrows to {gN:+.2f} — no convergence"
+                verdict = f"stays wide\n(gap {gN:+.2f})"
+                red_label = "composition rises weakly"
+        fig.text(0.53, 0.955, head, ha="center", fontsize=13.5)
+        fig.text(0.53, 0.905, sub, ha="center", fontsize=11, color="#555555")
+        ax.text(
+            float(EX[0]) + 0.1 * len(EX),
+            0.845,
+            "timbre-dominated",
+            color=TH_GREEN,
+            fontsize=11.5,
+            fontweight="bold",
+        )
+        ax.text(
+            float(EX[0]) + 0.5 * len(EX),
+            0.585,
+            red_label,
+            color=TH_RED,
+            fontsize=11.5,
+            fontweight="bold",
+            ha="center",
+        )
+        ax.annotate(
+            "",
+            xy=(0.14, within_m[0] - 0.012),
+            xytext=(0.14, twin_m[0] + 0.015),
+            arrowprops=dict(arrowstyle="<->", color="#777777", lw=1.2),
+        )
+        ax.text(
+            0.34, (within_m[0] + twin_m[0]) / 2, f"gap {g0:+.2f}", color="#666666", fontsize=10.5
+        )
+        end_mid = (within_m[-1] + twin_m[-1]) / 2
+        if gN < 0.05:
+            # curves nearly touch at the end: annotate from below the red endpoint
+            v_xy = (float(EX[-1]) - 0.03 * len(EX), twin_m[-1] - 0.015)
+            v_xytext = (float(EX[-1]) - 0.09 * len(EX), end_mid - 0.14)
+        else:
+            # a wide green-red endpoint gap: annotate inside it, arrow down to red
+            v_xy = (float(EX[-1]) - 0.02 * len(EX), twin_m[-1] + 0.02)
+            v_xytext = (float(EX[-1]) - 0.09 * len(EX), end_mid + 0.03)
+        ax.annotate(
+            verdict,
+            xy=v_xy,
+            xytext=v_xytext,
+            ha="center",
+            fontsize=10.5,
+            color="#333333",
+            arrowprops=dict(arrowstyle="->", color="#333333", lw=1.1),
+        )
+        leg = ax.legend(
+            loc="center",
+            bbox_to_anchor=(0.505, 0.205),
+            fontsize=10.3,
+            borderpad=0.7,
+            labelspacing=0.45,
+            **TH_LEG,
+        )
+        leg.set_zorder(5)
+        # Save PDF+PNG once, then hard-link/copy the canonical name for the lead.
+        _th_save_multi = [f"vgm_timbre_composition_shift_{_enc_slug(name)}"]
+        if name == lead_name:
+            _th_save_multi.append("vgm_timbre_composition_shift")
+        chapters = thesis_dir / "figures" / "chapters"
+        defense = thesis_dir / "defense"
+        chapters.mkdir(parents=True, exist_ok=True)
+        for stem in _th_save_multi:
+            fig.savefig(chapters / f"{stem}.pdf")
+            if defense.is_dir():
+                fig.savefig(defense / f"{stem}.png", dpi=160)
+            print(f"[thesis] wrote {chapters / (stem + '.pdf')}")
+        plt.close(fig)
 
     # ── 3. vgm_depth_whitening (lead encoder) ──
     fig, ax = plt.subplots(figsize=(9.75, 5.25))
@@ -1155,7 +1192,7 @@ def cmd_thesis(args):
         _th_save(
             fig,
             thesis_dir,
-            f"vgm_instrument_grids_{_slug(name).replace('large', '').replace('v195m', '') or _slug(name)}",
+            f"vgm_instrument_grids_{_enc_slug(name)}",
         )
 
 
