@@ -39,6 +39,13 @@ TEMPLATE = "configs/probe.MuQ-multihead.MedleyDBMelody.yaml"
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--encoder", required=True, help="encoder slug, e.g. MERT-v1-95M")
+    ap.add_argument(
+        "--task",
+        default="MedleyDBMelody",
+        help="task name in config filenames (MedleyDBMelody, HookTheoryMelody, ...). "
+        "The multihead delta (template callbacks/scheduler/monitor) is task-agnostic "
+        "for RPA-monitored melody probes.",
+    )
     ap.add_argument("--num-layers", type=int, required=True)
     ap.add_argument("--folds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     ap.add_argument(
@@ -56,7 +63,7 @@ def main():
     )
     args = ap.parse_args()
 
-    src_path = args.layers_config or f"configs/probe.{args.encoder}-layers.MedleyDBMelody.yaml"
+    src_path = args.layers_config or f"configs/probe.{args.encoder}-layers.{args.task}.yaml"
     src = yaml.safe_load(Path(src_path).read_text())
     tpl = yaml.safe_load(Path(TEMPLATE).read_text())
     L = args.num_layers
@@ -107,7 +114,7 @@ def main():
     for F in args.folds:
         c = copy.deepcopy(cfg)
         suffix = "-weighted" if args.weighted else ""
-        run_dir = f"./output/probe.MedleyDBMelody.{args.encoder}-multihead{suffix}.fold{F}/"
+        run_dir = f"./output/probe.{args.task}.{args.encoder}-multihead{suffix}.fold{F}/"
         for cb in c["trainer"]["callbacks"]:
             ia = cb.get("init_args", {})
             if "dirpath" in ia:
@@ -117,8 +124,14 @@ def main():
         lg["save_dir"] = run_dir
         lg["tags"] = sorted(set(lg.get("tags", []) + ["multihead"]))
         for split in ("train", "val", "test"):
-            c["data"]["init_args"][split]["init_args"]["fold_idx"] = F
-        p = out_dir / f"_multihead{suffix}_{args.encoder}_fold{F}.yaml"
+            ia = c["data"]["init_args"][split]["init_args"]
+            if "fold_idx" in ia:
+                ia["fold_idx"] = F
+        p = out_dir / (
+            f"_multihead{suffix}_{args.encoder}_fold{F}.yaml"
+            if args.task == "MedleyDBMelody"
+            else f"_multihead{suffix}_{args.encoder}_{args.task}.yaml"
+        )
         with open(p, "w") as f:
             yaml.safe_dump(c, f, sort_keys=False)
         print(f"wrote {p}")
