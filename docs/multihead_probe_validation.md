@@ -179,3 +179,44 @@ disabled changes the cache-slug fallback (`type(self).__name__` →
 `ProbeAudioTaskMultiHead`), silently splitting the cache dir and
 re-extracting 26 GB. Always keep the wandb group `"MuQ / MedleyDBMelody"`
 (mode=offline is fine; logger *removal* is not).
+
+## Layer-aggregation protocol (July 2026 research synthesis)
+
+Web-research verdict: per-layer curves + softmax weighted head + normalized
+gate logging is a defensible 2026 protocol, PROVIDED the reporting hierarchy
+below is respected. Key sources: Feng et al., TASLP 2024 (arXiv:2404.09385,
+the SUPERB follow-up: norm confound + weights-vs-accuracy Spearman rho only
+0.37-0.49); Zaiem et al., Interspeech 2023 / CS&L 2024 (probe capacity
+reorders rankings); Zhou et al., Interspeech 2025 (arXiv:2505.16306 — on
+MusicFM/MuQ, single best layer often BEATS the weighted sum in music);
+Tuned Lens, arXiv:2303.08112 (the one-pass-many-probes precedent); MARBLE
+paper's own protocol (its Appendix A hyperparameter grid is
+{every single layer, weighted sum} — our multi-head+weighted run is the
+efficient realization of exactly that grid).
+
+Historical note: MARBLE v1 (benchmark/models/probers.py, layer="all") HAD
+the softmax featurizer with per-epoch weight logging; the June-2025 v2
+refactor dropped it (only the unused Conv1d LayerWeightedSum survived) and
+pinned per-task fixed layers. Our implementation restores the v1 capability
+with the 2024+ fixes.
+
+Reporting hierarchy (binding for the thesis):
+1. Per-layer single-layer probe curves = the ground-truth layer-contribution
+   measure (the multi-head run produces them directly).
+2. Weighted-sum head = a headline aggregate reported ALONGSIDE the best
+   single layer — never as an importance measure. Expect single-layer to
+   possibly beat it (Zhou 2025); report both honestly.
+3. Softmax gates = secondary panel only, and only because the weighted head
+   LayerNorms each layer before mixing (Feng et al.); report the
+   gates-vs-per-layer-accuracy Spearman rho as an explicit check.
+
+Roadmap items adopted from the research (not yet implemented):
+- Cross-task weight transfer to zero-shot retrieval: melody-learned gates
+  applied frozen to VGMIDITVar-timbre embeddings — defensible (no retrieval
+  labels touched) but flag: weights are strongly task-dependent and may
+  pick the wrong layer band; treat as one baseline vs meanall/best-layer.
+- Probe-capacity sensitivity check (linear vs 512-MLP) on one task
+  (answers Zaiem); attentive-pooling-over-time head as a second design
+  axis (arXiv:2605.10494); both cheap from the frame cache.
+- OMAR-RQ has NO published layer map (paper probes last layer only) — our
+  24-layer sweep is a novel contribution, not a reproduction.
