@@ -42,6 +42,14 @@ def main():
     ap.add_argument("--num-layers", type=int, required=True)
     ap.add_argument("--folds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     ap.add_argument(
+        "--weighted",
+        action="store_true",
+        help="add the SUPERB-style weighted-sum head (include_weighted) + "
+        "LogLayerWeightsCallback; run dirs/names get a -weighted suffix. "
+        "Run AFTER the plain protocol: the weighted head can drive the "
+        "shared LR schedule (see docs/multihead_probe_validation.md).",
+    )
+    ap.add_argument(
         "--layers-config",
         default=None,
         help="source single-layer config (default: configs/probe.<encoder>-layers.MedleyDBMelody.yaml)",
@@ -79,9 +87,14 @@ def main():
                 "dropout": head.get("dropout", 0.2),
                 "num_layers": L,
                 "include_meanall": True,
+                "include_weighted": bool(args.weighted),
             },
         }
     ]
+    if args.weighted:
+        cfg["trainer"]["callbacks"] = cfg["trainer"]["callbacks"] + [
+            {"class_path": "marble.modules.callbacks.LogLayerWeightsCallback"}
+        ]
 
     # callbacks + scheduler from the validated template
     cfg["trainer"]["callbacks"] = copy.deepcopy(tpl["trainer"]["callbacks"])
@@ -93,18 +106,19 @@ def main():
     out_dir = Path("configs")
     for F in args.folds:
         c = copy.deepcopy(cfg)
-        run_dir = f"./output/probe.MedleyDBMelody.{args.encoder}-multihead.fold{F}/"
+        suffix = "-weighted" if args.weighted else ""
+        run_dir = f"./output/probe.MedleyDBMelody.{args.encoder}-multihead{suffix}.fold{F}/"
         for cb in c["trainer"]["callbacks"]:
             ia = cb.get("init_args", {})
             if "dirpath" in ia:
                 ia["dirpath"] = run_dir + "checkpoints/"
         lg = c["trainer"]["logger"]["init_args"]
-        lg["name"] = f"multihead-fold{F}"
+        lg["name"] = f"multihead{suffix}-fold{F}"
         lg["save_dir"] = run_dir
         lg["tags"] = sorted(set(lg.get("tags", []) + ["multihead"]))
         for split in ("train", "val", "test"):
             c["data"]["init_args"][split]["init_args"]["fold_idx"] = F
-        p = out_dir / f"_multihead_{args.encoder}_fold{F}.yaml"
+        p = out_dir / f"_multihead{suffix}_{args.encoder}_fold{F}.yaml"
         with open(p, "w") as f:
             yaml.safe_dump(c, f, sort_keys=False)
         print(f"wrote {p}")
