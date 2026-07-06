@@ -388,3 +388,46 @@ class LogSweepCoordsCallback(Callback):
                 {f"sweep/{k}": v for k, v in coords.items()},
                 allow_val_change=True,
             )
+
+
+class LogLayerWeightsCallback(Callback):
+    """Log the softmax layer-contribution gates of any weighted-sum module.
+
+    Walks the LightningModule for sub-modules exposing ``layer_weights()``
+    (``PerLayerHeads(include_weighted=True)`` and ``LayerSoftmaxSum``) and
+    logs ``layer_weight/l{k}`` each validation epoch — the per-epoch
+    trajectory IS the SUPERB-style contribution chart (watch mass migrate
+    toward the winning layers), and the final epoch's values are the bar
+    chart. Also prints the final weights at fit end for the console record.
+
+    Interpretation guardrails (thesis-facing; see PerLayerHeads docstring):
+    the gates are only readable as contributions because the weighted head
+    LayerNorms each layer before mixing (Feng et al., TASLP 2024); even so,
+    learned gates correlate only weakly with true per-layer probe accuracy
+    (Spearman ρ≈0.37–0.49 ibid.) — the per-layer heads' own metric curves
+    remain the ground-truth contribution measure.
+    """
+
+    @staticmethod
+    def _weighted_modules(pl_module):
+        for name, mod in pl_module.named_modules():
+            fn = getattr(mod, "layer_weights", None)
+            include_weighted = getattr(mod, "include_weighted", True)
+            if callable(fn) and include_weighted:
+                yield name, mod
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.sanity_checking:
+            return
+        payload = {}
+        for _name, mod in self._weighted_modules(pl_module):
+            w = mod.layer_weights()
+            payload.update({f"layer_weight/l{k}": float(w[k]) for k in range(w.numel())})
+        if payload:
+            pl_module.log_dict(payload, on_step=False, on_epoch=True, sync_dist=False)
+
+    def on_fit_end(self, trainer, pl_module):
+        for name, mod in self._weighted_modules(pl_module):
+            w = mod.layer_weights()
+            top = ", ".join(f"l{i}={w[i]:.3f}" for i in w.argsort(descending=True)[:5].tolist())
+            print(f"[LogLayerWeights] {name or type(mod).__name__} final gates (top-5): {top}")

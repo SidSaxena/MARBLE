@@ -294,9 +294,79 @@ class LayerSelector(BaseEmbTransform):
         raise ValueError(f"Unknown mode {self.mode!r}")
 
 
+class LayerSoftmaxSum(BaseEmbTransform):
+    """
+    SUPERB-style learned layer aggregation: softmax-normalised scalar gates.
+
+    ``out = Σ_l softmax(α)_l · h_l`` with ``α ∈ R^L`` learnable (init 0 →
+    uniform weights = meanall at step 0). This is the s3prl/SUPERB
+    "featurizer" convention — unlike :class:`LayerWeightedSum` below (an
+    unnormalised 1×1 Conv1d with bias, never used by any config), the
+    softmax gates are positive and sum to 1, so ``layer_weights()`` reads
+    directly as "how much each layer contributes" and can be logged per
+    epoch (see ``marble.modules.callbacks.LogLayerWeightsCallback``) for
+    the SUPERB-style layer-contribution chart.
+
+    Supervised probes only: the gates need a training signal, so this does
+    not apply to zero-shot retrieval tasks (there ``meanall`` is the
+    unsupervised aggregate). For multi-head runs use
+    ``PerLayerHeads(include_weighted=True)`` instead — there the weighted
+    head rides alongside the per-layer heads in one run.
+
+    ``normalize=True`` (default) applies a NON-learnable LayerNorm across the
+    hidden dim to each layer before the weighted sum — the "normalized
+    benchmarking" fix of Feng et al., "A Large-Scale Evaluation of Speech
+    Foundation Models" (IEEE/ACM TASLP 2024, arXiv:2404.09385): per-layer
+    feature norms differ wildly across depth (the last layer is often
+    tiny-scaled), so without normalization the learned gates jointly encode
+    scale-compensation AND informativeness and CANNOT be read as layer
+    contributions. With it, task performance is essentially unchanged and the
+    gates become interpretable. Keep it on for anything thesis-facing;
+    ``normalize=False`` reproduces the raw SUPERB featurizer.
+    """
+
+    def __init__(self, num_layers: int, normalize: bool = True):
+        super().__init__()
+        if num_layers < 2:
+            raise ValueError(f"LayerSoftmaxSum needs num_layers >= 2, got {num_layers}")
+        self.num_layers = int(num_layers)
+        self.normalize = bool(normalize)
+        self.layer_gate = nn.Parameter(torch.zeros(self.num_layers))
+
+    def layer_weights(self) -> torch.Tensor:
+        """Softmax-normalised per-layer contribution weights (detached, CPU)."""
+        return torch.softmax(self.layer_gate.detach(), dim=0).cpu()
+
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        """
+        Args:
+            x (Tensor): Layer-stacked tensor (B, L, T, H) — or the encoder's
+                layer tuple, stacked here for parity with the other
+                aggregating transforms.
+        Returns:
+            Tensor: (B, 1, T, H) softmax-weighted sum over layers.
+        """
+        if isinstance(x, tuple):
+            x = torch.stack(x, dim=1)
+        if x.size(1) != self.num_layers:
+            raise ValueError(
+                f"LayerSoftmaxSum was built for {self.num_layers} layers but got L={x.size(1)}"
+            )
+        if self.normalize:
+            # Non-learnable (no affine): a learnable per-layer affine would
+            # reintroduce exactly the scale freedom the LayerNorm removes.
+            x = F.layer_norm(x, (x.size(-1),))
+        w = torch.softmax(self.layer_gate, dim=0)
+        return (x * w.view(1, -1, 1, 1)).sum(dim=1, keepdim=True)
+
+
 class LayerWeightedSum(BaseEmbTransform):
     """
     Learns a weighted sum over L layers via a 1×1 Conv1d.
+
+    NOTE: legacy/unused — no config references this. It is NOT the SUPERB
+    featurizer (weights are unnormalised and there is a bias term, so they
+    do not read as layer contributions). Prefer :class:`LayerSoftmaxSum`.
     """
 
     def __init__(self, num_layers: int):

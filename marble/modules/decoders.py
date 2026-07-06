@@ -112,6 +112,26 @@ class PerLayerHeads(BaseDecoder):
     decoder's internal mean over L), so the meanall baseline rides along in
     the same run too.
 
+    ``include_weighted=True`` appends a SUPERB-style learned weighted-sum
+    head: softmax gates ``w = softmax(layer_gate)`` (init 0 → uniform =
+    meanall at step 0) mix the L layers, and a further identical
+    ``MLPDecoderKeepTime`` head consumes the mix. Each layer is passed
+    through a NON-learnable LayerNorm before mixing (Feng et al., TASLP
+    2024, arXiv:2404.09385 "normalized benchmarking"): per-layer feature
+    scales differ wildly with depth, so un-normalized gates confound
+    scale-compensation with informativeness and cannot be read as layer
+    contributions. ``layer_weights()`` exposes the softmax gates for
+    per-epoch logging (``LogLayerWeightsCallback``). NOTE the per-layer
+    heads still receive RAW (un-normalized) slices — their anchor
+    comparability to single-layer runs is untouched; the LayerNorm applies
+    only inside the weighted head's mix. The gate + weighted head are
+    parameter-disjoint from every other head, so adding them leaves all
+    other heads' training trajectories bitwise unchanged (tested).
+    Interpretation caveats (log both, cite in thesis): learned gates
+    correlate only weakly with true per-layer probe performance (Spearman
+    ρ≈0.37–0.49, Feng et al.) — the per-layer heads' curves are the
+    ground-truth contribution measure; the gates are a secondary panel.
+
     Output
     ------
     [B, K, T, out_dim] with K = num_layers (+1 if include_meanall). Head k's
@@ -135,12 +155,18 @@ class PerLayerHeads(BaseDecoder):
         activation_fn: dict | None = None,  # e.g. {"class_path": "torch.nn.ReLU"}
         dropout: float = 0.5,
         include_meanall: bool = False,
+        include_weighted: bool = False,
     ):
         super().__init__(in_dim, out_dim)
         if num_layers < 1:
             raise ValueError(f"PerLayerHeads needs num_layers >= 1, got {num_layers}")
         self.num_layers = int(num_layers)
         self.include_meanall = bool(include_meanall)
+        self.include_weighted = bool(include_weighted)
+        if self.include_weighted:
+            # SUPERB featurizer gates (softmax applied in forward). Zeros →
+            # uniform mix at init, i.e. the weighted head starts as meanall.
+            self.layer_gate = nn.Parameter(torch.zeros(self.num_layers))
         # None-default dance instead of a mutable default arg; [512] mirrors
         # MLPDecoderKeepTime's default so PerLayerHeads with no overrides
         # builds the exact same head a default single-layer run would.
@@ -163,7 +189,11 @@ class PerLayerHeads(BaseDecoder):
         # init_args a single-layer run's decoder gets, not a re-implementation,
         # so any future change to the single-head architecture automatically
         # applies here and the architectures cannot drift apart.
-        n_heads = self.num_layers + (1 if self.include_meanall else 0)
+        n_heads = (
+            self.num_layers
+            + (1 if self.include_meanall else 0)
+            + (1 if self.include_weighted else 0)
+        )
         self.heads = nn.ModuleList(
             MLPDecoderKeepTime(
                 in_dim=in_dim,
@@ -174,9 +204,20 @@ class PerLayerHeads(BaseDecoder):
             )
             for _ in range(n_heads)
         )
-        self.head_names = [f"l{k}" for k in range(self.num_layers)] + (
-            ["meanall"] if self.include_meanall else []
+        self.head_names = (
+            [f"l{k}" for k in range(self.num_layers)]
+            + (["meanall"] if self.include_meanall else [])
+            + (["weighted"] if self.include_weighted else [])
         )
+
+    def layer_weights(self) -> torch.Tensor:
+        """Softmax-normalised gates of the weighted head (detached, CPU).
+
+        Only meaningful with ``include_weighted=True``; raises otherwise so a
+        caller can't silently log garbage."""
+        if not self.include_weighted:
+            raise RuntimeError("layer_weights() requires include_weighted=True")
+        return torch.softmax(self.layer_gate.detach(), dim=0).cpu()
 
     def forward(self, emb, *_):
         """
@@ -200,11 +241,22 @@ class PerLayerHeads(BaseDecoder):
         # then mean-pools the singleton L axis away (identity: mean over one
         # element), exactly as in a LayerSelector(layers=[k]) single-layer run.
         outs = [self.heads[k](emb[:, k : k + 1, :, :]) for k in range(self.num_layers)]
+        idx = self.num_layers
         if self.include_meanall:
             # Mean over L then the head's internal mean over the singleton L
             # axis == a plain MLPDecoderKeepTime's single mean over all L —
             # bitwise the same meanall computation as a dedicated meanall run.
-            outs.append(self.heads[-1](emb.mean(dim=1, keepdim=True)))
+            outs.append(self.heads[idx](emb.mean(dim=1, keepdim=True)))
+            idx += 1
+        if self.include_weighted:
+            # Per-layer non-learnable LayerNorm BEFORE the softmax mix (Feng
+            # et al. TASLP 2024) — see class docstring. Applies only to the
+            # weighted head's input; per-layer heads above see raw slices.
+            normed = torch.nn.functional.layer_norm(emb, (emb.size(-1),))
+            w = torch.softmax(self.layer_gate, dim=0)
+            mixed = (normed * w.view(1, -1, 1, 1)).sum(dim=1, keepdim=True)
+            outs.append(self.heads[idx](mixed))
+            idx += 1
         return torch.stack(outs, dim=1)  # [B, K, T, out_dim]
 
 
