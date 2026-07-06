@@ -27,6 +27,7 @@ on the PC (`C:/Users/Sid/developer/python/leitmotifs`); the thesis is Mac-only
 | `best_layer.py` | Cross-task/encoder best-layer consistency views from wandb | EVAL |
 | `fix_wandb_runs.py` | First-class W&B run ops: list/rename/retag/archive (scalar-only moveRuns) | INFRA |
 | `reconstruct_condition_grid_from_cache.py` | Rebuild an 8×8 instrument grid from cached embeddings (spot re-derivation) | EVAL |
+| `regen_lens_whitening_figs.py` | Regenerate `vgm_two_lenses_<enc>` + `vgm_depth_whitening_<enc>` per encoder from the committed `summary_table.csv` slices (no sweep re-run). Imports palette + `_th_axes`/`_th_save` from `vgm_timbre_report` for exact styling; humanises the whitening title ("buys"→"improves"). Used to give MERT + OMAR-RQ the two-lens/whitening figures MuQ had solo | FIG |
 | `regen_instrument_grids.py` | Restyle/regenerate the `vgm_instrument_grids_<enc>` thesis+defense figures from the **committed** best-layer slices (`docs/figures/vgmiditvar_timbre_<enc>_varctl/best_layer_condition_grid{,_varctl}.csv`) — no sweep re-run. Seam-free heatmaps (`imshow(interpolation='nearest')`+`set_rasterized(True)`+`grid(False)`). `--extra "Disp:layer:work_csv:varctl_csv"` renders non-best deployed layers (e.g. MuQ L11, MERT L7) → `_l<layer>` suffix. Keep all encoders on ONE script version so styling stays consistent | FIG |
 | `sms_clamp3_symbolic_report.py` (+`_extras.py`) | SuperMarioStructure CLaMP3-symbolic ABC-vs-MIDI benchmark report | EVAL |
 | `ceiling_mnid_bar_granularity.py` | BPS-Motif bar-granularity labeling F1 ceiling | EVAL |
