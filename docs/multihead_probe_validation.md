@@ -220,3 +220,28 @@ Roadmap items adopted from the research (not yet implemented):
   axis (arXiv:2605.10494); both cheap from the frame cache.
 - OMAR-RQ has NO published layer map (paper probes last layer only) — our
   24-layer sweep is a novel contribution, not a reproduction.
+
+## VALIDATION RESULT (2026-07-06, fold 0, MuQ, executed)
+
+PASS on all criteria. Multi-head (14 heads, one 13-min fit) vs the
+single-head fold0cache wandb anchors, test/acc_rpa per layer:
+
+| L | single | multi | Δ | | L | single | multi | Δ |
+|---|---|---|---|---|---|---|---|---|
+| 0 | .6056 | .5993 | −.0063 | | 7 | .5238 | .5161 | −.0077 |
+| 1 | **.6381** | **.6309** | −.0072 | | 8 | .5159 | .5125 | −.0034 |
+| 2 | .6291 | .6236 | −.0055 | | 9 | .5093 | .5184 | +.0091 |
+| 3 | .6074 | .6027 | −.0047 | | 10 | .5423 | .5392 | −.0031 |
+| 4 | .5774 | .5744 | −.0030 | | 11 | .5407 | .5377 | −.0030 |
+| 5 | .5510 | .5495 | −.0015 | | 12 | .5481 | .5496 | +.0015 |
+| 6 | .5373 | .5338 | −.0035 | | meanall | ~.618* | .6151 | ≈−.003 |
+
+worst |Δ| = 0.0091 (≤ 0.01 gate); shape correlation 0.996; argmax layer
+preserved (L1). The small negative bias matches the documented deviations
+(shared schedule, no per-head early stop, exact-global vs batch-weighted
+test aggregation). *meanall fold0 anchor inferred from the committed
+"L1 beats meanall by ~+0.02 on every fold" relation.
+
+=> The MERT-95M and OMAR-RQ MedleyDB campaigns run on this protocol
+(their numbers have no single-head anchors; cite as "multi-head protocol,
+validated against single-head runs on MuQ fold 0 at ≤0.01 RPA").
