@@ -27,6 +27,7 @@ on the PC (`C:/Users/Sid/developer/python/leitmotifs`); the thesis is Mac-only
 | `best_layer.py` | Cross-task/encoder best-layer consistency views from wandb | EVAL |
 | `fix_wandb_runs.py` | First-class W&B run ops: list/rename/retag/archive (scalar-only moveRuns) | INFRA |
 | `reconstruct_condition_grid_from_cache.py` | Rebuild an 8×8 instrument grid from cached embeddings (spot re-derivation) | EVAL |
+| `regen_instrument_grids.py` | Restyle/regenerate the `vgm_instrument_grids_<enc>` thesis+defense figures from the **committed** best-layer slices (`docs/figures/vgmiditvar_timbre_<enc>_varctl/best_layer_condition_grid{,_varctl}.csv`) — no sweep re-run. Seam-free heatmaps (`imshow(interpolation='nearest')`+`set_rasterized(True)`+`grid(False)`). `--extra "Disp:layer:work_csv:varctl_csv"` renders non-best deployed layers (e.g. MuQ L11, MERT L7) → `_l<layer>` suffix. Keep all encoders on ONE script version so styling stays consistent | FIG |
 | `sms_clamp3_symbolic_report.py` (+`_extras.py`) | SuperMarioStructure CLaMP3-symbolic ABC-vs-MIDI benchmark report | EVAL |
 | `ceiling_mnid_bar_granularity.py` | BPS-Motif bar-granularity labeling F1 ceiling | EVAL |
 | `inspect_leitmotif_labels.py` | Print labels/counts in a LeitmotifDetection JSONL | EVAL |
@@ -195,3 +196,26 @@ These are disposable by design; anything worth keeping should be promoted into
   `thesis/figures/chapters/` (breaking_points_summary, eval_panel_nms3,
   nms_sweep, null_sweep, pr_curves, score_distribution, occ_duration_coverage).
 - **W&B assets**: catalogued in `leitmotifs/docs/thesis/wandb_asset_inventory.md`.
+
+### Per-instrument MAP grids (`vgm_instrument_grids_<enc>`) — data source & two paths
+The 8×8 grid figures have **two** data paths; know which you're using:
+- **Committed portable slices (source of truth)**: `docs/figures/vgmiditvar_timbre_<enc>_varctl/best_layer_condition_grid.csv`
+  (work-level) + `best_layer_condition_grid_varctl.csv` (variation-controlled / twin-masked).
+  Long format `query_program,target_program,map,n_queries`, one 8×8 per file, best-layer slice.
+  These are self-contained and **guaranteed to match the thesis**. Best layers: CLaMP3 L4,
+  MERT-v1-95M L11, MuQ L8, OMAR-RQ L15. **Regenerate from these** via `regen_instrument_grids.py`.
+- **Any layer (incl. non-best) → WANDB uploaded files**: the 2026-07-03 from-cache sweep logged one
+  run per layer (groups `MuQ / VGMIDITVar-timbre`, `MERT-v1-95M / VGMIDITVar-timbre`), each with
+  `condition_grid.csv` + `condition_grid_varctl.csv` **uploaded as run files** — pull via
+  `wandb.Api().run(id).file("condition_grid_varctl.csv").download()`. NOT in the run summary (only
+  work grid cells + varctl *aggregate* scalars are) and NOT on PC disk (out-dir cleaned in a reorg).
+  Verified byte-identical to the committed best-layer slice. Deployed-layer grids
+  `vgm_instrument_grids_muq_l11` / `_mert_l7` were built this way (run IDs `2f280cr0`, `2cs4z8va`).
+- **Raw sweep tree (what `vgm_timbre_report.py thesis` reads)**: `<results>/layer{BEST}/condition_grid.csv`
+  (+`condition_grid_varctl.csv`, no `best_layer_` prefix). Point `--results-dir` at the encoder's
+  sweep-output tree, not `docs/figures/`. Prefer the committed slices or wandb files over this.
+- **The white-seam bug (fixed 2026-07-06)**: the old grids drew `imshow` unrasterized, so PDF viewers
+  anti-aliased the page-white (`#fcfcfb`) between cells → thin white gridlines across every row/column.
+  Fix (in both `vgm_timbre_report.py` fig5/thesis grids AND `regen_instrument_grids.py`):
+  `imshow(interpolation='nearest')` + `im.set_rasterized(True)` + explicit `ax.grid(False)`.
+  Always regenerate **all** encoders from the same script version (a prior agent restyled divergently).

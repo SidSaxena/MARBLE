@@ -418,7 +418,10 @@ def cmd_report(args):
         (axes[0], Ac, "confounded (twin in relevance)"),
         (axes[1], Av, "variation-controlled (twin masked)"),
     ]:
-        im = ax.imshow(A, cmap=cmap, vmin=0, vmax=vmax)
+        im = ax.imshow(A, cmap=cmap, vmin=0, vmax=vmax, interpolation="nearest")
+        im.set_rasterized(
+            True
+        )  # flatten cells to raster: kills white seams PDF viewers draw between imshow blocks
         n = len(labels)
         ax.set_xticks(range(n), labels, rotation=45, ha="right", fontsize=9)
         ax.set_yticks(range(n), labels, fontsize=9)
@@ -1254,13 +1257,17 @@ def cmd_thesis(args):
             (axes[0], A, "work-level lens (twin in relevance)"),
             (axes[1], B, "variation-controlled lens (twin masked)"),
         ):
-            im = ax.imshow(Mx, cmap="Blues", vmin=0, vmax=vmax)
+            im = ax.imshow(Mx, cmap="Blues", vmin=0, vmax=vmax, interpolation="nearest")
+            im.set_rasterized(
+                True
+            )  # flatten cells to raster: kills white seams PDF viewers draw between imshow blocks
             ax.set_xticks(range(n))
             ax.set_yticks(range(n))
             ax.set_xticklabels(inst, rotation=40, ha="right", fontsize=10.5)
             ax.set_yticklabels(inst, fontsize=10.5)
             ax.set_title(title, fontsize=12)
             ax.set_xlabel("target instrument", fontsize=11)
+            ax.grid(False)  # global axes.grid=True would otherwise stroke lines over the heatmap
             for i in range(n):
                 for j in range(n):
                     v = Mx[i, j]
