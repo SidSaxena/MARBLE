@@ -325,13 +325,55 @@ class LayerSoftmaxSum(BaseEmbTransform):
     ``normalize=False`` reproduces the raw SUPERB featurizer.
     """
 
-    def __init__(self, num_layers: int, normalize: bool = True):
+    def __init__(
+        self,
+        num_layers: int,
+        normalize: bool = True,
+        learnable: bool = True,
+        init_weights: list[float] | None = None,
+    ):
+        """
+        Args:
+            num_layers: number of layers in the incoming (B, L, T, H) stack.
+            normalize: Feng et al. LayerNorm-before-mix (see class docstring).
+            learnable: when False the gates are a fixed buffer (no gradient,
+                not in the optimizer) — used to TRANSFER gates learned on one
+                corpus to another (e.g. HookTheory gates applied to MedleyDB
+                with only the probe head training).
+            init_weights: optional post-softmax contribution weights, one per
+                layer, aligned with the order the preceding LayerSelector
+                emits (it preserves its ``layers`` list order). Values must be
+                positive; they are renormalised to sum to 1 and stored as log
+                weights, so ``softmax`` reproduces them exactly. Default (None)
+                keeps the SUPERB convention: zeros → uniform mix at step 0.
+        """
         super().__init__()
         if num_layers < 2:
             raise ValueError(f"LayerSoftmaxSum needs num_layers >= 2, got {num_layers}")
         self.num_layers = int(num_layers)
         self.normalize = bool(normalize)
-        self.layer_gate = nn.Parameter(torch.zeros(self.num_layers))
+        self.learnable = bool(learnable)
+        if init_weights is not None:
+            if len(init_weights) != self.num_layers:
+                raise ValueError(
+                    f"init_weights has {len(init_weights)} entries but num_layers="
+                    f"{self.num_layers}; they must align 1:1 with the LayerSelector order"
+                )
+            w = torch.tensor([float(v) for v in init_weights], dtype=torch.float32)
+            if (w <= 0).any():
+                raise ValueError(f"init_weights must be strictly positive, got {init_weights}")
+            gate0 = torch.log(w / w.sum())  # softmax(log w̄) == w̄ exactly
+        else:
+            if not self.learnable:
+                raise ValueError(
+                    "learnable=False without init_weights would freeze a uniform mix "
+                    "— that is LayerSelector(mode='mean'); pass the weights explicitly"
+                )
+            gate0 = torch.zeros(self.num_layers)
+        if self.learnable:
+            self.layer_gate = nn.Parameter(gate0)
+        else:
+            self.register_buffer("layer_gate", gate0)
 
     def layer_weights(self) -> torch.Tensor:
         """Softmax-normalised per-layer contribution weights (detached, CPU)."""
