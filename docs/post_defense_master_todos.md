@@ -96,3 +96,117 @@ would poke at; P2 is infrastructure and garnish that only pays off if the
 project continues past the paper. Within each tier, items are ordered by
 (value ÷ effort). The single most valuable non-obvious asset: **P0.2 — the
 labeled Zelda pairs.** Everything deployment-facing routes through it.
+
+---
+
+# Complete two-repo TODO inventory (exhaustive sweep, 2026-07-07)
+
+*Both repos were swept file-by-file (code comments + every markdown doc). The
+P0–P2 tables above cover the layer-fusion/deployment thread; this section is
+everything else that exists, so nothing lives outside this doc. Detail stays
+in the source docs — this is the index.*
+
+## ⚠️ PRE-DEFENSE items found in the sweep (do BEFORE the defense, not after)
+
+From `~/leitmotifs/docs/thesis/2026-07-03-final-review-findings-and-plan.md`
+(flagged there as defense-critical, ~2 days):
+- **T1.2 chance-level null baseline** (~½ day; new ~100-line null generator)
+- **T1.3 cover-pair stratification**
+- **T1.4 family-bootstrap CIs** (`family_bootstrap.py`)
+- plus T1.1/T1.5–T1.8 (circularity paragraph, chroma/LAMA baselines decision,
+  leitmotif-definition paragraph, Table 4.1 re-render, cluster metrics)
+- One **live QbE Find smoke test** before the demo (model warm-up proof) —
+  `docs/results_inventory_2026-07-06.md:108`
+- Two storage confirmations in that same inventory doc: Mac-viewer
+  full-corpus audio source; WD-Black holds canonical raw embeddings before
+  deleting the Mac copy.
+
+## Project: leitmotifs (`~/leitmotifs`) — canonical doc: `docs/ROADMAP.md`
+
+**Repo state**: code is TODO-clean (all pending work tracked in markdown).
+**Cleanup flag**: `docs/TODO.md` there is a **stale duplicate** of ROADMAP.md
+(pre-2026-06-12, "261-track") but `DOC_INDEX.md` still points to it as "★
+outstanding work" — deprecate it. `docs/doc_factcheck_audit_2026-06-27.md`
+lists the stale line-refs inside ROADMAP itself.
+
+Open work by cluster (status per the sweep):
+- **The one unbuilt executable plan**: `docs/superpowers/plans/`
+  `2026-06-22-label-driven-themes-pipeline.md` — its target scripts
+  (`build_label_results.py`, `check_label_taxonomy.py`) exist in NO branch;
+  prereqs (golden set, taxonomy) all exist. Unblocked, unimplemented,
+  highest-value unfinished plan in that repo.
+- **12.5 Hz final-run evaluation** — run completed (6f44bd0c); eval blocked
+  on new labels + `corpus_exclusions.txt`; like-for-like 25 Hz re-eval queued
+  (`docs/plans/2026-07-02-run-12p5hz-final.md` §3–4; thesis W1–W8 backlog in
+  `docs/thesis/2026-07-02-writing-plan-ch04-08.md:521`).
+- **ROADMAP §B assumption tests** (floor-transfer, dual-mode-at-power,
+  Leiden purity) — flagged highest-leverage there.
+- **ROADMAP §A5 QbE Phases 3–4** (server RAM LRU; CLaMP3 panel) and **§A6
+  CLaMP3 pseudo-labeling** (blocked: symbolic data uncommitted, submodule
+  uninit); `extract_modal.py` CLaMP3 stub is open-by-design until A5 Phase 4.
+- **ROADMAP §D operational** — 263-track raw+whitened full runs, cluster
+  validations (Dark Beast Ganon/Mipha/Sidon), MERT blind A/B, raw∪whitened
+  union mode, int8/lazy viewer storage, `development`→`main` merge.
+- **ROADMAP Improvement roadmap Tiers 0–2** (#3 window sweep, #4 mask
+  analysis, #6 symbolic fusion, #7 audio→MIDI, #8 source-sep, #9 learned
+  projection, #10–13).
+- **Waveform-sync defects** on the currently-checked-out branch
+  (`hotfix/waveform-cursor-sync`): D1/D2/D4 likely fixed by recent commits;
+  **D3 (isPlaying crop-mode trap) and D5 (double-seek) plausibly open**;
+  §9 open questions in `docs/waveform_sync_audit_2026-06.md`.
+- **Review-findings residue**: 24 low/cosmetic open + 4 deferred-by-choice
+  (`docs/review_findings.md`); `min_edge_weight` default decision.
+- Matrix-profile result cache (8M pairwise scalars, avoids 4–5 h recompute) —
+  tracked in *marble's* `docs/TODO.md:194` but belongs to this repo.
+
+## Project: marble — threads OUTSIDE the layer-fusion story (from `docs/TODO.md` legacy log + plan docs)
+
+- **Symbolic-motif thread** (entire, untracked by the P0–P2 tables):
+  `symbolic_motif_benchmark_roadmap.md` (MTC-ANN build ~1 day, full-BPS
+  extension, Essen fallback, **LoRA/InfoNCE contrastive re-head on CLaMP3
+  L6-L7** to lift the 0.84/0.49 ceiling); `clamp3_contrastive_training_plan.md`
+  (unchecked execution checklist + **5 open decisions for the user**);
+  `mtc_ann_scoping.md`; `bps_motif_*` (audio variant deferred, MNID
+  integer-boundary-negative rebuild, `_layer_done` fold-awareness bug);
+  `kern_sourcing_bps_jkupdd.md`; `symbolic_encoder_landscape.md` (Aria /
+  MidiBERT / Moonbeam integration; re-check ISMIR 2026 accepts Jul–Aug).
+- **Robustness experiments** (`docs/TODO.md`): background-leitmotif level
+  mismatch (−6/−12/−18/−24 dB renders, cross-level MAP grid); ecological
+  per-instrument reverb variant (`VGMIDITVar-timbre-ecological`).
+- **VGMIDITVar analysis leftovers**: confound-free control 8×8 grid NOT yet
+  run (needs audio staged back from D: + re-extraction); MERT/CLaMP3 re-runs
+  under control; whitening layer studies for CLaMP3/MERT/OMARRQ (only MuQ
+  done — `docs/whitening_ablation.md:157`).
+- **MedleyDB probe plans** (planning-status docs): instrument-activation
+  multi-label probe; remix-invariance probe (CUT/GATED by audit — 5 open
+  decisions); leitmotif-eval T-suite sequencing (T2→T5→T3→T4→T8).
+- **SuperMario / structure thread**: boundary-detection variant (branch
+  recoverable from reflog `b0748c3`); secondary heads (8-label sections,
+  IsAdaptive/IsStinger, compound-similarity regression); Bricasti re-render;
+  audio-encoder sweep pending; structure-dataset queue (SongFormBench, JSD,
+  TAVERN, BPSD, SALAMI…).
+- **Layer-analysis follow-up flagged highest-priority there**: re-run
+  MuQ × HookTheoryStructure and MuQ × HookTheoryKey with corrected FE configs
+  (invalidated by audit fix #1) — `docs/layer_analysis.md:78`.
+- **Infra/robustness deferrals**: LeitmotifDetection task has NO embedding
+  cache wiring (~10× waste); UTF-8 `open()` audit; wandb-core Windows spawn
+  failures; GPU offload of the 102960² metric block; Modal
+  `setup_vgmiditvar`; torch.compile for MuQ/OMARRQ/Qwen2Audio + sparse Modal
+  entrypoints (beyond roadmap item 8); OMAR-RQ beat-tracking gap hypotheses;
+  attentive-pooling-over-time head (multihead doc §roadmap).
+- **Code TODOs** (only real ones in first-party code): theory utils —
+  `marble/utils/theory/lead_sheet.py:100` (downbeat alignment),
+  `theorytab.py:349` (chord-inversion parsing `NotImplementedError`).
+- **2-minute verification**: `docs/superpowers/plans/2026-06-19-vgmloop-`
+  `audit-fixes.md` — all boxes unchecked but target branch deleted; confirm
+  the 3 fixes are on `main`, then mark the plan done.
+
+## Sweep provenance
+
+Marble sweep: code + all ~30 docs; the four consolidated docs
+(master/transfer/combination-plan/optimization-roadmap) cover ONLY the
+layer-fusion + perf threads — the symbolic, structure, robustness, and
+MedleyDB-probe threads above were outside them until this section.
+Leitmotifs sweep: code clean; `ROADMAP.md` is canonical; eval-harness
+worktree no longer exists (harness shipped: `scripts/eval/*`,
+`tests/golden/leitmotif_instances.json`).
