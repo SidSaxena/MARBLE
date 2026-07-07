@@ -193,7 +193,17 @@ class ProbeAudioTaskMultiHead(BaseTask):
                         f"{{split}}/{self.primary_metric}_best aggregate (checkpoint "
                         f"monitor) needs it in every configured split."
                     )
-                base_mc = MetricCollection(dict(split_cfg))
+                # compute_groups=False is REQUIRED for correctness here, not an
+                # optimisation toggle. torchmetrics' default (True) groups metrics
+                # whose accumulator states coincide on the FIRST update batch and
+                # then feeds only the group leader, aliasing the others to its
+                # value. RawPitchAccuracy and RawChromaAccuracy share an identical
+                # (correct, total) state, so any head whose first batch happens to
+                # have zero right-chroma-wrong-octave frames gets its RPA and RCA
+                # silently collapsed to one number (the chroma value) for the whole
+                # epoch — stochastic per head, and it corrupted the HTM test report
+                # for a subset of heads before this was caught. Keep grouping OFF.
+                base_mc = MetricCollection(dict(split_cfg), compute_groups=False)
                 heads_mc = nn.ModuleList(
                     base_mc.clone(prefix=f"{split}/", postfix=f"_{hn}") for hn in self.head_names
                 )
