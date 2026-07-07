@@ -101,10 +101,12 @@ def main():
         ax.plot(X, mc, "--", color=c, lw=1.6, alpha=0.75, label=f"{name} RCA", zorder=2)
         b = int(X[np.argmax(mp)])
         ax.scatter([b], [mp.max()], s=110, facecolor="none", edgecolor=c, lw=1.5, zorder=4)
+        # MERT's below-the-marker label collides with OMAR's curve; lift it above
+        dy = +0.014 if key == "MERT-v1-95M" else -0.028
         ax.annotate(
             f"{name} best L{b} = {mp.max():.3f}",
             xy=(b, mp.max()),
-            xytext=(b + 0.4, mp.max() - 0.028),
+            xytext=(b + 0.4, mp.max() + dy),
             fontsize=9.5,
             color=c,
             fontweight="bold",
