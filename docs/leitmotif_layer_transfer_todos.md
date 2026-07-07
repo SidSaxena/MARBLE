@@ -48,6 +48,11 @@ matches (same-orchestration restatements ranked by melodic surface).
 
 ## TODOs — retrieval-side (all on cached VGMIDITVar embeddings; minutes each, no training)
 
+> **Structured plan:** items 1–5 are subsumed by the phased method plan in
+> [layer_combination_search_plan.md](layer_combination_search_plan.md)
+> (score-space search + work-disjoint holdout + Zelda validation assets +
+> pooled-labeling A/B). Execute via that doc.
+
 1. **Nomination-overlap analysis** — top-K lists from L2/L8/L11: Jaccard
    overlap + *oracle union recall@K* (relevant items L2 finds that L11
    misses). Upper-bounds what any multi-layer scheme can add, before

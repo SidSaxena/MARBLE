@@ -34,6 +34,8 @@ sweeps locally and on Modal. Code lives in
 | [leitmotif_swtc.md](leitmotif_swtc.md) | SWTC standalone evaluation pipeline |
 | [structure_datasets_survey.md](structure_datasets_survey.md) | Survey of music structure datasets MARBLE supports / could add |
 | [symbolic_encoder_landscape.md](symbolic_encoder_landscape.md) | Survey of symbolic / MIDI-native music encoders relevant to this benchmark |
+| [leitmotif_layer_transfer_todos.md](leitmotif_layer_transfer_todos.md) | **L2-vs-L11 two-axis numbers + open experiments** — why the deployed L11 choice is validated by the melody↔invariance dissociation; queued retrieval/melody TODOs |
+| [layer_combination_search_plan.md](layer_combination_search_plan.md) | **Layer-combination search method plan** — score-space fusion search on VGMIDITVar (work-disjoint holdout) + Zelda on-domain validation + pooled-labeling deployment A/B |
 | [benchmarking_methodology.md](benchmarking_methodology.md) | How we evaluate probes — MLP-probe vs zero-shot retrieval, metric choices, fairness considerations |
 
 ## Infrastructure / performance
