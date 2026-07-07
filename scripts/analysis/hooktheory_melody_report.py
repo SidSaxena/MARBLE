@@ -131,9 +131,12 @@ def main():
     for r in csv.DictReader((DATA / "layer_gates.csv").open()):
         gates[r["encoder"]][int(r["layer"])] = float(r["gate"])
     gpres = _present(gates)
-    fig, axes = plt.subplots(1, len(gpres), figsize=(3.9 * len(gpres), 4.2), squeeze=False)
+    # width floor so the suptitle never crops when only 1-2 encoders are present
+    fig_w = max(5.8, 3.9 * len(gpres))
+    fig, axes = plt.subplots(1, len(gpres), figsize=(fig_w, 4.2), squeeze=False)
     axes = axes[0]
-    fig.subplots_adjust(top=0.80, bottom=0.15, left=0.06, right=0.985, wspace=0.24)
+    left = 0.10 if len(gpres) == 1 else 0.06
+    fig.subplots_adjust(top=0.80, bottom=0.15, left=left, right=0.985, wspace=0.24)
     for ax, (key, (name, c)) in zip(axes, gpres, strict=True):
         g = np.array([gates[key][L] for L in sorted(gates[key])])
         nl = len(g)
@@ -163,13 +166,7 @@ def main():
         color="#666666",
         style="italic",
     )
-    fig.text(
-        0.525,
-        0.955,
-        "Learned layer gates of the weighted-sum head — HookTheory",
-        ha="center",
-        fontsize=13,
-    )
+    fig.text(0.5, 0.955, "Learned layer gates — HookTheory", ha="center", fontsize=13)
     _th_save(fig, thesis_dir, "hooktheory_layer_gates")
 
 
