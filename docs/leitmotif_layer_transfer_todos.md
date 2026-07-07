@@ -1,5 +1,8 @@
 # Layer choice for leitmotif discovery — open questions & queued experiments
 
+> Consolidated, prioritized, effort-estimated version of ALL open TODOs
+> (this doc's included): [post_defense_master_todos.md](post_defense_master_todos.md).
+
 *2026-07-07. Context: the deployed leitmotif-discovery pipeline uses MuQ **L11**,
 selected on CSI-style / VGMIDITVar-timbre retrieval. The melody campaigns
 (MedleyDB 5-fold, HookTheory) show L11 is NOT a top melody-tracking layer —
